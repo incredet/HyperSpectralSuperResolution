@@ -20,6 +20,8 @@ from rasterio.enums import Resampling
 import requests
 from tqdm import tqdm
 
+
+
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -39,6 +41,43 @@ from EMIT.emit_search import (
     emit_geom_wgs84_from_umm,
     emit_sun_vec_from_umm
 )
+
+import time
+
+try:
+    from pystac_client.exceptions import APIError
+except Exception:
+    APIError = Exception
+
+def _time_chunks(dt_min, dt_max, chunk_days=14):
+    cur = dt_min
+    while cur < dt_max:
+        nxt = min(dt_max, cur + timedelta(days=chunk_days))
+        yield cur, nxt
+        cur = nxt
+
+def _stac_time_range(dt0, dt1):
+    return f"{dt0.isoformat().replace('+00:00','Z')}/{dt1.isoformat().replace('+00:00','Z')}"
+
+def _stac_search_items_with_retries(client, *, collections, datetime_range, intersects=None, bbox=None, limit=200, retries=4):
+    last_err = None
+    for a in range(retries):
+        try:
+            search = client.search(
+                collections=collections,
+                datetime=datetime_range,
+                intersects=intersects,
+                bbox=bbox,
+                limit=limit,      
+            )
+            return list(search.items()) 
+        except APIError as e:
+            last_err = e
+            msg = str(e)
+            sleep_s = 1.5 * (2 ** a)
+            time.sleep(sleep_s)
+    raise last_err
+
 
 CLOUD_CLASSES = {8, 9, 10, 11}
 
@@ -156,27 +195,64 @@ def _find_scl_href(item) -> Optional[str]:
 def build_s2_index(
     *,
     aoi_geom_wgs84,
-    dt_min_utc: datetime,
-    dt_max_utc: datetime,
-    s2_api: str,
-    s2_collection: str,
-    limit: int = 5000,
-) -> S2Index:
+    dt_min_utc,
+    dt_max_utc,
+    s2_api,
+    s2_collection,
+    limit=200,             
+    chunk_days=14,   
+    simplify_tol=0.0,  
+    prefer_intersects=True,
+):
     dt_min_utc = _to_utc(dt_min_utc)
     dt_max_utc = _to_utc(dt_max_utc)
-    time_range = f"{dt_min_utc.isoformat().replace('+00:00','Z')}/{dt_max_utc.isoformat().replace('+00:00','Z')}"
+
+    # Geometry to send to STAC
+    geom = aoi_geom_wgs84
+    if simplify_tol and simplify_tol > 0:
+        try:
+            geom = geom.simplify(simplify_tol, preserve_topology=True)
+        except Exception:
+            pass
+
+    intersects_payload = mapping(geom) if prefer_intersects else None
+    bbox_payload = list(geom.bounds)
 
     client = Client.open(s2_api)
-    search = client.search(
-        collections=[s2_collection],
-        datetime=time_range,
-        intersects=aoi_geom_wgs84.__geo_interface__,
-        limit=limit,
-    )
-    items = list(search.get_items())
+
+    items_all = []
+    for c0, c1 in _time_chunks(dt_min_utc, dt_max_utc, chunk_days=chunk_days):
+        time_range = _stac_time_range(c0, c1)
+
+        # Try intersects first (more precise)…
+        if prefer_intersects:
+            try:
+                items = _stac_search_items_with_retries(
+                    client,
+                    collections=[s2_collection],
+                    datetime_range=time_range,
+                    intersects=intersects_payload,
+                    bbox=None,
+                    limit=limit,
+                )
+                items_all.extend(items)
+                continue
+            except Exception:
+                # …fallback to bbox if the server chokes
+                pass
+
+        items = _stac_search_items_with_retries(
+            client,
+            collections=[s2_collection],
+            datetime_range=time_range,
+            intersects=None,
+            bbox=bbox_payload,
+            limit=limit,
+        )
+        items_all.extend(items)
 
     by_key = {}
-    for it in items:
+    for it in items_all:
         if it.datetime is None or it.geometry is None:
             continue
         k = _s2_dedupe_key(it)
@@ -186,11 +262,11 @@ def build_s2_index(
             by_key[k] = (upd, it)
     items = [v[1] for v in by_key.values()]
 
-    recs: List[S2Rec] = []
+    recs = []
     for it in items:
         if it.datetime is None or it.geometry is None:
             continue
-        geom = shape(it.geometry)
+        geom_it = shape(it.geometry)
         dt = _to_utc(it.datetime)
         props = it.properties or {}
         meta_cc = _safe_float(props.get("eo:cloud_cover", 999.0), default=999.0)
@@ -198,13 +274,13 @@ def build_s2_index(
         scl_href = _find_scl_href(it)
         k = _s2_dedupe_key(it)
         upd = _s2_item_updated_time(it)
-        recs.append(S2Rec(it, geom, dt, meta_cc, sun_vec, scl_href, k, upd))
+        recs.append(S2Rec(it, geom_it, dt, meta_cc, sun_vec, scl_href, k, upd))
 
     geoms = [r.geom_wgs84 for r in recs]
     tree = STRtree(geoms)
     geom_to_idx = {id(g): i for i, g in enumerate(geoms)}
-
     return S2Index(recs=recs, tree=tree, geom_to_idx=geom_to_idx)
+
 
 
 def find_best_s2_for_emit_item(
