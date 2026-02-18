@@ -1,28 +1,12 @@
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from dateutil.parser import isoparse
 from shapely.ops import transform as shp_transform
-from typing import Optional, Tuple, List
+from typing import Tuple
 from pyproj import Transformer
-from pathlib import Path
 import pyproj
 from shapely.geometry import Point, box, Polygon
 
 
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from S2.s2_search import (
-    find_best_s2_for_emit_item,
-    build_s2_index
-)
-
-from EMIT.emit_search import (
-    emit_cloud_pct,
-    emit_dedupe_latest_revision,
-    emit_keep_top_n_per_day,
-    emit_item_datetime_utc
-
-)
 
 def point_buffer_bbox(lon: float, lat: float, meters: float):
     """
