@@ -15,7 +15,6 @@ from shapely.ops import unary_union
 
 
 
-from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta, date
 from typing import Any, Dict, Iterable, List, Optional, Tuple
