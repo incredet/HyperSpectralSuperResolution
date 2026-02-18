@@ -124,7 +124,6 @@ class S2Rec:
 class S2Index:
     recs: List[S2Rec]
     tree: STRtree
-    geom_to_idx: Dict[int, int] 
 
 
 def _get_s2_sun_vec(props: Dict[str, Any]) -> Optional[Tuple[float, float, float]]:
@@ -278,9 +277,7 @@ def build_s2_index(
 
     geoms = [r.geom_wgs84 for r in recs]
     tree = STRtree(geoms)
-    geom_to_idx = {id(g): i for i, g in enumerate(geoms)}
-    return S2Index(recs=recs, tree=tree, geom_to_idx=geom_to_idx)
-
+    return S2Index(recs=recs, tree=tree)
 
 
 def find_best_s2_for_emit_item(
@@ -310,8 +307,9 @@ def find_best_s2_for_emit_item(
     dt0 = emit_dt - timedelta(days=days)
     dt1 = emit_dt + timedelta(days=days)
 
-    possible_geoms = s2_index.tree.query(emit_geom)
-    possible_idxs = [s2_index.geom_to_idx[id(g)] for g in possible_geoms]
+    res = s2_index.tree.query(emit_geom)
+    possible_idxs = [int(i) for i in res]
+
 
     emit_lst = local_solar_time_hours(emit_dt, anchor_lon)
 
