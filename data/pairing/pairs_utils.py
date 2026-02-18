@@ -4,6 +4,8 @@ from shapely.ops import transform as shp_transform
 from typing import Optional, Tuple, List
 from pyproj import Transformer
 from pathlib import Path
+import pyproj
+from shapely.geometry import Point, box, Polygon
 
 
 import sys
@@ -21,6 +23,30 @@ from EMIT.emit_search import (
     emit_item_datetime_utc
 
 )
+
+def point_buffer_bbox(lon: float, lat: float, meters: float):
+    """
+    Build a WGS84 polygon (bbox) centered at (lon, lat) whose sides
+    are tangent to a circle of radius `meters` in a local AEQD projection.
+    """
+    wgs84 = pyproj.CRS.from_epsg(4326)
+    aeqd = pyproj.CRS.from_proj4(
+        f"+proj=aeqd +lat_0={lat} +lon_0={lon} +datum=WGS84 +units=m +no_defs"
+    )
+
+    fwd = pyproj.Transformer.from_crs(wgs84, aeqd, always_xy=True)  # lon,lat -> x,y (m)
+    inv = pyproj.Transformer.from_crs(aeqd, wgs84, always_xy=True)  # x,y (m) -> lon,lat
+
+    # Project center to local meters
+    x0, y0 = fwd.transform(lon, lat)
+
+    p_local = Point(x0, y0)
+    bbox_local = box(*p_local.buffer(meters).bounds) 
+
+    xs, ys = bbox_local.exterior.coords.xy 
+    lons, lats = inv.transform(xs, ys)
+
+    return Polygon(zip(lons, lats))
 
 def _to_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
@@ -124,74 +150,3 @@ def overlap_metrics_and_geom_wgs84(emit_geom_wgs84, s2_geom_wgs84, *, tile_m: fl
     }
 
 
-def pair_emit_to_s2(
-    emit_items: List[dict],
-    *,
-    aoi_geom_wgs84,
-    s2_api: str,
-    s2_collection: str,
-    days: float = 3.0,
-    emit_max_cloud_pct: Optional[float] = None,
-    emit_top_n_per_day: Optional[int] = None,
-    s2_limit: int = 5000,
-    **matcher_kwargs,
-):
-    """
-    Returns list of records:
-      {emit_item, s2_item, scl_cloud, dbg}
-    """
-    emit_dedup = emit_dedupe_latest_revision(emit_items)
-
-    if emit_top_n_per_day is not None:
-        emit_sel = emit_keep_top_n_per_day(
-            emit_dedup,
-            n_per_day=int(emit_top_n_per_day),
-            max_cloud_pct=emit_max_cloud_pct,
-        )
-    else:
-        # optional cloud filter only
-        if emit_max_cloud_pct is not None:
-            emit_sel = [it for it in emit_dedup if emit_cloud_pct(it) <= emit_max_cloud_pct]
-        else:
-            emit_sel = list(emit_dedup)
-
-    dts = [emit_item_datetime_utc(it) for it in emit_sel]
-    dts = [dt for dt in dts if dt is not None]
-    if not dts:
-        return [], {"reason": "no_emit_after_selection"}
-
-    dt_min = min(dts) - timedelta(days=days)
-    dt_max = max(dts) + timedelta(days=days)
-
-    s2_index = build_s2_index(
-        aoi_geom_wgs84=aoi_geom_wgs84,
-        dt_min_utc=dt_min,
-        dt_max_utc=dt_max,
-        s2_api=s2_api,
-        s2_collection=s2_collection,
-        limit=s2_limit,
-    )
-
-    out = []
-    for e in emit_sel:
-        s2_item, scl_cloud, dbg = find_best_s2_for_emit_item(
-            e,
-            s2_index=s2_index,
-            days=days,
-            **matcher_kwargs,
-        )
-        out.append({
-            "emit_item": e,
-            "s2_item": s2_item,
-            "scl_cloud": scl_cloud,
-            "dbg": dbg,
-        })
-
-    return out, {
-        "n_emit_in": len(emit_items),
-        "n_emit_dedup": len(emit_dedup),
-        "n_emit_selected": len(emit_sel),
-        "n_s2_indexed": len(s2_index.recs),
-        "dt_min": dt_min.isoformat(),
-        "dt_max": dt_max.isoformat(),
-    }

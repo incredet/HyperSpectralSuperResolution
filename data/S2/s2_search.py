@@ -10,7 +10,7 @@ import rasterio
 from rasterio.mask import mask as rio_mask
 from shapely.geometry import mapping
 import numpy as np
-from shapely.ops import transform, unary_union
+from shapely.ops import transform
 import pyproj
 
 
