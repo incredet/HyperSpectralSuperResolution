@@ -1,6 +1,6 @@
 import rasterio
 import numpy as np
-import matplotlib as plt
+import matplotlib.pyplot as plt
 import re, os, glob, ast
 from pathlib import Path
 
@@ -96,15 +96,16 @@ def show_emit_rgb_from_envi(
     print(f"Reading: {os.path.basename(data_bin)}")
 
     with rasterio.open(data_bin) as ds:
-        wavelengths = np.asarray(wavelengths_nm, dtype=np.float64)
-        if wavelengths is None:
-            wavelengths = []
-            for b in range(1, ds.count+1):
+        if wavelengths_nm is None:
+            wavelengths_nm = []
+            for b in range(1, ds.count + 1):
                 bt = ds.tags(b)
                 w = bt.get('wavelength') or bt.get('WAVELENGTH')
-                wavelengths.append(float(w) if w else np.nan)
-            if not np.isfinite(wavelengths).any():
+                wavelengths_nm.append(float(w) if w else np.nan)
+            wavelengths_nm = np.array(wavelengths_nm, dtype=np.float64)
+            if not np.isfinite(wavelengths_nm).any():
                 raise ValueError("No wavelengths found in ENVI header tags.")
+        wavelengths = np.atleast_1d(np.asarray(wavelengths_nm, dtype=np.float64))
 
         idxs, picked = closest_bands(wavelengths, targets_nm, verbose=True)
         R = ds.read(idxs[0] + 1).astype(np.float32)

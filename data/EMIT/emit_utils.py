@@ -70,7 +70,7 @@ def closest_bands(
     return_picked=True,
     verbose=False,
 ):
-    wl = np.asarray(wavelengths_nm, dtype=float)
+    wl = np.atleast_1d(np.asarray(wavelengths_nm, dtype=float))
     if np.isscalar(targets_nm):
         targets = [float(targets_nm)]
         scalar = True

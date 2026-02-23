@@ -604,3 +604,27 @@ def download_s2_spectral_stack(item, s2_dir: Path) -> Path:
             dst.set_band_description(i, name)
 
     return out_stack
+
+
+# ---------------------------------------------------------------------------
+# Fetch helper: reconstruct a pystac Item from a stored S2 item ID
+# ---------------------------------------------------------------------------
+
+def fetch_s2_item_by_id(s2_id: str, *, stac_api: str, collection: str):
+    """Fetch a PySTAC Item by its ID from a STAC API.
+
+    Args:
+        s2_id: Sentinel-2 item ID (e.g. ``S2B_12SVE_20230621_0_L2A``).
+        stac_api: Base URL of the STAC API.
+        collection: Collection name (e.g. ``sentinel-2-l2a``).
+
+    Returns:
+        A :class:`pystac.Item` ready for asset access.
+    """
+    import requests
+    from pystac import Item
+
+    url = f"{stac_api.rstrip('/')}/collections/{collection}/items/{s2_id}"
+    r = requests.get(url, timeout=60)
+    r.raise_for_status()
+    return Item.from_dict(r.json())

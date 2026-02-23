@@ -243,3 +243,53 @@ def download_reflectance(pick , dest_dir: Path | str, assets: List[str] = ['_RFL
         raise RuntimeError("No EMIT L2A Reflectance .nc links for the selected granule")
     files = ea.download(links, str(dest))
     return [Path(p) for p in files]
+
+
+# ---------------------------------------------------------------------------
+# Fetch helpers (reconstruct item objects from stored IDs)
+# ---------------------------------------------------------------------------
+
+def fetch_emit_umm_by_granuleur(
+    granuleur: str,
+    *,
+    short_name: str = "EMITL2ARFL",
+    version: str = "001",
+) -> dict:
+    """Fetch the UMM metadata dict for a single EMIT granule from NASA CMR."""
+    import requests
+
+    CMR_GRANULES_UMM = "https://cmr.earthdata.nasa.gov/search/granules.umm_json"
+    params = {
+        "granule_ur": granuleur,
+        "short_name": short_name,
+        "version": version,
+        "page_size": 1,
+    }
+    headers = {"Accept": "application/vnd.nasa.cmr.umm+json;version=1.6.6"}
+    r = requests.get(CMR_GRANULES_UMM, params=params, headers=headers, timeout=60)
+    r.raise_for_status()
+    items = r.json().get("items", [])
+    if not items:
+        raise ValueError(f"EMIT granule not found in CMR: {granuleur}")
+    return items[0]["umm"]
+
+
+def refetch_emit_pick(
+    granuleur: str,
+    *,
+    short_name: str = "EMITL2ARFL",
+    version: str = "001",
+):
+    """Re-fetch a single EMIT earthaccess granule object by its granule UR.
+
+    Returns the earthaccess granule (has ``.data_links()``).
+    """
+    res = ea.search_data(
+        short_name=short_name,
+        version=version,
+        granule_name=granuleur,
+        count=1,
+    )
+    if not res:
+        raise ValueError(f"EMIT granule not found: {granuleur}")
+    return res[0]
