@@ -6,10 +6,10 @@ visualising them, and writing per-tile outputs.
 
 Public API
 ----------
-find_valid_paired_tiles  – scan an aligned pair and list non-black tile windows
-save_tile_pair           – write a single (EMIT, S2) tile pair as GeoTIFFs
-write_emit_b32_tile      – subsample an EMIT tile to 32 evenly-spaced bands
-plot_tile_pair_simple    – side-by-side RGB visualisation of one tile pair
+find_valid_paired_tiles  - scan an aligned pair and list non-black tile windows
+save_tile_pair           - write a single (EMIT, S2) tile pair as GeoTIFFs
+write_emit_b32_tile      - subsample an EMIT tile to 32 evenly-spaced bands
+plot_tile_pair_simple    - side-by-side RGB visualisation of one tile pair
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from typing import Optional
 import numpy as np
 import rasterio
 from rasterio.windows import Window
+from rasterio.windows import transform as window_transform
 from rasterio.transform import from_bounds
 import matplotlib.pyplot as plt
 
@@ -117,65 +118,161 @@ def find_valid_paired_tiles(
 # ---------------------------------------------------------------------------
 
 def save_tile_pair(
-    emit_path: str | Path,
-    s2_path: str | Path,
-    tile_info: dict,
-    out_dir: str | Path,
+    emit_path,
+    s2_path,
+    tile_info,
+    out_dir,
+    *,
+    tiled=True,
+    overwrite=True,
+    emit_wavelengths_nm: Optional[np.ndarray] = None,
+    emit_scale=10000.0,
+    emit_nodata_u16=65535,
+    compress="DEFLATE",
+    zlevel=1,
+    num_threads="ALL_CPUS",
 ) -> tuple[Path, Path]:
     """Write one EMIT/S2 tile pair as GeoTIFFs.
 
-    Each output file preserves the spatial reference (CRS + geotransform) of
-    the corresponding window within the source raster.
+    The EMIT tile is saved as uint16 (scaled by *emit_scale*, nodata =
+    *emit_nodata_u16*).  The S2 tile preserves its original dtype.
+
+    When *emit_wavelengths_nm* is provided (full 285-band array from the
+    cached JSON), per-band ``wavelength`` and ``emit_band_index`` tags are
+    merged with any existing source tags and written to the EMIT tile, making
+    it self-describing for all downstream consumers (``write_emit_b32_tile``,
+    ``fit_tile``, ``plot_spectral_match``).
 
     Args:
-        emit_path: Source EMIT raster.
-        s2_path:   Source S2 raster.
-        tile_info: Dict returned by :func:`find_valid_paired_tiles`.
-        out_dir:   Directory where tile files are written.
+        emit_path:           Source EMIT raster.
+        s2_path:             Source S2 raster.
+        tile_info:           Dict returned by :func:`find_valid_paired_tiles`.
+        out_dir:             Directory where tile files are written.
+        tiled:               Write tiled GeoTIFFs.
+        overwrite:           Remove existing output files before writing.
+        emit_wavelengths_nm: Full-spectrum wavelength array (all 285 EMIT
+                             bands, nm).
+        emit_scale:          Reflectance -> uint16 scale factor (default 10000).
+        emit_nodata_u16:     uint16 nodata sentinel (default 65535).
+        compress:            GDAL compression codec (default DEFLATE).
+        zlevel:              Compression level (default 1 = fast).
+        num_threads:         GDAL write threads (default ALL_CPUS).
 
     Returns:
         ``(emit_tile_path, s2_tile_path)`` as :class:`pathlib.Path` objects.
     """
-    out_dir  = Path(out_dir)
+    def _auto_block_size(width: int, height: int) -> int:
+        m = min(width, height)
+        if m >= 256:
+            return 256
+        if m >= 64:
+            return 64
+        return 16
+
+    out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    k        = int(tile_info["idx"])
-    emit_win = tile_info["emit_window"]
-    s2_win   = tile_info["s2_window"]
+    k = int(tile_info["idx"])
 
     emit_out = out_dir / f"tile_{k:03d}_emit.tif"
     s2_out   = out_dir / f"tile_{k:03d}_s2.tif"
 
-    for src_path, win, dst_path in (
-        (emit_path, emit_win, emit_out),
-        (s2_path,   s2_win,   s2_out),
-    ):
-        with rasterio.open(src_path) as src:
-            data     = src.read(window=win)
-            win_tf   = src.window_transform(win)
-            profile  = src.profile.copy()
-            profile.update(
-                height=win.height,
-                width=win.width,
-                transform=win_tf,
-                driver="GTiff",
-                compress="DEFLATE",
-                predictor=2,
-                tiled=True,
-                BIGTIFF="IF_SAFER",
-            )
-            # Remove ENVI-specific keys that GeoTIFF doesn't accept
-            for key in ("interleave",):
-                profile.pop(key, None)
+    if overwrite:
+        emit_out.unlink(missing_ok=True)
+        s2_out.unlink(missing_ok=True)
 
-        with rasterio.open(dst_path, "w", **profile) as dst:
-            dst.write(data)
-            # Preserve band descriptions if present
-            with rasterio.open(src_path) as src:
-                descs = src.descriptions
-            if descs and any(d for d in descs):
-                for i, d in enumerate(descs, start=1):
-                    if d:
-                        dst.set_band_description(i, d)
+    w_emit = tile_info["emit_window"]
+    w_s2   = tile_info["s2_window"]
+
+    wl_arr = np.asarray(emit_wavelengths_nm) if emit_wavelengths_nm is not None else None
+
+    with rasterio.open(emit_path) as emit_ds, rasterio.open(s2_path) as s2_ds:
+        emit_tile = emit_ds.read(window=w_emit)   # (bands, H, W)
+        s2_tile   = s2_ds.read(window=w_s2)
+        emit_desc = list(emit_ds.descriptions or [])
+        s2_desc   = list(s2_ds.descriptions or [])
+
+        if emit_tile.size == 0:
+            raise ValueError(f"Empty EMIT tile idx={k}, window={w_emit}")
+        if s2_tile.size == 0:
+            raise ValueError(f"Empty S2 tile idx={k}, window={w_s2}")
+
+        emit_transform = window_transform(w_emit, emit_ds.transform)
+        s2_transform   = window_transform(w_s2,   s2_ds.transform)
+
+        emit_ds_tags   = emit_ds.tags()
+        emit_band_tags = [emit_ds.tags(i) for i in range(1, emit_ds.count + 1)]
+
+        # Scale reflectance -> uint16
+        emit  = emit_tile.astype(np.float32, copy=False)
+        valid = np.isfinite(emit)
+        if emit_ds.nodata is not None:
+            valid &= (emit != emit_ds.nodata)
+        scaled_i32 = np.rint(emit * float(emit_scale)).astype(np.int32, copy=False)
+        scaled_i32 = np.clip(scaled_i32, 0, int(emit_nodata_u16) - 1)
+        emit_u16   = np.full(emit.shape, int(emit_nodata_u16), dtype=np.uint16)
+        emit_u16[valid] = scaled_i32[valid].astype(np.uint16, copy=False)
+
+        eh, ew = emit_u16.shape[1], emit_u16.shape[2]
+        sh, sw = s2_tile.shape[1],  s2_tile.shape[2]
+        e_blk  = _auto_block_size(ew, eh)
+        s_blk  = _auto_block_size(sw, sh)
+
+        emit_profile = dict(
+            driver="GTiff",
+            height=eh, width=ew,
+            count=emit_u16.shape[0],
+            dtype="uint16",
+            crs=emit_ds.crs,
+            transform=emit_transform,
+            nodata=int(emit_nodata_u16),
+            compress=compress,
+            predictor=2,
+            ZLEVEL=int(zlevel),
+            BIGTIFF="IF_SAFER",
+            NUM_THREADS=str(num_threads),
+            tiled=bool(tiled),
+        )
+        s2_is_int = np.issubdtype(s2_tile.dtype, np.integer)
+        s2_profile = dict(
+            driver="GTiff",
+            height=sh, width=sw,
+            count=s2_tile.shape[0],
+            dtype=str(s2_tile.dtype),
+            crs=s2_ds.crs,
+            transform=s2_transform,
+            nodata=s2_ds.nodata,
+            compress=compress,
+            predictor=2 if s2_is_int else 3,
+            ZLEVEL=int(zlevel),
+            BIGTIFF="IF_SAFER",
+            NUM_THREADS=str(num_threads),
+            tiled=bool(tiled),
+        )
+        if tiled:
+            emit_profile.update(blockxsize=min(e_blk, ew), blockysize=min(e_blk, eh))
+            s2_profile.update(blockxsize=min(s_blk, sw), blockysize=min(s_blk, sh))
+
+        with rasterio.open(emit_out, "w", **emit_profile) as dst_e:
+            dst_e.write(emit_u16)
+            if emit_ds_tags:
+                dst_e.update_tags(**emit_ds_tags)
+            # Merge existing per-band source tags with wavelength/index tags
+            for i in range(1, dst_e.count + 1):
+                tags: dict[str, str] = dict(emit_band_tags[i - 1]) if emit_band_tags[i - 1] else {}
+                tags["emit_band_index"] = str(i - 1)
+                if wl_arr is not None:
+                    tags["wavelength"] = f"{wl_arr[i - 1]:.4f}"
+                dst_e.update_tags(i, **tags)
+                d = emit_desc[i - 1] if (i - 1) < len(emit_desc) else None
+                if d:
+                    dst_e.set_band_description(i, d)
+
+        with rasterio.open(s2_out, "w", **s2_profile) as dst_s:
+            dst_s.write(s2_tile)
+            for i in range(1, dst_s.count + 1):
+                d = s2_desc[i - 1] if (i - 1) < len(s2_desc) else None
+                if d:
+                    dst_s.set_band_description(i, d)
 
     return emit_out, s2_out
 
@@ -190,19 +287,31 @@ def write_emit_b32_tile(
     num_keep: int = 32,
     idx_0based: Optional[np.ndarray] = None,
     overwrite: bool = False,
+    wavelengths_nm: Optional[np.ndarray] = None,
 ) -> tuple[Path, np.ndarray]:
     """Write a subset of *num_keep* evenly-spaced EMIT bands as a new GeoTIFF.
 
     The output file is written next to the input with a ``_b32`` suffix
     (or ``_b{num_keep}`` if *num_keep* ≠ 32).
 
+    Per-band GeoTIFF tags ``wavelength`` and ``emit_band_index`` are written
+    when *wavelengths_nm* is provided (pass the full 285-band array from the
+    cached JSON; the correct 32 values are selected automatically using
+    *idx_0based*).  These tags are then read back by
+    ``_read_emit_band_meta`` / ``fit_tile`` / ``plot_spectral_match`` with no
+    extra arguments — the file is self-describing.
+
     Args:
-        emit_tif_path: Full-band EMIT tile GeoTIFF.
-        num_keep:      Number of bands to keep (default 32).
-        idx_0based:    Pre-computed 0-based band indices to reuse across tiles.
-                       If *None*, indices are computed from the band count.
-        overwrite:     If *False* and the output already exists, return
-                       immediately without re-writing.
+        emit_tif_path:  Full-band EMIT tile GeoTIFF.
+        num_keep:       Number of bands to keep (default 32).
+        idx_0based:     Pre-computed 0-based band indices to reuse across
+                        tiles.  If *None*, indices are computed from the band
+                        count.
+        overwrite:      If *False* and the output already exists, return
+                        immediately without re-writing.
+        wavelengths_nm: Full-spectrum wavelength array (all 285 EMIT bands,
+                        nm).  The 32 selected wavelengths are embedded as
+                        per-band ``wavelength`` GeoTIFF tags.
 
     Returns:
         ``(output_path, indices_array)`` where *indices_array* is a 1-D int
@@ -241,13 +350,19 @@ def write_emit_b32_tile(
 
         descs = src.descriptions
 
+    wl_arr = np.asarray(wavelengths_nm) if wavelengths_nm is not None else None
+
     with rasterio.open(dst_path, "w", **profile) as dst:
         dst.write(data)
-        if descs and any(d for d in descs):
-            for out_i, src_i_0b in enumerate(idx_0based, start=1):
-                d = descs[int(src_i_0b)]
-                if d:
-                    dst.set_band_description(out_i, d)
+        for out_i, src_i_0b in enumerate(idx_0based, start=1):
+            # Always write the source band index so the file is self-describing
+            tags: dict[str, str] = {"emit_band_index": str(int(src_i_0b))}
+            if wl_arr is not None:
+                tags["wavelength"] = f"{wl_arr[int(src_i_0b)]:.4f}"
+            dst.update_tags(out_i, **tags)
+            # Preserve band description if present
+            if descs and int(src_i_0b) < len(descs) and descs[int(src_i_0b)]:
+                dst.set_band_description(out_i, descs[int(src_i_0b)])
 
     return dst_path, idx_0based
 

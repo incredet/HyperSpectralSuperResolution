@@ -31,7 +31,7 @@ Public API
   fit_tile(...)            fit from a single tile pair
   fit_tiles_batch(...)     fit by pooling pixels from many tile pairs
   align_s2_to_emit_grid()  standalone block-average helper
-  plot_spectral_match()    3-panel: S2 | fitted prediction | EMIT ground truth
+  plot_spectral_match()    3-panel: S2 | synth EMIT (from file) | EMIT ground truth
   plot_r2_spectrum()       diagnostic: R² vs EMIT wavelength
   scatter_band()           diagnostic: predicted vs ground-truth for one band
 """
@@ -51,6 +51,10 @@ from sklearn.metrics import r2_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from data.EMIT.emit_utils import closest_bands
 
 # ---------------------------------------------------------------------------
 # Spatial alignment
@@ -653,10 +657,11 @@ def fit_tiles_batch(
 # ---------------------------------------------------------------------------
 
 def plot_spectral_match(
-    matcher: "S2ToEMITMatcher",
     s2_tile_path: str | Path,
+    synth_emit_path: str | Path,
     emit_b32_tile_path: str | Path,
     *,
+    wavelengths_nm: Optional[np.ndarray] = None,
     targets_nm: tuple[float, float, float] = (650.0, 550.0, 470.0),
     percentile: tuple[float, float] = (2.0, 98.0),
     gamma: float = 1 / 2.2,
@@ -664,37 +669,42 @@ def plot_spectral_match(
     save_path: str | Path | None = None,
     show: bool = True,
 ) -> None:
-    """Three-panel comparison: S2 | fitted S2→EMIT | EMIT ground truth.
+    """Three-panel comparison: S2 | synthetic EMIT | EMIT ground truth.
 
-    All three images use the same contrast stretch and gamma so colours are
-    directly comparable across panels.
+    Reads all three panels directly from disk — no re-inference.  Call this
+    after ``apply_to_tile`` has already written *synth_emit_path*.
 
-    Panel 1 — **S2 at 10 m** (true colour, B04/B03/B02 by band description
+    Panel 1 — **S2 at 10 m** (true colour from B04/B03/B02 band descriptions,
     or first three bands as fallback).
 
-    Panel 2 — **Fitted S2 → EMIT at 10 m** (synthetic hyperspectral cube
-    produced by applying *matcher* to the native S2 tile; three bands chosen
-    from ``matcher.wavelengths_nm_`` closest to *targets_nm*).
+    Panel 2 — **Synthetic EMIT at 10 m** (the GeoTIFF written by
+    ``apply_to_tile``; three bands chosen closest to *targets_nm*).
 
-    Panel 3 — **EMIT ground truth at 60 m** (same three wavelength bands as
-    the prediction, so colours are physically comparable).
+    Panel 3 — **EMIT ground truth at 60 m** (same three wavelength bands,
+    so colours are physically comparable).
+
+    Wavelengths are resolved in order: *wavelengths_nm* parameter →
+    per-band tags in *synth_emit_path* → per-band tags in
+    *emit_b32_tile_path* → approximate fallback.
 
     Args:
-        matcher:            Fitted :class:`S2ToEMITMatcher` for this tile.
         s2_tile_path:       Path to S2 GeoTIFF tile (10 bands, 10 m).
+        synth_emit_path:    Path to synthetic EMIT GeoTIFF written by
+                            ``apply_to_tile`` (32 bands, 10 m).
         emit_b32_tile_path: Path to EMIT-b32 GeoTIFF tile (32 bands, 60 m).
-        targets_nm:         Target R/G/B wavelengths for EMIT/prediction panels.
+        wavelengths_nm:     Optional 32-element wavelength array (nm).
+                            If *None*, read from file tags.
+        targets_nm:         Target R/G/B wavelengths for the hyperspectral panels.
         percentile:         Low/high percentile for per-channel contrast stretch.
         gamma:              Display gamma (default 1/2.2 ≈ sRGB).
-        title_suffix:       Appended to the figure title (e.g. tile index).
+        title_suffix:       Appended to the first panel title (e.g. tile index).
         save_path:          Optional path to save the figure.
         show:               Call ``plt.show()`` after plotting.
     """
     import matplotlib.pyplot as plt
 
-    # ── helpers ───────────────────────────────────────────────────────────
+    # ── helper ────────────────────────────────────────────────────────────
     def _stretch_rgb(rgb: np.ndarray) -> np.ndarray:
-        """Per-channel percentile stretch + gamma → [0, 1]."""
         rgb = rgb.astype(np.float32, copy=True)
         out = np.zeros_like(rgb)
         for c in range(rgb.shape[2]):
@@ -707,104 +717,79 @@ def plot_spectral_match(
                 out[..., c] = np.clip((ch - lo) / (hi - lo), 0, 1)
         return np.clip(out ** gamma, 0, 1)
 
-    def _pick_emit_rgb_indices(wavelengths_nm, targets):
-        """Return 0-based band indices closest to each target wavelength."""
-        wl = np.asarray(wavelengths_nm, dtype=np.float64)
-        return [int(np.argmin(np.abs(wl - t))) for t in targets]
+    def _read_wl_tags(ds) -> np.ndarray | None:
+        tags = [ds.tags(b) for b in range(1, ds.count + 1)]
+        vals = [float(t["wavelength"]) for t in tags if "wavelength" in t]
+        return np.array(vals) if len(vals) == ds.count else None
 
-    # ── Panel 1: S2 native RGB ────────────────────────────────────────────
-    with rasterio.open(s2_tile_path) as s2_ds:
+    # ── Resolve wavelengths ───────────────────────────────────────────────
+    wl_arr = wavelengths_nm
+    if wl_arr is None:
+        with rasterio.open(synth_emit_path) as ds:
+            wl_arr = _read_wl_tags(ds)
+    if wl_arr is None:
+        with rasterio.open(emit_b32_tile_path) as ds:
+            wl_arr = _read_wl_tags(ds)
+
+    if wl_arr is not None:
+        rgb_idxs, picked_nm = closest_bands(wl_arr, targets_nm)
+        wl_str = "/".join(f"{w:.0f}" for w in picked_nm) + " nm"
+    else:
+        n        = 32
+        rgb_idxs = [n * 2 // 3, n // 2, n // 6]
+        wl_str   = "approx R/G/B"
+
+    # ── Open all three files in one pass ─────────────────────────────────
+    with rasterio.open(s2_tile_path) as s2_ds, \
+         rasterio.open(synth_emit_path) as syn_ds, \
+         rasterio.open(emit_b32_tile_path) as emit_ds:
+
+        # S2: find B04/B03/B02 by band description
         desc = list(s2_ds.descriptions or [])
-
         def _find(keywords):
             for bi, d in enumerate(desc, start=1):
                 if d and all(k in d.lower() for k in keywords):
                     return bi
             return None
-
         b_r = _find(["b04"]) or _find(["red"])
         b_g = _find(["b03"]) or _find(["green"])
         b_b = _find(["b02"]) or _find(["blue"])
-
         if b_r and b_g and b_b:
-            s2_rgb = np.moveaxis(
-                s2_ds.read([b_r, b_g, b_b]).astype(np.float32), 0, -1
-            )
+            s2_rgb = np.moveaxis(s2_ds.read([b_r, b_g, b_b]).astype(np.float32), 0, -1)
         else:
-            bands  = min(3, s2_ds.count)
-            s2_rgb = np.moveaxis(
-                s2_ds.read(list(range(1, bands + 1))).astype(np.float32), 0, -1
-            )
-
+            s2_rgb = np.moveaxis(s2_ds.read(list(range(1, min(3, s2_ds.count) + 1))).astype(np.float32), 0, -1)
         s2_nodata = s2_ds.nodata
 
-    # Scale DN → reflectance if values look like integer DN (0–10000 range)
+        # Synthetic EMIT
+        bands_1based = [i + 1 for i in rgb_idxs]
+        pred_rgb  = np.moveaxis(syn_ds.read(bands_1based).astype(np.float32), 0, -1)
+        pred_nodata = syn_ds.nodata
+
+        # EMIT ground truth
+        emit_rgb  = np.moveaxis(emit_ds.read(bands_1based).astype(np.float32), 0, -1)
+        emit_nodata = emit_ds.nodata
+
+    # ── Nodata → nan ──────────────────────────────────────────────────────
     if np.nanmax(s2_rgb) > 1.5:
-        s2_rgb = s2_rgb / 10_000.0
+        s2_rgb /= 10_000.0
     if s2_nodata is not None:
         s2_rgb[s2_rgb == s2_nodata / 10_000.0] = np.nan
 
-    # ── Panel 2: Fitted S2 → EMIT at native 10 m ─────────────────────────
-    # apply_to_tile returns (32, H_s2, W_s2) — predict at full S2 resolution
-    pred_cube = matcher.apply_to_tile(s2_tile_path)   # (32, H, W)
-
-    if matcher.wavelengths_nm_ is not None:
-        rgb_idxs = _pick_emit_rgb_indices(matcher.wavelengths_nm_, targets_nm)
-        wl_labels = [f"{matcher.wavelengths_nm_[i]:.0f}" for i in rgb_idxs]
-        wl_str    = "/".join(wl_labels) + " nm"
-    else:
-        n = pred_cube.shape[0]
-        rgb_idxs  = [n * 2 // 3, n // 2, n // 6]
-        wl_str    = "approx R/G/B"
-
-    pred_rgb = np.moveaxis(
-        pred_cube[rgb_idxs].astype(np.float32), 0, -1
-    )                                                  # (H, W, 3)
-    # mask nodata in prediction
+    if pred_nodata is not None:
+        pred_rgb[pred_rgb == pred_nodata] = np.nan
     pred_rgb[~np.isfinite(pred_rgb)] = np.nan
-
-    # ── Panel 3: EMIT ground truth at 60 m ───────────────────────────────
-    with rasterio.open(emit_b32_tile_path) as emit_ds:
-        emit_nodata = emit_ds.nodata
-        emit_rgb    = np.moveaxis(
-            emit_ds.read([i + 1 for i in rgb_idxs]).astype(np.float32), 0, -1
-        )                                              # (H_emit, W_emit, 3)
-
-        # Read wavelengths from band tags if matcher has none
-        if matcher.wavelengths_nm_ is None:
-            wl_tags = []
-            for b in range(1, emit_ds.count + 1):
-                bt = emit_ds.tags(b)
-                w  = bt.get("wavelength") or bt.get("WAVELENGTH")
-                wl_tags.append(float(w) if w else np.nan)
-            if any(np.isfinite(wl_tags)):
-                wl_arr   = np.array(wl_tags)
-                rgb_idxs = _pick_emit_rgb_indices(wl_arr, targets_nm)
-                wl_str   = "/".join(f"{wl_arr[i]:.0f}" for i in rgb_idxs) + " nm"
 
     if emit_nodata is not None:
         emit_rgb[emit_rgb == emit_nodata] = np.nan
 
-    # ── Unified stretch across all three panels ───────────────────────────
-    # Compute global per-channel percentiles from valid pixels in all panels
-    # so that the same luminance maps to the same colour in every panel.
-    combined = [s2_rgb, pred_rgb]  # both 10 m; EMIT stretched separately
-    # (S2 and prediction share reflectance scale so stretch together;
-    #  EMIT is the same physical quantity, stretch it identically)
-
-    s2_disp   = _stretch_rgb(s2_rgb)
-    pred_disp = _stretch_rgb(pred_rgb)
-    emit_disp = _stretch_rgb(emit_rgb)
-
     # ── Plot ──────────────────────────────────────────────────────────────
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-
     for ax, img, title in zip(
         axes,
-        [s2_disp, pred_disp, emit_disp],
+        [_stretch_rgb(s2_rgb), _stretch_rgb(pred_rgb), _stretch_rgb(emit_rgb)],
         [
             f"S2  10 m{('  ' + title_suffix) if title_suffix else ''}",
-            f"S2 → EMIT fit  10 m\n({wl_str})",
+            f"S2 → EMIT synth  10 m\n({wl_str})",
             f"EMIT  60 m\n({wl_str})",
         ],
     ):
@@ -813,7 +798,6 @@ def plot_spectral_match(
         ax.axis("off")
 
     plt.tight_layout()
-
     if save_path is not None:
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
         plt.savefig(str(save_path), dpi=150, bbox_inches="tight")
