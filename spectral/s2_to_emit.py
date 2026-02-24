@@ -50,7 +50,6 @@ import rasterio
 from rasterio.warp import reproject, Resampling
 from sklearn.linear_model import Ridge
 from sklearn.metrics import r2_score
-from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
 import sys
@@ -162,14 +161,6 @@ def _build_valid_mask(
     return valid
 
 
-def _make_pipeline(degree: int = 2, alpha: float = 1.0) -> Pipeline:
-    """Build a single PolynomialFeatures → StandardScaler → Ridge pipeline."""
-    return Pipeline([
-        ("poly",   PolynomialFeatures(degree=degree, include_bias=False)),
-        ("scaler", StandardScaler()),
-        ("ridge",  Ridge(alpha=alpha)),
-    ])
-
 
 def _read_emit_band_meta(
     emit_b32_path: str | Path,
@@ -242,117 +233,104 @@ def _write_geotiff(
 
 @dataclass
 class S2ToEMITMatcher:
-    """32 fitted polynomial Ridge pipelines mapping S2 → EMIT spectral space.
+    """Polynomial Ridge model mapping S2 (10 bands) → EMIT spectral space.
 
     Do not instantiate directly — use :func:`fit_tile` or
     :func:`fit_tiles_batch`.
 
+    Fitting is done with a single ``PolynomialFeatures`` expansion, a single
+    ``StandardScaler``, and a single multi-output ``Ridge`` regression that
+    solves all output bands simultaneously (one ``X^T X`` inversion, one
+    matrix multiply).
+
     Attributes
     ----------
-    models_ :
-        List of 32 fitted sklearn ``Pipeline`` objects, one per EMIT b32 band.
-        Kept for inspection / serialisation compatibility; ``predict`` uses the
-        cached weight matrix instead of calling each pipeline individually.
     band_indices_0based_ :
-        0-based indices of the 32 kept EMIT bands in the full spectrum.
+        0-based indices of the kept EMIT bands in the full 285-band spectrum.
     wavelengths_nm_ :
-        EMIT centre wavelengths for the 32 bands (nm), or ``None``.
+        EMIT centre wavelengths for the output bands (nm), or ``None``.
     n_s2_bands_ :
         Number of S2 input features used during training (10).
+    n_output_bands_ :
+        Number of output EMIT bands (32).
     scale_ :
         S2/EMIT pixel scale factor used during training (6).
     degree_ :
         Polynomial degree (2).
     alpha_ :
         Ridge regularisation strength.
-
-    Fast-path inference fields (populated by :meth:`_build_fast_weights`)
-    ----------------------------------------------------------------------
     _poly_ :
-        Shared fitted ``PolynomialFeatures`` (identical across all 32 models).
+        Fitted ``PolynomialFeatures`` transformer.
     _scaler_ :
-        Shared fitted ``StandardScaler`` (identical across all 32 models).
+        Fitted ``StandardScaler`` transformer.
     _W_ :
-        ``(32, n_poly_features)`` stacked Ridge coefficients — enables a
-        single BLAS ``X_scaled @ W.T`` call instead of 32 separate matmuls.
+        ``(n_output_bands, n_poly_features)`` Ridge coefficient matrix.
     _b_ :
-        ``(32,)`` Ridge intercepts.
+        ``(n_output_bands,)`` Ridge intercept vector.
+    models_ :
+        Legacy field — kept only for backward compatibility with older
+        serialised matchers.  Empty for newly fitted matchers.
     """
 
-    models_:               list            = field(default_factory=list)
     band_indices_0based_:  Optional[np.ndarray] = None
     wavelengths_nm_:       Optional[np.ndarray] = None
     n_s2_bands_:           int             = 10
+    n_output_bands_:       int             = 32
     scale_:                int             = 6
     degree_:               int             = 2
     alpha_:                float           = 1.0
 
-    # Fast-path cache — not shown in repr, populated after fitting
+    # Core fitted objects
     _poly_:    object           = field(default=None, repr=False)
     _scaler_:  object           = field(default=None, repr=False)
     _W_:       Optional[np.ndarray] = field(default=None, repr=False)
     _b_:       Optional[np.ndarray] = field(default=None, repr=False)
 
+    # Legacy — only populated when loading old serialised matchers
+    models_:               list = field(default_factory=list, repr=False)
+
     def _build_fast_weights(self) -> None:
-        """Cache a shared poly/scaler and stacked Ridge weight matrix.
+        """Extract W/b from legacy ``models_`` list (old serialised format).
 
-        All 32 ``PolynomialFeatures`` transforms are identical (same
-        ``degree``, same input) and all 32 ``StandardScaler`` instances are
-        fitted on the same ``X_poly`` data, so their ``mean_`` / ``scale_``
-        arrays are identical.  We therefore extract them from ``models_[0]``
-        and stack the 32 Ridge ``coef_`` vectors into a single ``(32, P)``
-        matrix ``W``.
-
-        Inference then reduces to::
-
-            X_poly   = poly.transform(X)       # once, (N, P)
-            X_scaled = scaler.transform(X_poly) # once, (N, P)
-            Y        = X_scaled @ W.T + b       # one BLAS call, (N, 32)
-
-        instead of calling each pipeline's ``predict`` 32 times.
+        New matchers already have ``_W_`` and ``_b_`` set directly during
+        fitting and do **not** need this method.
         """
-        if not self.models_:
+        if self._W_ is not None or not self.models_:
             return
         self._poly_   = self.models_[0].named_steps["poly"]
         self._scaler_ = self.models_[0].named_steps["scaler"]
         self._W_ = np.stack(
             [m.named_steps["ridge"].coef_ for m in self.models_]
-        ).astype(np.float64)          # (32, P)
+        ).astype(np.float64)          # (B_out, P)
         self._b_ = np.array(
             [m.named_steps["ridge"].intercept_ for m in self.models_],
             dtype=np.float64,
-        )                             # (32,)
+        )
+        self.n_output_bands_ = self._W_.shape[0]
 
     # ── core ops ─────────────────────────────────────────────────────────
 
     def predict(self, X_s2: np.ndarray) -> np.ndarray:
-        """Predict EMIT b32 reflectances from S2 pixel values.
+        """Predict EMIT reflectances from S2 pixel values.
 
-        Uses a single polynomial expansion + one BLAS matrix-multiply across
-        all 32 bands, rather than calling each pipeline individually.
+        Single polynomial expansion + one BLAS ``X_scaled @ W.T + b`` call.
 
         Args:
             X_s2: ``(N, 10)`` float32 array of S2 band values.
 
         Returns:
-            ``(N, 32)`` float32 array of predicted EMIT reflectances.
+            ``(N, n_output_bands)`` float32 predicted EMIT reflectances.
         """
-        if not self.models_:
+        if self._W_ is None:
+            # Try legacy path
+            self._build_fast_weights()
+        if self._W_ is None:
             raise RuntimeError("Matcher has not been fitted yet.")
 
-        X_s2 = np.asarray(X_s2, dtype=np.float64)   # float64 for scaler precision
-
-        # Fast path: single poly expansion + one BLAS matmul
-        if self._W_ is not None:
-            X_poly   = self._poly_.transform(X_s2)    # (N, P)
-            X_scaled = self._scaler_.transform(X_poly) # (N, P)
-            return (X_scaled @ self._W_.T + self._b_).astype(np.float32)  # (N, 32)
-
-        # Fallback for matchers loaded from an older serialised format
-        out = np.empty((X_s2.shape[0], len(self.models_)), dtype=np.float32)
-        for i, pipe in enumerate(self.models_):
-            out[:, i] = pipe.predict(X_s2).astype(np.float32)
-        return out
+        X_s2 = np.asarray(X_s2, dtype=np.float64)
+        X_poly   = self._poly_.transform(X_s2)
+        X_scaled = self._scaler_.transform(X_poly)
+        return (X_scaled @ self._W_.T + self._b_).astype(np.float32)
 
     def score(
         self,
@@ -363,10 +341,10 @@ class S2ToEMITMatcher:
 
         Args:
             X_s2:   ``(N, 10)`` S2 values.
-            Y_emit: ``(N, 32)`` ground-truth EMIT reflectances.
+            Y_emit: ``(N, n_output_bands)`` ground-truth EMIT reflectances.
 
         Returns:
-            ``(32,)`` float array of R² scores.
+            ``(n_output_bands,)`` float array of R² scores.
         """
         Y_pred = self.predict(X_s2)
         return np.array([
@@ -381,13 +359,7 @@ class S2ToEMITMatcher:
         out_path: str | Path | None = None,
         out_nodata: float = -9999.0,
     ) -> np.ndarray:
-        """Apply all 32 models to an S2 tile at its native 10 m resolution.
-
-        The S2 data is **not** resampled — models are applied pixel-by-pixel
-        at 10 m, producing a 32-band synthetic EMIT cube at the S2 spatial
-        resolution  (e.g. 600 × 600 for a standard 100-EMIT-pixel tile).
-
-        EMIT data is never touched; its spatial resolution stays at 60 m.
+        """Apply the model to an S2 tile at its native 10 m resolution.
 
         Args:
             s2_tile_path: Path to the S2 GeoTIFF tile (10 bands, 10 m).
@@ -395,10 +367,11 @@ class S2ToEMITMatcher:
             out_nodata:   Fill value for invalid pixels in the output.
 
         Returns:
-            ``(32, H_s2, W_s2)`` float32 synthetic EMIT cube.
+            ``(n_output_bands, H_s2, W_s2)`` float32 synthetic EMIT cube.
         """
         s2_cube, s2_prof, s2_nodata = _read_raster(s2_tile_path)
         B, H, W = s2_cube.shape
+        n_out = self.n_output_bands_
 
         X = s2_cube.reshape(B, H * W).T       # (N, 10)
 
@@ -407,13 +380,11 @@ class S2ToEMITMatcher:
             valid &= ~np.any(np.isclose(X, s2_nodata), axis=1)
         valid &= ~np.all(X == 0, axis=1)
 
-        out_flat = np.full(
-            (H * W, len(self.models_)), out_nodata, dtype=np.float32
-        )
+        out_flat = np.full((H * W, n_out), out_nodata, dtype=np.float32)
         if valid.any():
             out_flat[valid] = self.predict(X[valid])
 
-        result = out_flat.T.reshape(len(self.models_), H, W)  # (32, H, W)
+        result = out_flat.T.reshape(n_out, H, W)
 
         if out_path is not None:
             _write_geotiff(
@@ -496,39 +467,46 @@ def fit_tile(
 
     X_train = X_all[valid]
     Y_train = Y_all[valid]
+    n_out   = Y_train.shape[1]
 
     if verbose:
         print(
             f"Fitting:  {X_train.shape[0]:,} valid pixels  |  "
-            f"{X_train.shape[1]} S2 bands  →  {Y_train.shape[1]} EMIT bands"
+            f"{X_train.shape[1]} S2 bands  →  {n_out} EMIT bands"
         )
 
-    models = []
-    for i in range(Y_train.shape[1]):
-        pipe = _make_pipeline(degree=degree, alpha=alpha)
-        pipe.fit(X_train, Y_train[:, i])
-        models.append(pipe)
+    # Single poly expansion → single scaler → single multi-output Ridge
+    poly   = PolynomialFeatures(degree=degree, include_bias=False)
+    scaler = StandardScaler()
+    ridge  = Ridge(alpha=alpha)
+
+    X_poly   = poly.fit_transform(X_train.astype(np.float64))
+    X_scaled = scaler.fit_transform(X_poly)
+    ridge.fit(X_scaled, Y_train)
 
     matcher = S2ToEMITMatcher(
-        models_              = models,
         band_indices_0based_ = band_indices,
         wavelengths_nm_      = wavelengths_nm,
         n_s2_bands_          = s2_cube.shape[0],
+        n_output_bands_      = n_out,
         scale_               = scale,
         degree_              = degree,
         alpha_               = alpha,
+        _poly_               = poly,
+        _scaler_             = scaler,
+        _W_                  = ridge.coef_.astype(np.float64),   # (n_out, P)
+        _b_                  = ridge.intercept_.astype(np.float64),
     )
-    matcher._build_fast_weights()
 
     # ── in-sample R² (training diagnostic only) ──────────────────────────
     Y_pred      = matcher.predict(X_train)
     r2_per_band = np.array([
-        r2_score(Y_train[:, i], Y_pred[:, i]) for i in range(Y_train.shape[1])
+        r2_score(Y_train[:, i], Y_pred[:, i]) for i in range(n_out)
     ])
 
     stats = {
         "n_train_pixels": int(X_train.shape[0]),
-        "n_emit_bands":   int(Y_train.shape[1]),
+        "n_emit_bands":   n_out,
         "r2_per_band":    r2_per_band.tolist(),
         "r2_mean":        float(r2_per_band.mean()),
         "r2_min":         float(r2_per_band.min()),
@@ -608,39 +586,46 @@ def fit_tiles_batch(
 
     X_train = np.concatenate(all_X, axis=0)
     Y_train = np.concatenate(all_Y, axis=0)
+    n_out   = Y_train.shape[1]
 
     if verbose:
         print(
             f"Total: {X_train.shape[0]:,} pixels  |  "
-            f"{X_train.shape[1]} S2 bands  →  {Y_train.shape[1]} EMIT bands"
+            f"{X_train.shape[1]} S2 bands  →  {n_out} EMIT bands"
         )
 
-    models = []
-    for i in range(Y_train.shape[1]):
-        pipe = _make_pipeline(degree=degree, alpha=alpha)
-        pipe.fit(X_train, Y_train[:, i])
-        models.append(pipe)
+    # Single poly expansion → single scaler → single multi-output Ridge
+    poly   = PolynomialFeatures(degree=degree, include_bias=False)
+    scaler = StandardScaler()
+    ridge  = Ridge(alpha=alpha)
+
+    X_poly   = poly.fit_transform(X_train.astype(np.float64))
+    X_scaled = scaler.fit_transform(X_poly)
+    ridge.fit(X_scaled, Y_train)
 
     matcher = S2ToEMITMatcher(
-        models_              = models,
         band_indices_0based_ = band_indices,
         wavelengths_nm_      = wavelengths_nm,
         n_s2_bands_          = n_s2_bands or 10,
+        n_output_bands_      = n_out,
         scale_               = scale,
         degree_              = degree,
         alpha_               = alpha,
+        _poly_               = poly,
+        _scaler_             = scaler,
+        _W_                  = ridge.coef_.astype(np.float64),
+        _b_                  = ridge.intercept_.astype(np.float64),
     )
-    matcher._build_fast_weights()
 
     Y_pred      = matcher.predict(X_train)
     r2_per_band = np.array([
-        r2_score(Y_train[:, i], Y_pred[:, i]) for i in range(Y_train.shape[1])
+        r2_score(Y_train[:, i], Y_pred[:, i]) for i in range(n_out)
     ])
 
     stats = {
         "n_tiles":        len(tile_pairs),
         "n_train_pixels": int(X_train.shape[0]),
-        "n_emit_bands":   int(Y_train.shape[1]),
+        "n_emit_bands":   n_out,
         "r2_per_band":    r2_per_band.tolist(),
         "r2_mean":        float(r2_per_band.mean()),
         "r2_min":         float(r2_per_band.min()),
