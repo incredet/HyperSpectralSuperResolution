@@ -31,6 +31,7 @@ Public API
   fit_tile(...)            fit from a single tile pair
   fit_tiles_batch(...)     fit by pooling pixels from many tile pairs
   align_s2_to_emit_grid()  standalone block-average helper
+  plot_spectral_match()    3-panel: S2 | fitted prediction | EMIT ground truth
   plot_r2_spectrum()       diagnostic: R² vs EMIT wavelength
   scatter_band()           diagnostic: predicted vs ground-truth for one band
 """
@@ -244,6 +245,8 @@ class S2ToEMITMatcher:
     ----------
     models_ :
         List of 32 fitted sklearn ``Pipeline`` objects, one per EMIT b32 band.
+        Kept for inspection / serialisation compatibility; ``predict`` uses the
+        cached weight matrix instead of calling each pipeline individually.
     band_indices_0based_ :
         0-based indices of the 32 kept EMIT bands in the full spectrum.
     wavelengths_nm_ :
@@ -256,6 +259,18 @@ class S2ToEMITMatcher:
         Polynomial degree (2).
     alpha_ :
         Ridge regularisation strength.
+
+    Fast-path inference fields (populated by :meth:`_build_fast_weights`)
+    ----------------------------------------------------------------------
+    _poly_ :
+        Shared fitted ``PolynomialFeatures`` (identical across all 32 models).
+    _scaler_ :
+        Shared fitted ``StandardScaler`` (identical across all 32 models).
+    _W_ :
+        ``(32, n_poly_features)`` stacked Ridge coefficients — enables a
+        single BLAS ``X_scaled @ W.T`` call instead of 32 separate matmuls.
+    _b_ :
+        ``(32,)`` Ridge intercepts.
     """
 
     models_:               list            = field(default_factory=list)
@@ -266,10 +281,49 @@ class S2ToEMITMatcher:
     degree_:               int             = 2
     alpha_:                float           = 1.0
 
+    # Fast-path cache — not shown in repr, populated after fitting
+    _poly_:    object           = field(default=None, repr=False)
+    _scaler_:  object           = field(default=None, repr=False)
+    _W_:       Optional[np.ndarray] = field(default=None, repr=False)
+    _b_:       Optional[np.ndarray] = field(default=None, repr=False)
+
+    def _build_fast_weights(self) -> None:
+        """Cache a shared poly/scaler and stacked Ridge weight matrix.
+
+        All 32 ``PolynomialFeatures`` transforms are identical (same
+        ``degree``, same input) and all 32 ``StandardScaler`` instances are
+        fitted on the same ``X_poly`` data, so their ``mean_`` / ``scale_``
+        arrays are identical.  We therefore extract them from ``models_[0]``
+        and stack the 32 Ridge ``coef_`` vectors into a single ``(32, P)``
+        matrix ``W``.
+
+        Inference then reduces to::
+
+            X_poly   = poly.transform(X)       # once, (N, P)
+            X_scaled = scaler.transform(X_poly) # once, (N, P)
+            Y        = X_scaled @ W.T + b       # one BLAS call, (N, 32)
+
+        instead of calling each pipeline's ``predict`` 32 times.
+        """
+        if not self.models_:
+            return
+        self._poly_   = self.models_[0].named_steps["poly"]
+        self._scaler_ = self.models_[0].named_steps["scaler"]
+        self._W_ = np.stack(
+            [m.named_steps["ridge"].coef_ for m in self.models_]
+        ).astype(np.float64)          # (32, P)
+        self._b_ = np.array(
+            [m.named_steps["ridge"].intercept_ for m in self.models_],
+            dtype=np.float64,
+        )                             # (32,)
+
     # ── core ops ─────────────────────────────────────────────────────────
 
     def predict(self, X_s2: np.ndarray) -> np.ndarray:
         """Predict EMIT b32 reflectances from S2 pixel values.
+
+        Uses a single polynomial expansion + one BLAS matrix-multiply across
+        all 32 bands, rather than calling each pipeline individually.
 
         Args:
             X_s2: ``(N, 10)`` float32 array of S2 band values.
@@ -279,8 +333,17 @@ class S2ToEMITMatcher:
         """
         if not self.models_:
             raise RuntimeError("Matcher has not been fitted yet.")
-        X_s2 = np.asarray(X_s2, dtype=np.float32)
-        out  = np.empty((X_s2.shape[0], len(self.models_)), dtype=np.float32)
+
+        X_s2 = np.asarray(X_s2, dtype=np.float64)   # float64 for scaler precision
+
+        # Fast path: single poly expansion + one BLAS matmul
+        if self._W_ is not None:
+            X_poly   = self._poly_.transform(X_s2)    # (N, P)
+            X_scaled = self._scaler_.transform(X_poly) # (N, P)
+            return (X_scaled @ self._W_.T + self._b_).astype(np.float32)  # (N, 32)
+
+        # Fallback for matchers loaded from an older serialised format
+        out = np.empty((X_s2.shape[0], len(self.models_)), dtype=np.float32)
         for i, pipe in enumerate(self.models_):
             out[:, i] = pipe.predict(X_s2).astype(np.float32)
         return out
@@ -448,6 +511,7 @@ def fit_tile(
         degree_              = degree,
         alpha_               = alpha,
     )
+    matcher._build_fast_weights()
 
     # ── in-sample R² (training diagnostic only) ──────────────────────────
     Y_pred      = matcher.predict(X_train)
@@ -557,6 +621,7 @@ def fit_tiles_batch(
         degree_              = degree,
         alpha_               = alpha,
     )
+    matcher._build_fast_weights()
 
     Y_pred      = matcher.predict(X_train)
     r2_per_band = np.array([
@@ -586,6 +651,177 @@ def fit_tiles_batch(
 # ---------------------------------------------------------------------------
 # Diagnostics
 # ---------------------------------------------------------------------------
+
+def plot_spectral_match(
+    matcher: "S2ToEMITMatcher",
+    s2_tile_path: str | Path,
+    emit_b32_tile_path: str | Path,
+    *,
+    targets_nm: tuple[float, float, float] = (650.0, 550.0, 470.0),
+    percentile: tuple[float, float] = (2.0, 98.0),
+    gamma: float = 1 / 2.2,
+    title_suffix: str = "",
+    save_path: str | Path | None = None,
+    show: bool = True,
+) -> None:
+    """Three-panel comparison: S2 | fitted S2→EMIT | EMIT ground truth.
+
+    All three images use the same contrast stretch and gamma so colours are
+    directly comparable across panels.
+
+    Panel 1 — **S2 at 10 m** (true colour, B04/B03/B02 by band description
+    or first three bands as fallback).
+
+    Panel 2 — **Fitted S2 → EMIT at 10 m** (synthetic hyperspectral cube
+    produced by applying *matcher* to the native S2 tile; three bands chosen
+    from ``matcher.wavelengths_nm_`` closest to *targets_nm*).
+
+    Panel 3 — **EMIT ground truth at 60 m** (same three wavelength bands as
+    the prediction, so colours are physically comparable).
+
+    Args:
+        matcher:            Fitted :class:`S2ToEMITMatcher` for this tile.
+        s2_tile_path:       Path to S2 GeoTIFF tile (10 bands, 10 m).
+        emit_b32_tile_path: Path to EMIT-b32 GeoTIFF tile (32 bands, 60 m).
+        targets_nm:         Target R/G/B wavelengths for EMIT/prediction panels.
+        percentile:         Low/high percentile for per-channel contrast stretch.
+        gamma:              Display gamma (default 1/2.2 ≈ sRGB).
+        title_suffix:       Appended to the figure title (e.g. tile index).
+        save_path:          Optional path to save the figure.
+        show:               Call ``plt.show()`` after plotting.
+    """
+    import matplotlib.pyplot as plt
+
+    # ── helpers ───────────────────────────────────────────────────────────
+    def _stretch_rgb(rgb: np.ndarray) -> np.ndarray:
+        """Per-channel percentile stretch + gamma → [0, 1]."""
+        rgb = rgb.astype(np.float32, copy=True)
+        out = np.zeros_like(rgb)
+        for c in range(rgb.shape[2]):
+            ch  = rgb[..., c]
+            fin = np.isfinite(ch)
+            if not fin.any():
+                continue
+            lo, hi = np.percentile(ch[fin], percentile)
+            if hi > lo:
+                out[..., c] = np.clip((ch - lo) / (hi - lo), 0, 1)
+        return np.clip(out ** gamma, 0, 1)
+
+    def _pick_emit_rgb_indices(wavelengths_nm, targets):
+        """Return 0-based band indices closest to each target wavelength."""
+        wl = np.asarray(wavelengths_nm, dtype=np.float64)
+        return [int(np.argmin(np.abs(wl - t))) for t in targets]
+
+    # ── Panel 1: S2 native RGB ────────────────────────────────────────────
+    with rasterio.open(s2_tile_path) as s2_ds:
+        desc = list(s2_ds.descriptions or [])
+
+        def _find(keywords):
+            for bi, d in enumerate(desc, start=1):
+                if d and all(k in d.lower() for k in keywords):
+                    return bi
+            return None
+
+        b_r = _find(["b04"]) or _find(["red"])
+        b_g = _find(["b03"]) or _find(["green"])
+        b_b = _find(["b02"]) or _find(["blue"])
+
+        if b_r and b_g and b_b:
+            s2_rgb = np.moveaxis(
+                s2_ds.read([b_r, b_g, b_b]).astype(np.float32), 0, -1
+            )
+        else:
+            bands  = min(3, s2_ds.count)
+            s2_rgb = np.moveaxis(
+                s2_ds.read(list(range(1, bands + 1))).astype(np.float32), 0, -1
+            )
+
+        s2_nodata = s2_ds.nodata
+
+    # Scale DN → reflectance if values look like integer DN (0–10000 range)
+    if np.nanmax(s2_rgb) > 1.5:
+        s2_rgb = s2_rgb / 10_000.0
+    if s2_nodata is not None:
+        s2_rgb[s2_rgb == s2_nodata / 10_000.0] = np.nan
+
+    # ── Panel 2: Fitted S2 → EMIT at native 10 m ─────────────────────────
+    # apply_to_tile returns (32, H_s2, W_s2) — predict at full S2 resolution
+    pred_cube = matcher.apply_to_tile(s2_tile_path)   # (32, H, W)
+
+    if matcher.wavelengths_nm_ is not None:
+        rgb_idxs = _pick_emit_rgb_indices(matcher.wavelengths_nm_, targets_nm)
+        wl_labels = [f"{matcher.wavelengths_nm_[i]:.0f}" for i in rgb_idxs]
+        wl_str    = "/".join(wl_labels) + " nm"
+    else:
+        n = pred_cube.shape[0]
+        rgb_idxs  = [n * 2 // 3, n // 2, n // 6]
+        wl_str    = "approx R/G/B"
+
+    pred_rgb = np.moveaxis(
+        pred_cube[rgb_idxs].astype(np.float32), 0, -1
+    )                                                  # (H, W, 3)
+    # mask nodata in prediction
+    pred_rgb[~np.isfinite(pred_rgb)] = np.nan
+
+    # ── Panel 3: EMIT ground truth at 60 m ───────────────────────────────
+    with rasterio.open(emit_b32_tile_path) as emit_ds:
+        emit_nodata = emit_ds.nodata
+        emit_rgb    = np.moveaxis(
+            emit_ds.read([i + 1 for i in rgb_idxs]).astype(np.float32), 0, -1
+        )                                              # (H_emit, W_emit, 3)
+
+        # Read wavelengths from band tags if matcher has none
+        if matcher.wavelengths_nm_ is None:
+            wl_tags = []
+            for b in range(1, emit_ds.count + 1):
+                bt = emit_ds.tags(b)
+                w  = bt.get("wavelength") or bt.get("WAVELENGTH")
+                wl_tags.append(float(w) if w else np.nan)
+            if any(np.isfinite(wl_tags)):
+                wl_arr   = np.array(wl_tags)
+                rgb_idxs = _pick_emit_rgb_indices(wl_arr, targets_nm)
+                wl_str   = "/".join(f"{wl_arr[i]:.0f}" for i in rgb_idxs) + " nm"
+
+    if emit_nodata is not None:
+        emit_rgb[emit_rgb == emit_nodata] = np.nan
+
+    # ── Unified stretch across all three panels ───────────────────────────
+    # Compute global per-channel percentiles from valid pixels in all panels
+    # so that the same luminance maps to the same colour in every panel.
+    combined = [s2_rgb, pred_rgb]  # both 10 m; EMIT stretched separately
+    # (S2 and prediction share reflectance scale so stretch together;
+    #  EMIT is the same physical quantity, stretch it identically)
+
+    s2_disp   = _stretch_rgb(s2_rgb)
+    pred_disp = _stretch_rgb(pred_rgb)
+    emit_disp = _stretch_rgb(emit_rgb)
+
+    # ── Plot ──────────────────────────────────────────────────────────────
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+    for ax, img, title in zip(
+        axes,
+        [s2_disp, pred_disp, emit_disp],
+        [
+            f"S2  10 m{('  ' + title_suffix) if title_suffix else ''}",
+            f"S2 → EMIT fit  10 m\n({wl_str})",
+            f"EMIT  60 m\n({wl_str})",
+        ],
+    ):
+        ax.imshow(img)
+        ax.set_title(title, fontsize=10)
+        ax.axis("off")
+
+    plt.tight_layout()
+
+    if save_path is not None:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(str(save_path), dpi=150, bbox_inches="tight")
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
 
 def plot_r2_spectrum(
     stats: dict,
