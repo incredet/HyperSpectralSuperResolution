@@ -56,6 +56,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from data.EMIT.emit_utils import closest_bands
+from scipy.ndimage import zoom
+
 
 # ---------------------------------------------------------------------------
 # Spatial alignment
@@ -455,7 +457,8 @@ def fit_tile(
 
     # Upsample EMIT to 10 m by repeating each pixel into a scale×scale block.
     # This pairs every native 10 m S2 pixel with its parent 60 m EMIT value.
-    emit_at_s2 = np.repeat(np.repeat(emit_b32, scale, axis=1), scale, axis=2)
+    emit_at_s2 = zoom(emit_b32, (1, scale, scale), order=1)
+
 
     band_indices, wavelengths_nm = _read_emit_band_meta(emit_b32_tile_path)
 
@@ -566,7 +569,7 @@ def fit_tiles_batch(
         emit_b32, emit_prof, emit_nodata = _read_raster(emit_path)
 
         # Upsample EMIT to 10 m (nearest-neighbour repeat)
-        emit_at_s2 = np.repeat(np.repeat(emit_b32, scale, axis=1), scale, axis=2)
+        emit_at_s2 = zoom(emit_b32, (1, scale, scale), order=1)
 
         if band_indices is None:
             band_indices, wavelengths_nm = _read_emit_band_meta(emit_path)
