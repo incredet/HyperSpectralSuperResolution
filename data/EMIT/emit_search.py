@@ -210,15 +210,21 @@ def emit_keep_top_n_per_day(items: Iterable[dict], *, n_per_day: int = 5, max_cl
     return out
 
 
-def search(*, 
-           bbox, 
-           start: dt.datetime, 
-           end: dt.datetime,
-           short_name: str = EMIT_SHORT_NAME, 
-           cloud_cover = [0,100]
-           ) -> List:
-    result = ea.search_data(short_name=short_name, temporal=(start, end), bounding_box=bbox, cloud_cover=cloud_cover)
-    if len(result) == 0:
+def search(
+    *,
+    bbox,
+    start: dt.datetime,
+    end: dt.datetime,
+    short_name: str = EMIT_SHORT_NAME,
+    cloud_cover=None,
+    count: int = 200,
+):
+    kwargs = dict(short_name=short_name, temporal=(start, end), bounding_box=bbox, count=count)
+    if cloud_cover is not None:
+        kwargs["cloud_cover"] = cloud_cover
+    result = ea.search_data(**kwargs)
+
+    if not result:
         print("No granules found for the given search criteria.")
         return None
     print(f"Found {len(result)} granule(s).")
@@ -254,32 +260,24 @@ def download_reflectance(
     if not links:
         raise RuntimeError("No EMIT L2A Reflectance .nc links for the selected granule")
     refl_files = [Path(p) for p in ea.download(links, str(dest))]
-
-    if download_obs:
-        rfl_name = next(
-            (Path(u.split("?", 1)[0]).name for u in pick.data_links()
-             if "EMIT_L2A_RFL_" in u and u.endswith(".nc")),
-            None,
-        )
-        if not rfl_name:
-            raise RuntimeError("Couldn't find EMIT_L2A_RFL_*.nc link in this L2A granule")
-
-        parts = rfl_name.replace(".nc", "").split("_")
-        ver, ts, orbit, scene = parts[3], parts[4], parts[5], parts[6]
-        l1b_rad_name = f"EMIT_L1B_RAD_{ver}_{ts}_{orbit}_{scene}.nc"
-        print(l1b_rad_name)
-
-        l1b = ea.search_data(short_name="EMITL1BRAD", version=ver, granule_name=l1b_rad_name, count=1)
-        if not l1b:
-            raise RuntimeError(f"Matching L1B granule not found: {l1b_rad_name}")
-
-        obs_links = [u for u in l1b[0].data_links() if "EMIT_L1B_OBS_" in u and u.endswith(".nc")]
-        if not obs_links:
-            raise RuntimeError("Found L1B granule but no OBS link inside it")
-
-        ea.download(obs_links, str(dest))
-
     return refl_files
+
+def download_obs_from_l1b_granules(l1b_granules, dest_dir: Path | str):
+    dest = Path(dest_dir)
+    dest.mkdir(parents=True, exist_ok=True)
+
+    obs_links = []
+    for g in l1b_granules:
+        for u in g.data_links():
+            name = Path(u.split("?", 1)[0]).name
+            if "EMIT_L1B_OBS_" in name and name.endswith(".nc"):
+                obs_links.append(u)
+
+    if not obs_links:
+        raise RuntimeError("No OBS links found in L1B search results")
+
+    files = ea.download(obs_links, str(dest))
+    return [Path(p) for p in files]
 
 
 # ---------------------------------------------------------------------------
