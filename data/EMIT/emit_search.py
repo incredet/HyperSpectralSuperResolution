@@ -253,6 +253,7 @@ def download_reflectance(
     links = _filter_rfl_links(pick.data_links(), desired_assets=assets)
     if not links:
         raise RuntimeError("No EMIT L2A Reflectance .nc links for the selected granule")
+    print(links)
     refl_files = [Path(p) for p in ea.download(links, str(dest))]
 
     if download_obs:
