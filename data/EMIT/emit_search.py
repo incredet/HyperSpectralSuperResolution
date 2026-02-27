@@ -235,14 +235,50 @@ def _filter_rfl_links(links: Iterable[str], desired_assets: List[str] = ['_RFL_'
     return filtered_asset_links
 
 
-def download_reflectance(pick , dest_dir: Path | str, assets: List[str] = ['_RFL_', '_MASK_']) -> List[Path]:
+from pathlib import Path
+from typing import List
+
+import earthaccess as ea
+
+def download_reflectance(
+    pick,
+    dest_dir: Path | str,
+    assets: List[str] = ["_RFL_", "_MASK_"],
+    *,
+    download_obs: bool = False,
+) -> List[Path]:
     dest = Path(dest_dir)
     dest.mkdir(parents=True, exist_ok=True)
+
     links = _filter_rfl_links(pick.data_links(), desired_assets=assets)
     if not links:
         raise RuntimeError("No EMIT L2A Reflectance .nc links for the selected granule")
-    files = ea.download(links, str(dest))
-    return [Path(p) for p in files]
+    refl_files = [Path(p) for p in ea.download(links, str(dest))]
+
+    if download_obs:
+        rfl_name = next(
+            (Path(u.split("?", 1)[0]).name for u in pick.data_links()
+             if "EMIT_L2A_RFL_" in u and u.endswith(".nc")),
+            None,
+        )
+        if not rfl_name:
+            raise RuntimeError("Couldn't find EMIT_L2A_RFL_*.nc link in this L2A granule")
+
+        parts = rfl_name.replace(".nc", "").split("_")
+        ver, ts, orbit, scene = parts[3], parts[4], parts[5], parts[6]
+        l1b_rad_name = f"EMIT_L1B_RAD_{ver}_{ts}_{orbit}_{scene}.nc"
+
+        l1b = ea.search_data(short_name="EMITL1BRAD", version=ver, granule_name=l1b_rad_name, count=1)
+        if not l1b:
+            raise RuntimeError(f"Matching L1B granule not found: {l1b_rad_name}")
+
+        obs_links = [u for u in l1b[0].data_links() if "EMIT_L1B_OBS_" in u and u.endswith(".nc")]
+        if not obs_links:
+            raise RuntimeError("Found L1B granule but no OBS link inside it")
+
+        ea.download(obs_links, str(dest))
+
+    return refl_files
 
 
 # ---------------------------------------------------------------------------
