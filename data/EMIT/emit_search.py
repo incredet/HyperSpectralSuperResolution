@@ -266,9 +266,9 @@ def download_reflectance(
 
         parts = rfl_name.replace(".nc", "").split("_")
         ver, ts, orbit, scene = parts[3], parts[4], parts[5], parts[6]
-        l1b_rad_name = f"EMIT_L1B_RAD_{ver}_{ts}_{orbit}_{scene}.nc"
+        l1b_rad_name = f"EMIT_L1B_OBS_{ver}_{ts}_{orbit}_{scene}.nc"
 
-        l1b = ea.search_data(short_name="EMITL1BRAD", version=ver, granule_name=l1b_rad_name, count=1)
+        l1b = ea.search_data(short_name="EMITL1BOBS", version=ver, granule_name=l1b_rad_name, count=1)
         if not l1b:
             raise RuntimeError(f"Matching L1B granule not found: {l1b_rad_name}")
 
