@@ -478,7 +478,6 @@ def fit_tile(
             f"{X_train.shape[1]} S2 bands  →  {n_out} EMIT bands"
         )
 
-    # Single poly expansion → single scaler → single multi-output Ridge
     poly   = PolynomialFeatures(degree=degree, include_bias=False)
     scaler = StandardScaler()
     ridge  = Ridge(alpha=alpha)
@@ -489,19 +488,18 @@ def fit_tile(
 
     matcher = S2ToEMITMatcher(
         band_indices_0based_ = band_indices,
-        wavelengths_nm_      = wavelengths_nm,
-        n_s2_bands_          = s2_cube.shape[0],
-        n_output_bands_      = n_out,
-        scale_               = scale,
-        degree_              = degree,
-        alpha_               = alpha,
-        _poly_               = poly,
-        _scaler_             = scaler,
-        _W_                  = ridge.coef_.astype(np.float64),   # (n_out, P)
-        _b_                  = ridge.intercept_.astype(np.float64),
+        wavelengths_nm_ = wavelengths_nm,
+        n_s2_bands_ = s2_cube.shape[0],
+        n_output_bands_ = n_out,
+        scale_ = scale,
+        degree_ = degree,
+        alpha_ = alpha,
+        _poly_ = poly,
+        _scaler_ = scaler,
+        _W_ = ridge.coef_.astype(np.float64),   # (n_out, P)
+        _b_ = ridge.intercept_.astype(np.float64),
     )
 
-    # ── in-sample R² (training diagnostic only) ──────────────────────────
     Y_pred      = matcher.predict(X_train)
     r2_per_band = np.array([
         r2_score(Y_train[:, i], Y_pred[:, i]) for i in range(n_out)

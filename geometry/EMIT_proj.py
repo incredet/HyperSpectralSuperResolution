@@ -1,3 +1,4 @@
+import sys
 import datetime as dt
 import os
 import glob
@@ -24,10 +25,12 @@ from rasterio.warp import transform_bounds
 import shutil
 from rasterio.enums import Resampling
 from pyproj import Transformer
+from scipy.ndimage import map_coordinates
 
 from rasterio.windows import from_bounds
 from rasterio.windows import Window
 from rasterio.windows import transform as win_transform
+from rasterio.transform import Affine
 
 
 NO_DATA_VALUE = -9999.0
@@ -545,6 +548,10 @@ def nc_to_envi(
     return_info: bool = False,
     save_info_path: str | Path | None = None,
     save_geotiffs: bool = True,
+    apply_dem_correction: bool = False,
+    dem_path: str | None = None,
+    dem_cache_dir: str | Path = "/tmp/dem_cache",
+    correction_diagnostics: bool = False,
 ) -> Path | tuple[Path, dict]:
     """
     Export EMIT L1B_RDN or L2A_RFL to ENVI and write XML sidecars.
@@ -871,6 +878,7 @@ def nc_to_envi(
                 xres=xres,
                 yres=yres,
             )
+            # Compute expected dimensions for metadata (informational only)
             cols = int(round((right - left) / step_x))
             rows = int(round((top - bottom) / step_y))
 
@@ -888,7 +896,10 @@ def nc_to_envi(
             cmd += ["-t_srs", out_crs]
 
             cmd += ["-te", str(left), str(bottom), str(right), str(top)]
-            cmd += ["-ts", str(cols), str(rows)]
+            # Use -tr (target resolution) instead of -ts (target size) to
+            # guarantee exact pixel size and avoid sub-pixel drift from
+            # rounding in the cols/rows computation.
+            cmd += ["-tr", str(step_x), str(step_y)]
             cmd += ["-srcnodata", str(NO_DATA_VALUE), "-dstnodata", str(NO_DATA_VALUE)]
             cmd += ["-multi", "-wo", "NUM_THREADS=ALL_CPUS", "-wm", "4096"]
             cmd += ["-r", "cubic", "-of", "ENVI", src_path, dst_path]
@@ -899,8 +910,8 @@ def nc_to_envi(
                 "bottom": bottom,
                 "right": right,
                 "top": top,
-                "cols": cols,
-                "rows": rows,
+                "cols_expected": cols,
+                "rows_expected": rows,
                 "xres": step_x,
                 "yres": step_y,
                 "anchor_x0": x0,
@@ -916,6 +927,10 @@ def nc_to_envi(
         # Precompute gather indices once (used by all exports)
         gy = glt0[..., 1][valid_glt2]
         gx = glt0[..., 0][valid_glt2]
+
+        # Full GLT arrays (0-based) for bilinear neighbour lookup
+        glt_y_full = glt0[..., 1]   # (H, W) int32, 0-based row in raw
+        glt_x_full = glt0[..., 0]   # (H, W) int32, 0-based col in raw
 
         # ===== DATA export (only if needed) =====
         if need_data:
@@ -933,11 +948,238 @@ def nc_to_envi(
 
             data_gcs = str(temp_dir_p / f"data_gcs_{tag}")
             writer = ht.io.WriteENVI(data_gcs, data_header)
-            
 
             B = data.shape[2]
             chunk = 32  # tune 16/32/64 depending on RAM
 
+            use_dem_corr = False
+            if apply_dem_correction:
+                if obs_file is None:
+                    print("[WARN] apply_dem_correction=True but obs_file not "
+                          "provided (need viewing angles). Skipping.")
+                    info["dem_correction"] = {
+                        "applied": False, "reason": "obs_file not provided",
+                    }
+                else:
+                    print("[INFO] Computing DEM parallax shift field ...")
+                    _geom_dir = str(Path(__file__).resolve().parent)
+                    if _geom_dir not in sys.path:
+                        sys.path.insert(0, _geom_dir)
+                    import dem_utils
+
+                    # a) Scene bounding box (geographic)
+                    scene_left   = float(gt[0])
+                    scene_top    = float(gt[3])
+                    scene_right  = scene_left + W * float(gt[1])
+                    scene_bottom = scene_top  + H * float(gt[5])
+                    scene_bounds = (scene_left, scene_bottom,
+                                    scene_right, scene_top)
+
+                    # b) Download / load DEM
+                    if dem_path is not None:
+                        dem_src = dem_path
+                        info.setdefault("dem_correction", {})["dem_source"] = "user_provided"
+                    else:
+                        print("  [DEM-CORR] Downloading Copernicus GLO-30 ...")
+                        dl = dem_utils.download_copernicus_dem(
+                            bounds_wgs84=scene_bounds,
+                            cache_dir=dem_cache_dir, verbose=True,
+                        )
+                        dem_src = dl["dem_path"]
+                        info.setdefault("dem_correction", {})["dem_download"] = dl
+                        info["dem_correction"]["dem_source"] = "copernicus_glo30"
+
+                    # c) Orthorectify elevation from LOC group
+                    loc_vars = img_nc.groups["location"].variables
+                    raw_elev = np.asarray(loc_vars["elev"][:], dtype=np.float32)
+                    if transpose_raw_yx:
+                        raw_elev = raw_elev.T
+                    emit_elev = np.full((H, W), NO_DATA_VALUE, dtype=np.float32)
+                    emit_elev[valid_glt2] = raw_elev[gy, gx]
+
+                    # d) Orthorectify viewing angles from OBS
+                    obs_nc_h, _ = open_any_nc(obs_file)
+                    try:
+                        obs_cube_raw, obs_bnames = _read_obs_cube_and_names(obs_nc_h)
+                    finally:
+                        obs_nc_h.close()
+
+                    azi_idx, zen_idx = 1, 2          # canonical defaults
+                    for bi, bn in enumerate(obs_bnames):
+                        bn_low = bn.lower()
+                        if "azimuth" in bn_low and "sensor" in bn_low:
+                            azi_idx = bi
+                        elif "zenith" in bn_low and "sensor" in bn_low:
+                            zen_idx = bi
+
+                    raw_azimuth = obs_cube_raw[..., azi_idx]
+                    raw_zenith  = obs_cube_raw[..., zen_idx]
+                    if transpose_raw_yx:
+                        raw_azimuth = raw_azimuth.T
+                        raw_zenith  = raw_zenith.T
+
+                    ortho_azi = np.full((H, W), NO_DATA_VALUE, dtype=np.float32)
+                    ortho_zen = np.full((H, W), NO_DATA_VALUE, dtype=np.float32)
+                    ortho_azi[valid_glt2] = raw_azimuth[gy, gx]
+                    ortho_zen[valid_glt2] = raw_zenith[gy, gx]
+
+                    # e) Resample DEM to the EMIT ortho grid.
+                    #    We need a temporary ENVI written first (the uncorrected
+                    #    one is about to be created – but we only need the grid
+                    #    definition, not the data).  Use gdalwarp against a
+                    #    one-band placeholder derived from the ENVI header.
+                    #    Easier: write a tiny one-band GeoTIFF with the correct
+                    #    grid so dem_utils can match it.
+                    _grid_ref_tif = str(temp_dir_p / f"_grid_ref_{tag}.tif")
+                    _grid_tf = Affine(float(gt[1]), 0.0, float(gt[0]),
+                                      0.0, float(gt[5]), float(gt[3]))
+                    with rasterio.open(
+                        _grid_ref_tif, "w", driver="GTiff",
+                        height=H, width=W, count=1, dtype="float32",
+                        crs="EPSG:4326", transform=_grid_tf,
+                    ) as _dst:
+                        _dst.write(np.zeros((H, W), dtype=np.float32), 1)
+
+                    dem_resampled = str(temp_dir_p / f"dem_on_grid_{tag}.tif")
+                    dem_utils.resample_dem_to_emit_grid(
+                        dem_src, _grid_ref_tif, dem_resampled, verbose=True,
+                    )
+                    dem_arr, _ = dem_utils.load_dem_array(dem_resampled)
+
+                    # f) Compute parallax shift field
+                    corr_valid = (
+                        valid_glt2
+                        & np.isfinite(dem_arr)
+                        & (emit_elev != NO_DATA_VALUE)
+                        & (ortho_zen != NO_DATA_VALUE)
+                        & (ortho_azi != NO_DATA_VALUE)
+                    )
+
+                    dh = np.zeros((H, W), dtype=np.float32)
+                    dh[corr_valid] = dem_arr[corr_valid] - emit_elev[corr_valid]
+
+                    zen_rad = np.zeros((H, W), dtype=np.float32)
+                    azi_rad = np.zeros((H, W), dtype=np.float32)
+                    zen_rad[corr_valid] = np.deg2rad(ortho_zen[corr_valid])
+                    azi_rad[corr_valid] = np.deg2rad(ortho_azi[corr_valid])
+
+                    dground   = dh * np.tan(zen_rad)
+                    dx_meters = dground * np.sin(azi_rad)   # E-W
+                    dy_meters = dground * np.cos(azi_rad)   # N-S
+
+                    # Meters → pixels (geographic degrees, lat-dependent)
+                    deg_px_x = abs(float(gt[1]))
+                    deg_px_y = abs(float(gt[5]))
+                    y_orig   = float(gt[3]) + 0.5 * float(gt[5])
+                    row_lats = y_orig + np.arange(H, dtype=np.float64) * float(gt[5])
+                    cos_lat  = np.clip(
+                        np.cos(np.deg2rad(row_lats)).astype(np.float32),
+                        0.01, None,
+                    )
+                    m_per_deg_x = (111_320.0 * cos_lat)[:, np.newaxis]
+                    m_per_deg_y = 110_540.0
+
+                    dx_pixels = dx_meters / (m_per_deg_x * deg_px_x)
+                    dy_pixels = dy_meters / (m_per_deg_y * deg_px_y)
+
+                    # Stats
+                    v = corr_valid & np.isfinite(dh)
+                    corr_stats = {
+                        "mean_dh_m":  float(np.mean(dh[v]))  if np.any(v) else 0.0,
+                        "std_dh_m":   float(np.std(dh[v]))   if np.any(v) else 0.0,
+                        "max_abs_dh_m": float(np.max(np.abs(dh[v]))) if np.any(v) else 0.0,
+                        "mean_dx_px": float(np.mean(dx_pixels[v])) if np.any(v) else 0.0,
+                        "mean_dy_px": float(np.mean(dy_pixels[v])) if np.any(v) else 0.0,
+                        "max_abs_dx_px": float(np.max(np.abs(dx_pixels[v]))) if np.any(v) else 0.0,
+                        "max_abs_dy_px": float(np.max(np.abs(dy_pixels[v]))) if np.any(v) else 0.0,
+                        "valid_pixels": int(np.count_nonzero(v)),
+                    }
+                    print(f"  [DEM-CORR] dh : mean={corr_stats['mean_dh_m']:.2f} m  "
+                          f"max_abs={corr_stats['max_abs_dh_m']:.2f} m")
+                    print(f"  [DEM-CORR] dx : mean={corr_stats['mean_dx_px']:.3f} px  "
+                          f"max_abs={corr_stats['max_abs_dx_px']:.3f} px")
+                    print(f"  [DEM-CORR] dy : mean={corr_stats['mean_dy_px']:.3f} px  "
+                          f"max_abs={corr_stats['max_abs_dy_px']:.3f} px")
+
+                    # Optional diagnostics
+                    diag_info = {}
+                    if correction_diagnostics:
+                        _ddir = out_dir_p / "dem_diagnostics"
+                        _ddir.mkdir(parents=True, exist_ok=True)
+                        _dtf = _grid_tf
+                        for _nm, _ar in [("dh_meters", dh),
+                                         ("dx_pixels", dx_pixels),
+                                         ("dy_pixels", dy_pixels)]:
+                            _p = _ddir / f"dem_corr_{_nm}.tif"
+                            with rasterio.open(
+                                _p, "w", driver="GTiff", height=H, width=W,
+                                count=1, dtype="float32", crs="EPSG:4326",
+                                transform=_dtf, compress="DEFLATE",
+                            ) as _d:
+                                _d.write(_ar, 1)
+                            diag_info[_nm] = str(_p)
+
+                    # --- Precompute bilinear-scatter lookup tables ---
+                    # For each output pixel (r, c) the corrected source in
+                    # the ortho grid is (r - dy, c - dx).  We look up the
+                    # four nearest GLT entries to sample raw data directly.
+                    row_idx = np.arange(H, dtype=np.float32)[:, None]
+                    col_idx = np.arange(W, dtype=np.float32)[None, :]
+
+                    src_r = row_idx - dy_pixels          # (H, W)
+                    src_c = col_idx - dx_pixels          # (H, W)
+
+                    r0 = np.clip(np.floor(src_r).astype(np.int32), 0, H - 1)
+                    c0 = np.clip(np.floor(src_c).astype(np.int32), 0, W - 1)
+                    r1 = np.clip(r0 + 1, 0, H - 1)
+                    c1 = np.clip(c0 + 1, 0, W - 1)
+
+                    fr = np.clip(src_r - r0, 0.0, 1.0).astype(np.float32)
+                    fc = np.clip(src_c - c0, 0.0, 1.0).astype(np.float32)
+
+                    # Validity flags for each of the 4 neighbours
+                    v00 = valid_glt2[r0, c0]
+                    v01 = valid_glt2[r0, c1]
+                    v10 = valid_glt2[r1, c0]
+                    v11 = valid_glt2[r1, c1]
+
+                    # Bilinear weights (zero where neighbour is invalid)
+                    w00 = ((1 - fr) * (1 - fc) * v00).astype(np.float32)
+                    w01 = ((1 - fr) * fc       * v01).astype(np.float32)
+                    w10 = (fr       * (1 - fc) * v10).astype(np.float32)
+                    w11 = (fr       * fc       * v11).astype(np.float32)
+                    wsum = w00 + w01 + w10 + w11
+                    any_valid = wsum > 1e-8
+
+                    # Raw-sensor coordinates for each of the 4 neighbours
+                    gy00 = glt_y_full[r0, c0]; gx00 = glt_x_full[r0, c0]
+                    gy01 = glt_y_full[r0, c1]; gx01 = glt_x_full[r0, c1]
+                    gy10 = glt_y_full[r1, c0]; gx10 = glt_x_full[r1, c0]
+                    gy11 = glt_y_full[r1, c1]; gx11 = glt_x_full[r1, c1]
+
+                    # Normalize weights
+                    w00_n = np.where(any_valid, w00 / wsum, 0.0).astype(np.float32)
+                    w01_n = np.where(any_valid, w01 / wsum, 0.0).astype(np.float32)
+                    w10_n = np.where(any_valid, w10 / wsum, 0.0).astype(np.float32)
+                    w11_n = np.where(any_valid, w11 / wsum, 0.0).astype(np.float32)
+
+                    use_dem_corr = True
+                    info["dem_correction"] = {
+                        **(info.get("dem_correction", {})),
+                        "applied": True,
+                        "correction_stats": corr_stats,
+                        "diagnostics": diag_info,
+                        "scene_bounds_wgs84": list(scene_bounds),
+                    }
+
+                    # Free arrays we no longer need
+                    del (dem_arr, emit_elev, ortho_azi, ortho_zen,
+                         obs_cube_raw, raw_azimuth, raw_zenith, raw_elev,
+                         dh, dground, dx_meters, dy_meters, zen_rad, azi_rad,
+                         dx_pixels, dy_pixels, src_r, src_c, fr, fc,
+                         v00, v01, v10, v11, wsum)
+
+            # --- Scatter loop (with or without DEM correction) ---
             for b0 in range(0, B, chunk):
                 b1 = min(b0 + chunk, B)
 
@@ -946,15 +1188,39 @@ def nc_to_envi(
                 if transpose_raw_yx:
                     raw_blk = np.transpose(raw_blk, (1, 0, 2))
 
+                if use_dem_corr:
+                    # Bilinear scatter: for each output pixel, blend the
+                    # raw values at the 4 GLT-neighbour positions of the
+                    # corrected source coordinate.  This goes directly
+                    # from raw sensor data to the corrected ortho grid in
+                    # one step — no intermediate nearest-neighbour image.
+                    out_blk = np.full((H, W, b1 - b0), NO_DATA_VALUE,
+                                     dtype=np.float32)
+                    s00 = raw_blk[gy00, gx00, :]   # (H, W, nb)
+                    s01 = raw_blk[gy01, gx01, :]
+                    s10 = raw_blk[gy10, gx10, :]
+                    s11 = raw_blk[gy11, gx11, :]
 
-                # ortho block: (H, W, nb)
-                out_blk = np.full((H, W, b1 - b0), NO_DATA_VALUE, dtype=np.float32)
-                out_blk[valid_glt2, :] = raw_blk[gy, gx, :]
-
+                    blended = (s00 * w00_n[..., None]
+                             + s01 * w01_n[..., None]
+                             + s10 * w10_n[..., None]
+                             + s11 * w11_n[..., None])
+                    out_blk[any_valid] = blended[any_valid]
+                else:
+                    # Original nearest-neighbour GLT scatter
+                    out_blk = np.full((H, W, b1 - b0), NO_DATA_VALUE,
+                                     dtype=np.float32)
+                    out_blk[valid_glt2, :] = raw_blk[gy, gx, :]
 
                 # write each band (because WriteENVI is band-oriented)
                 for i, band_num in enumerate(range(b0, b1)):
                     writer.write_band(out_blk[:, :, i], band_num)
+
+            # Free bilinear lookup tables if they were created
+            if use_dem_corr:
+                del (gy00, gx00, gy01, gx01, gy10, gx10, gy11, gx11,
+                     w00, w01, w10, w11, w00_n, w01_n, w10_n, w11_n,
+                     any_valid, r0, c0, r1, c1)
 
             # ---- Diagnostic quicklook (single band) for alignment checks ----
             # Pick a stable band index (e.g., middle band) so it always exists
@@ -1281,12 +1547,18 @@ def convert_emit_nc_to_envi(
     return_info: bool = False,
     save_info_path: str | Path | None = None,
     save_geotiffs: bool = True,
+    apply_dem_correction: bool = False,
+    dem_path: str | None = None,
+    dem_cache_dir: str | Path = "/tmp/dem_cache",
+    correction_diagnostics: bool = False,
 ) -> Path | tuple[Path, dict]:
     """
     Convert EMIT netCDF to ENVI using nc_to_envi and return the main ENVI cube path (.bin).
 
     - Uses nc_to_envi's deterministic naming + skip logic (overwrite=False by default)
     - Adds a per-input tag to avoid collisions across tiles
+    - If apply_dem_correction=True, applies terrain parallax correction using
+      Copernicus GLO-30 DEM (requires emit_obs_nc for viewing angles).
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1314,6 +1586,11 @@ def convert_emit_nc_to_envi(
         return_info=return_info,
         save_info_path=save_info_path,
         save_geotiffs=save_geotiffs,
+
+        apply_dem_correction=apply_dem_correction,
+        dem_path=dem_path,
+        dem_cache_dir=dem_cache_dir,
+        correction_diagnostics=correction_diagnostics,
     )
 
     out_bin, info = result if return_info else (Path(result), None)

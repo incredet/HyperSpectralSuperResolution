@@ -41,7 +41,7 @@ def coregister_s2_granule_to_emit_granule(
     out_s2_tif: str,
     s2_map,
     emit_wl_nm,
-    prefer=("B08", "B04"),
+    prefer=("B03", "B08", "B04"),
     window_size=(512, 512),   
     grid_res=600,             
     max_points=500,           
@@ -56,7 +56,7 @@ def coregister_s2_granule_to_emit_granule(
     cliptoextent=True
 ):
 
-    target_nm = {"B08": 842.0, "B04": 665.0}
+    target_nm = {"B03": 560.0, "B08": 842.0, "B04": 665.0}
 
     keys = list(target_nm.keys())
     targets = [target_nm[k] for k in keys]
@@ -66,8 +66,9 @@ def coregister_s2_granule_to_emit_granule(
         targets,
         one_based=True,
         return_picked=False,
-        verbose=False, 
+        verbose=True, 
     )
+
 
     emit_match = dict(zip(keys, idxs_1b))
 
