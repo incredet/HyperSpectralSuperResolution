@@ -234,17 +234,14 @@ def geoid_undulation_grid(
     -------
     (height, width) float32 array of geoid undulation values in metres.
     """
-    from pyproj import CRS, Transformer
+    from pyproj import Transformer
 
-    # Compound CRS: WGS-84 lon/lat + EGM2008 orthometric height
-    crs_geog_ortho = CRS.compound_crs(
-        name="WGS84 + EGM2008",
-        components=[CRS.from_epsg(4326), CRS.from_epsg(3855)],
+    # WGS-84 + EGM2008 orthometric height → WGS-84 3-D ellipsoidal
+    t = Transformer.from_crs(
+        "EPSG:4326+3855",   # compound: WGS-84 horizontal + EGM2008 vertical
+        "EPSG:4979",         # WGS-84 3-D (ellipsoidal height)
+        always_xy=True,
     )
-    # Target: plain WGS-84 3-D (ellipsoidal height)
-    crs_geog_ellip = CRS.from_epsg(4979)
-
-    t = Transformer.from_crs(crs_geog_ortho, crs_geog_ellip, always_xy=True)
 
     # Pixel-centre coordinates
     cols = np.arange(width, dtype=np.float64)
