@@ -1042,7 +1042,9 @@ def nc_to_envi(
                     dem_utils.resample_dem_to_emit_grid(
                         dem_src, _grid_ref_tif, dem_resampled, verbose=True,
                     )
-                    dem_arr, _ = dem_utils.load_dem_array(dem_resampled)
+                    dem_arr, _ = dem_utils.load_dem_array(
+                        dem_resampled, apply_geoid=True, verbose=True,
+                    )
 
                     # f) Compute parallax shift field
                     corr_valid = (
@@ -1119,12 +1121,17 @@ def nc_to_envi(
 
                     # --- Precompute bilinear-scatter lookup tables ---
                     # For each output pixel (r, c) the corrected source in
-                    # the ortho grid is (r - dy, c - dx).  We look up the
-                    # four nearest GLT entries to sample raw data directly.
+                    # the ortho grid is (r + dy, c - dx).
+                    # dy_pixels is positive-northward (from cos(azimuth)),
+                    # but row index increases southward, so we ADD dy to
+                    # move toward the source (toward the sensor when
+                    # terrain is higher than assumed).
+                    # dx_pixels is positive-eastward (from sin(azimuth)),
+                    # same direction as column index, so we SUBTRACT dx.
                     row_idx = np.arange(H, dtype=np.float32)[:, None]
                     col_idx = np.arange(W, dtype=np.float32)[None, :]
 
-                    src_r = row_idx - dy_pixels          # (H, W)
+                    src_r = row_idx + dy_pixels          # (H, W)
                     src_c = col_idx - dx_pixels          # (H, W)
 
                     r0 = np.clip(np.floor(src_r).astype(np.int32), 0, H - 1)
@@ -1154,6 +1161,45 @@ def nc_to_envi(
                     gy01 = glt_y_full[r0, c1]; gx01 = glt_x_full[r0, c1]
                     gy10 = glt_y_full[r1, c0]; gx10 = glt_x_full[r1, c0]
                     gy11 = glt_y_full[r1, c1]; gx11 = glt_x_full[r1, c1]
+
+                    # --- GLT contiguity check ---
+                    # If any pair of the 4 neighbours maps to raw-sensor
+                    # locations that are far apart (>2 pixels in either
+                    # row or column), blending them is physically wrong
+                    # (e.g. swath overlap edges). For those output pixels,
+                    # fall back to nearest-neighbour by zeroing the three
+                    # non-nearest weights.
+                    _GLT_CONTIG_THRESH = 2  # max allowed raw-coord gap
+                    _all_gy = np.stack([gy00, gy01, gy10, gy11], axis=-1)
+                    _all_gx = np.stack([gx00, gx01, gx10, gx11], axis=-1)
+                    _gy_span = np.ptp(_all_gy, axis=-1)  # max - min
+                    _gx_span = np.ptp(_all_gx, axis=-1)
+                    _not_contig = (
+                        (_gy_span > _GLT_CONTIG_THRESH)
+                        | (_gx_span > _GLT_CONTIG_THRESH)
+                    )
+                    if np.any(_not_contig):
+                        n_nc = int(np.count_nonzero(_not_contig))
+                        print(f"  [DEM-CORR] {n_nc} pixels have non-contiguous "
+                              f"GLT neighbours → nearest-neighbour fallback")
+                        # Pick the nearest of the 4 based on fractional position
+                        _nearest_is_r1 = fr > 0.5
+                        _nearest_is_c1 = fc > 0.5
+                        # Zero all weights for non-contiguous pixels, then
+                        # set only the nearest-neighbour weight to 1
+                        for _w in (w00, w01, w10, w11):
+                            _w[_not_contig] = 0.0
+                        nn00 = _not_contig & ~_nearest_is_r1 & ~_nearest_is_c1
+                        nn01 = _not_contig & ~_nearest_is_r1 &  _nearest_is_c1
+                        nn10 = _not_contig &  _nearest_is_r1 & ~_nearest_is_c1
+                        nn11 = _not_contig &  _nearest_is_r1 &  _nearest_is_c1
+                        w00[nn00] = 1.0
+                        w01[nn01] = 1.0
+                        w10[nn10] = 1.0
+                        w11[nn11] = 1.0
+                        wsum = w00 + w01 + w10 + w11
+                        any_valid = wsum > 1e-8
+                    del _all_gy, _all_gx, _gy_span, _gx_span, _not_contig
 
                     # Normalize weights
                     w00_n = np.where(any_valid, w00 / wsum, 0.0).astype(np.float32)

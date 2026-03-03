@@ -208,12 +208,82 @@ def resample_dem_to_emit_grid(
 
 
 # ---------------------------------------------------------------------------
+# Geoid undulation (EGM2008)
+# ---------------------------------------------------------------------------
+
+def geoid_undulation_grid(
+    transform: Affine,
+    height: int,
+    width: int,
+    *,
+    verbose: bool = True,
+) -> np.ndarray:
+    """Compute EGM2008 geoid undulation *N* for each pixel centre.
+
+    Uses pyproj to transform from orthometric (EGM2008) to ellipsoidal
+    (WGS-84) heights.  The undulation is defined as  h_ellip = H_ortho + N,
+    so adding N to a Copernicus orthometric DEM converts it to the
+    ellipsoidal vertical datum used by EMIT ``location/elev``.
+
+    Parameters
+    ----------
+    transform : rasterio Affine for the grid (WGS-84 geographic).
+    height, width : grid dimensions.
+
+    Returns
+    -------
+    (height, width) float32 array of geoid undulation values in metres.
+    """
+    from pyproj import CRS, Transformer
+
+    # Compound CRS: WGS-84 lon/lat + EGM2008 orthometric height
+    crs_geog_ortho = CRS.compound_crs(
+        name="WGS84 + EGM2008",
+        components=[CRS.from_epsg(4326), CRS.from_epsg(3855)],
+    )
+    # Target: plain WGS-84 3-D (ellipsoidal height)
+    crs_geog_ellip = CRS.from_epsg(4979)
+
+    t = Transformer.from_crs(crs_geog_ortho, crs_geog_ellip, always_xy=True)
+
+    # Pixel-centre coordinates
+    cols = np.arange(width, dtype=np.float64)
+    rows = np.arange(height, dtype=np.float64)
+    cc, rr = np.meshgrid(cols, rows)
+
+    lons = transform.c + (cc + 0.5) * transform.a
+    lats = transform.f + (rr + 0.5) * transform.e
+
+    # Transform with H_ortho = 0 → output z ≈ geoid undulation N
+    _, _, N = t.transform(lons, lats, np.zeros_like(lons))
+
+    if verbose:
+        print(f"  [DEM] geoid undulation: "
+              f"min={np.nanmin(N):.2f} m  max={np.nanmax(N):.2f} m  "
+              f"mean={np.nanmean(N):.2f} m")
+
+    return N.astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
 # Load DEM array
 # ---------------------------------------------------------------------------
 
-def load_dem_array(dem_path: str) -> tuple[np.ndarray, dict]:
+def load_dem_array(
+    dem_path: str,
+    *,
+    apply_geoid: bool = False,
+    verbose: bool = True,
+) -> tuple[np.ndarray, dict]:
     """
     Read a (resampled) DEM into memory as a float32 (H, W) array.
+
+    Parameters
+    ----------
+    dem_path     : Path to the DEM GeoTIFF.
+    apply_geoid  : If True, add EGM2008 geoid undulation to convert
+                   Copernicus orthometric heights to WGS-84 ellipsoidal
+                   heights (matching EMIT ``location/elev``).
 
     Returns
     -------
@@ -224,18 +294,28 @@ def load_dem_array(dem_path: str) -> tuple[np.ndarray, dict]:
     with rasterio.open(dem_path) as ds:
         arr = ds.read(1).astype(np.float32)
         nd = ds.nodata
+        tf = ds.transform
         meta = {
             "shape": (ds.height, ds.width),
-            "transform": ds.transform,
+            "transform": tf,
             "bounds": ds.bounds,
             "nodata": nd,
             "crs": ds.crs.to_string() if ds.crs else None,
         }
 
-    # Copernicus GLO-30 uses 0 for nodata / ocean
+    # Mark rasterio-declared nodata as NaN
     if nd is not None:
         arr[arr == nd] = np.nan
-    # Also treat 0 as nodata for Copernicus convention
-    arr[arr == 0.0] = np.nan
+    # NOTE: we intentionally do NOT treat 0.0 as nodata — sea-level
+    # terrain has genuine elevation ≈ 0 m (e.g. coastal areas, Dead Sea
+    # shore).  Copernicus GLO-30 uses its declared nodata tag for ocean,
+    # not the value 0.
+
+    if apply_geoid:
+        N = geoid_undulation_grid(
+            tf, meta["shape"][0], meta["shape"][1], verbose=verbose,
+        )
+        arr += N  # orthometric → ellipsoidal
+        meta["geoid_applied"] = True
 
     return arr, meta
