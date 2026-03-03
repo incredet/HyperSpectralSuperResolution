@@ -56,7 +56,6 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from data.EMIT.emit_utils import closest_bands
-from scipy.ndimage import zoom
 
 
 # ---------------------------------------------------------------------------
@@ -426,18 +425,24 @@ def fit_tile(
 ) -> tuple[S2ToEMITMatcher, dict]:
     """Fit 32 polynomial Ridge models from a single aligned tile pair.
 
-    Training is done at the **native S2 10 m resolution**.  Each EMIT 60 m
-    pixel is nearest-neighbour-repeated into a ``scale × scale`` block so
-    that every 10 m S2 pixel is paired with its parent EMIT value.  This
-    many-to-one pairing exposes the model to the full per-pixel spectral
-    variability present at 10 m, preventing the extrapolation artefacts that
-    occur when training on 60 m block averages and inferring at 10 m.
+    Training is done at the **EMIT 60 m resolution**.  S2 is block-averaged
+    down to 60 m using :func:`align_s2_to_emit_grid`, producing a true 1:1
+    pixel pairing between sensors at the same spatial scale.
+
+    This avoids the mixed-label problem that arises when upsampling EMIT
+    to 10 m: sub-pixel features like roads that EMIT cannot resolve would
+    produce blurred/haloed predictions because the model is trained against
+    a spatially mixed EMIT target.
 
     With 10 S2 features and ``degree=2``:
     * 10 linear terms  (B2, B3, …, B12)
     * 10 squared terms (B2², …, B12²)
     * 45 cross terms   (B2·B3, …)
     = **65 polynomial features** per model.
+
+    At inference the model is applied to S2 at its native 10 m resolution.
+    The learned spectral mapping is scale-invariant (it models sensor
+    spectral response, not spatial structure).
 
     Args:
         s2_tile_path:       Path to S2 GeoTIFF tile (10 bands, 10 m).
@@ -455,18 +460,17 @@ def fit_tile(
     s2_cube,  s2_prof,   s2_nodata   = _read_raster(s2_tile_path)
     emit_b32, emit_prof, emit_nodata = _read_raster(emit_b32_tile_path)
 
-    # Upsample EMIT to 10 m by repeating each pixel into a scale×scale block.
-    # This pairs every native 10 m S2 pixel with its parent 60 m EMIT value.
-    emit_at_s2 = zoom(emit_b32, (1, scale, scale), order=1)
-
+    # Block-average S2 from 10 m to 60 m — true 1:1 pairing with EMIT.
+    s2_at_emit = align_s2_to_emit_grid(s2_cube, scale)  # (10, H_e, W_e)
 
     band_indices, wavelengths_nm = _read_emit_band_meta(emit_b32_tile_path)
 
-    valid = _build_valid_mask(s2_cube, emit_at_s2, s2_nodata, emit_nodata)
+    valid = _build_valid_mask(s2_at_emit, emit_b32, s2_nodata, emit_nodata)
 
-    B_s2, H, W = s2_cube.shape
-    X_all = s2_cube.reshape(B_s2, H * W).T                # (N, 10)
-    Y_all = emit_at_s2.reshape(emit_at_s2.shape[0], H * W).T  # (N, 32)
+    B_s2   = s2_at_emit.shape[0]
+    H_e, W_e = emit_b32.shape[1], emit_b32.shape[2]
+    X_all = s2_at_emit.reshape(B_s2, H_e * W_e).T              # (N, 10)
+    Y_all = emit_b32.reshape(emit_b32.shape[0], H_e * W_e).T   # (N, 32)
 
     X_train = X_all[valid]
     Y_train = Y_all[valid]
@@ -536,15 +540,14 @@ def fit_tiles_batch(
     alpha: float = 1.0,
     verbose: bool = True,
 ) -> tuple[S2ToEMITMatcher, dict]:
-    """Fit 32 models by pooling 10 m pixels from multiple tile pairs.
+    """Fit 32 models by pooling 60 m pixels from multiple tile pairs.
 
     Preferred over per-tile fitting when many tiles are available: pooling
     captures a wider range of scene conditions and surface types, which makes
     the polynomial fit more robust and less prone to overfitting.
 
-    Training uses native 10 m S2 pixels paired many-to-one with their
-    parent 60 m EMIT value (nearest-neighbour repeat).  See :func:`fit_tile`
-    for rationale.
+    Training uses S2 block-averaged to 60 m paired 1:1 with EMIT at 60 m.
+    See :func:`fit_tile` for rationale (avoids mixed-label haloing).
 
     Band metadata (indices, wavelengths) is read from the first tile; all
     tiles in the batch are assumed to share the same EMIT-b32 band selection.
@@ -566,18 +569,19 @@ def fit_tiles_batch(
         s2_cube,  s2_prof,   s2_nodata   = _read_raster(s2_path)
         emit_b32, emit_prof, emit_nodata = _read_raster(emit_path)
 
-        # Upsample EMIT to 10 m (nearest-neighbour repeat)
-        emit_at_s2 = zoom(emit_b32, (1, scale, scale), order=1)
+        # Block-average S2 from 10 m to 60 m — true 1:1 pairing with EMIT.
+        s2_at_emit = align_s2_to_emit_grid(s2_cube, scale)  # (10, H_e, W_e)
 
         if band_indices is None:
             band_indices, wavelengths_nm = _read_emit_band_meta(emit_path)
-            n_s2_bands = s2_cube.shape[0]
+            n_s2_bands = s2_at_emit.shape[0]
 
-        valid = _build_valid_mask(s2_cube, emit_at_s2, s2_nodata, emit_nodata)
+        valid = _build_valid_mask(s2_at_emit, emit_b32, s2_nodata, emit_nodata)
 
-        B_s2, H, W = s2_cube.shape
-        X = s2_cube.reshape(B_s2, H * W).T
-        Y = emit_at_s2.reshape(emit_at_s2.shape[0], H * W).T
+        B_s2   = s2_at_emit.shape[0]
+        H_e, W_e = emit_b32.shape[1], emit_b32.shape[2]
+        X = s2_at_emit.reshape(B_s2, H_e * W_e).T
+        Y = emit_b32.reshape(emit_b32.shape[0], H_e * W_e).T
 
         all_X.append(X[valid])
         all_Y.append(Y[valid])
