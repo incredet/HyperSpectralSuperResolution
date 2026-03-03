@@ -243,8 +243,76 @@ def _filter_rfl_links(links: Iterable[str], desired_assets: List[str] = ['_RFL_'
 
 from pathlib import Path
 from typing import List
+import re
 
 import earthaccess as ea
+
+
+def _rfl_scene_key(pick) -> Optional[str]:
+    """Extract the scene key (timestamp_orbit_scene) from an L2A RFL granule.
+
+    EMIT filenames follow the pattern::
+
+        EMIT_L2A_RFL_001_20220828T205930_2224013_009.nc
+
+    The scene key is ``20220828T205930_2224013_009`` — shared with the
+    corresponding L1B OBS file ``EMIT_L1B_OBS_001_20220828T205930_2224013_009.nc``.
+    """
+    pattern = re.compile(
+        r"EMIT_L2A_(?:RFL|RFLUNCERT|MASK)_\d{3}_"
+        r"(\d{8}T\d{6}_\d{7}_\d{3})"
+    )
+    for url in pick.data_links():
+        m = pattern.search(url.split("/")[-1].split("?")[0])
+        if m:
+            return m.group(1)
+    return None
+
+
+def find_obs_for_rfl(
+    rfl_pick,
+    *,
+    short_name: str = "EMITL1BRAD",
+    version: str = "001",
+):
+    """Find the L1B granule whose OBS file corresponds to an L2A RFL granule.
+
+    Strategy: derive the scene key from the RFL filename, then search CMR
+    for the matching L1B RAD granule by ``granule_name`` wildcard.  This is
+    a single CMR query — no need to search by bbox/temporal and filter.
+
+    Returns the earthaccess granule object (has ``.data_links()``), or
+    ``None`` if no matching L1B granule is found.
+    """
+    scene_key = _rfl_scene_key(rfl_pick)
+    if scene_key is None:
+        print("[WARN] Could not parse scene key from RFL granule links.")
+        return None
+
+    # CMR supports wildcards in granule_name
+    pattern = f"EMIT_L1B_RAD_*_{scene_key}*"
+    res = ea.search_data(
+        short_name=short_name,
+        version=version,
+        granule_name=pattern,
+        count=5,
+    )
+    if not res:
+        print(f"[WARN] No L1B granule found for scene key {scene_key}")
+        return None
+
+    return res[0]
+
+
+def _obs_links_from_l1b(l1b_granule) -> List[str]:
+    """Extract OBS .nc URLs from an L1B RAD granule's data links."""
+    links = []
+    for url in l1b_granule.data_links():
+        name = Path(url.split("?", 1)[0]).name
+        if "EMIT_L1B_OBS_" in name and name.endswith(".nc"):
+            links.append(url)
+    return links
+
 
 def download_reflectance(
     pick,
@@ -252,26 +320,60 @@ def download_reflectance(
     assets: List[str] = ["_RFL_", "_MASK_"],
     *,
     download_obs: bool = False,
+    obs_dest_dir: Optional[Path | str] = None,
 ) -> List[Path]:
+    """Download EMIT L2A Reflectance assets and, optionally, the matching L1B OBS.
+
+    Args:
+        pick:          earthaccess granule object for the L2A RFL product.
+        dest_dir:      Directory for reflectance / mask downloads.
+        assets:        Substrings to filter asset links (default: RFL + MASK).
+        download_obs:  If *True*, also find and download the corresponding
+                       L1B OBS .nc file (viewing/solar angles, path length,
+                       slope, etc.).  Requires the scene key to be parseable
+                       from the RFL filename.
+        obs_dest_dir:  Where to save the OBS file.  Defaults to *dest_dir*.
+
+    Returns:
+        List of downloaded file paths.  If *download_obs* is True and the
+        OBS file was found, it is appended at the end of the list.
+    """
     dest = Path(dest_dir)
     dest.mkdir(parents=True, exist_ok=True)
 
     links = _filter_rfl_links(pick.data_links(), desired_assets=assets)
     if not links:
         raise RuntimeError("No EMIT L2A Reflectance .nc links for the selected granule")
-    refl_files = [Path(p) for p in ea.download(links, str(dest))]
-    return refl_files
+    downloaded = [Path(p) for p in ea.download(links, str(dest))]
+
+    if download_obs:
+        obs_dir = Path(obs_dest_dir) if obs_dest_dir else dest
+        obs_dir.mkdir(parents=True, exist_ok=True)
+
+        l1b = find_obs_for_rfl(pick)
+        if l1b is not None:
+            obs_links = _obs_links_from_l1b(l1b)
+            if obs_links:
+                obs_files = [Path(p) for p in ea.download(obs_links, str(obs_dir))]
+                downloaded.extend(obs_files)
+                print(f"Downloaded {len(obs_files)} OBS file(s) alongside reflectance.")
+            else:
+                print("[WARN] L1B granule found but no OBS links in it.")
+        else:
+            print("[WARN] Could not find matching L1B OBS granule. "
+                  "DEM correction will not have viewing angles.")
+
+    return downloaded
+
 
 def download_obs_from_l1b_granules(l1b_granules, dest_dir: Path | str):
+    """Download OBS files from pre-fetched L1B granule objects (legacy helper)."""
     dest = Path(dest_dir)
     dest.mkdir(parents=True, exist_ok=True)
 
     obs_links = []
     for g in l1b_granules:
-        for u in g.data_links():
-            name = Path(u.split("?", 1)[0]).name
-            if "EMIT_L1B_OBS_" in name and name.endswith(".nc"):
-                obs_links.append(u)
+        obs_links.extend(_obs_links_from_l1b(g))
 
     if not obs_links:
         raise RuntimeError("No OBS links found in L1B search results")

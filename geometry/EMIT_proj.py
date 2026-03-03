@@ -967,20 +967,18 @@ def nc_to_envi(
                         sys.path.insert(0, _geom_dir)
                     import dem_utils
 
-                    # a) Scene bounding box (geographic)
-                    scene_left   = float(gt[0])
-                    scene_top    = float(gt[3])
-                    scene_right  = scene_left + W * float(gt[1])
+                    scene_left = float(gt[0])
+                    scene_top = float(gt[3])
+                    scene_right = scene_left + W * float(gt[1])
                     scene_bottom = scene_top  + H * float(gt[5])
                     scene_bounds = (scene_left, scene_bottom,
                                     scene_right, scene_top)
 
-                    # b) Download / load DEM
                     if dem_path is not None:
                         dem_src = dem_path
                         info.setdefault("dem_correction", {})["dem_source"] = "user_provided"
                     else:
-                        print("  [DEM-CORR] Downloading Copernicus GLO-30 ...")
+                        print("[DEM-CORR] Downloading Copernicus GLO-30 ...")
                         dl = dem_utils.download_copernicus_dem(
                             bounds_wgs84=scene_bounds,
                             cache_dir=dem_cache_dir, verbose=True,
@@ -1004,7 +1002,7 @@ def nc_to_envi(
                     finally:
                         obs_nc_h.close()
 
-                    azi_idx, zen_idx = 1, 2          # canonical defaults
+                    azi_idx, zen_idx = 1, 2  
                     for bi, bn in enumerate(obs_bnames):
                         bn_low = bn.lower()
                         if "azimuth" in bn_low and "sensor" in bn_low:

@@ -26,15 +26,6 @@ _COP30_BASE = (
 
 
 def _cop30_tile_url(lat_int: int, lon_int: int) -> str:
-    """
-    Build the HTTPS URL for a single Copernicus GLO-30 COG tile.
-
-    Tile naming convention (1° × 1° tiles):
-      Copernicus_DSM_COG_10_{N|S}{lat:02d}_00_{E|W}{lon:03d}_00_DEM.tif
-
-    ``lat_int`` / ``lon_int`` are the **south-west** corner of the tile in
-    integer degrees (same convention Copernicus uses for the folder name).
-    """
     ns = "N" if lat_int >= 0 else "S"
     ew = "E" if lon_int >= 0 else "W"
     lat_s = f"{abs(lat_int):02d}"

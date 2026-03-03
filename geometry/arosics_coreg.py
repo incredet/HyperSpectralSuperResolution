@@ -48,7 +48,7 @@ def coregister_s2_granule_to_emit_granule(
     max_shift=50,
     min_reliability=60,  
     tieP_filter_level=3,
-    nodata_emit=65535,
+    nodata_emit=-9999,
     nodata_s2=None,
     out_gsd=[10, 10],
     resamp_calc="cubic",
