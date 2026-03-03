@@ -211,6 +211,63 @@ def resample_dem_to_emit_grid(
 # Geoid undulation (EGM2008)
 # ---------------------------------------------------------------------------
 
+def _ensure_proj_geoid_grid(verbose: bool = True) -> None:
+    """Download the EGM2008 geoid grid if not already available.
+
+    Works in Google Colab and other environments where pyproj is installed
+    without the optional grid files.  Tries three strategies:
+
+    1. Enable PROJ network access (CDN on-the-fly fetch, pyproj ≥ 3.0).
+    2. Use ``pyproj.sync.download_grids`` (pyproj ≥ 3.1).
+    3. Download the grid manually via HTTPS into PROJ's data directory.
+    """
+    import pyproj
+
+    # --- Strategy 1: enable PROJ network so grids are fetched on demand ---
+    try:
+        from pyproj.network import set_network_enabled, is_network_enabled
+        if not is_network_enabled():
+            set_network_enabled(True)
+            if verbose:
+                print("  [DEM] enabled PROJ network grid access")
+    except ImportError:
+        pass  # pyproj < 3.0
+
+    # Quick test: if the grid is already working, return early
+    from pyproj import Transformer
+    _t = Transformer.from_crs(
+        "EPSG:4326+3855", "EPSG:4979", always_xy=True,
+    )
+    _, _, _z = _t.transform(-100.0, 40.0, 0.0)
+    if abs(_z) > 0.1:
+        return  # grid is available
+
+    # --- Strategy 2: pyproj.sync download ---
+    try:
+        from pyproj.sync import download_grids
+        if verbose:
+            print("  [DEM] downloading EGM2008 geoid grid via pyproj.sync ...")
+        download_grids(grids=["us_nga_egm08_25.tif"], verbose=verbose)
+        return
+    except (ImportError, Exception) as exc:
+        if verbose:
+            print(f"  [DEM] pyproj.sync download failed: {exc}")
+
+    # --- Strategy 3: manual download ---
+    import urllib.request
+    data_dir = Path(pyproj.datadir.get_data_dir())
+    grid_file = data_dir / "us_nga_egm08_25.tif"
+    if not grid_file.exists():
+        url = (
+            "https://cdn.proj.org/us_nga_egm08_25.tif"
+        )
+        if verbose:
+            print(f"  [DEM] downloading {url} → {grid_file} ...")
+        urllib.request.urlretrieve(url, str(grid_file))
+        if verbose:
+            print(f"  [DEM] downloaded ({grid_file.stat().st_size / 1e6:.1f} MB)")
+
+
 def geoid_undulation_grid(
     transform: Affine,
     height: int,
@@ -236,6 +293,9 @@ def geoid_undulation_grid(
     """
     from pyproj import Transformer
 
+    # Make sure the geoid grid is available (downloads if needed)
+    _ensure_proj_geoid_grid(verbose=verbose)
+
     # WGS-84 + EGM2008 orthometric height → WGS-84 3-D ellipsoidal
     t = Transformer.from_crs(
         "EPSG:4326+3855",   # compound: WGS-84 horizontal + EGM2008 vertical
@@ -253,6 +313,12 @@ def geoid_undulation_grid(
 
     # Transform with H_ortho = 0 → output z ≈ geoid undulation N
     _, _, N = t.transform(lons, lats, np.zeros_like(lons))
+
+    # Sanity check: if still all zeros, warn loudly
+    if np.all(np.abs(N) < 1e-6):
+        print("  [DEM] WARNING: geoid undulation is all zeros — "
+              "EGM2008 grid may not be installed. The DEM correction "
+              "will have a systematic height bias (~10-50 m).")
 
     if verbose:
         print(f"  [DEM] geoid undulation: "
