@@ -56,6 +56,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from data.EMIT.emit_utils import closest_bands
+from scipy.ndimage import zoom
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +161,81 @@ def _build_valid_mask(
     # also reject all-zero S2 pixels (common nodata sentinel in STAC downloads)
     valid &= ~np.all(X == 0, axis=1)
     return valid
+
+
+def _block_homogeneity_mask(
+    s2_cube: np.ndarray,
+    scale: int = 6,
+    *,
+    max_cv: float = 0.25,
+    s2_nodata: float | None = None,
+) -> np.ndarray:
+    """Identify spectrally homogeneous EMIT-scale blocks in an S2 tile.
+
+    For each ``scale × scale`` block of S2 pixels (corresponding to one
+    EMIT 60 m pixel), compute the coefficient of variation (CV = std/mean)
+    across the S2 band with the highest spatial variance (typically a
+    visible band that captures roads, buildings, shadows).  Blocks where
+    **all** bands have CV below *max_cv* are considered homogeneous.
+
+    Returns a boolean mask at the **S2 (10 m) resolution** — True for every
+    10 m pixel inside a homogeneous block, False for pixels in mixed blocks.
+
+    Parameters
+    ----------
+    s2_cube  : ``(B, H_s2, W_s2)`` float32 S2 tile at 10 m.
+    scale    : Block size (default 6 for 60 m / 10 m).
+    max_cv   : Maximum coefficient of variation for a block to be deemed
+               homogeneous.  Default 0.25 (25 %).
+    s2_nodata: S2 nodata sentinel; blocks containing any nodata pixel are
+               rejected.
+
+    Returns
+    -------
+    ``(H_s2 * W_s2,)`` boolean flat mask at 10 m resolution.
+    """
+    B, H_s2, W_s2 = s2_cube.shape
+    H_e = H_s2 // scale
+    W_e = W_s2 // scale
+
+    # Reshape into (B, H_e, scale, W_e, scale)
+    blocks = s2_cube[:, :H_e * scale, :W_e * scale].reshape(
+        B, H_e, scale, W_e, scale,
+    )  # (B, H_e, scale, W_e, scale)
+
+    # Per-block mean and std across the scale×scale spatial dims
+    block_mean = blocks.mean(axis=(2, 4))    # (B, H_e, W_e)
+    block_std  = blocks.std(axis=(2, 4))     # (B, H_e, W_e)
+
+    # Coefficient of variation per band per block; avoid /0
+    safe_mean = np.where(np.abs(block_mean) > 1e-8, block_mean, 1e-8)
+    cv = np.abs(block_std / safe_mean)       # (B, H_e, W_e)
+
+    # A block is homogeneous if ALL bands have CV < max_cv
+    homo_block = np.all(cv < max_cv, axis=0)  # (H_e, W_e) bool
+
+    # If nodata is present, reject blocks that contain any nodata pixel
+    if s2_nodata is not None:
+        has_nodata = np.any(
+            np.isclose(blocks, s2_nodata), axis=(0, 2, 4),
+        )  # (H_e, W_e)
+        homo_block &= ~has_nodata
+
+    # Also reject all-zero blocks
+    all_zero = np.all(blocks == 0, axis=(0, 2, 4))
+    homo_block &= ~all_zero
+
+    # Expand back to 10 m resolution: each EMIT block → scale×scale True/False
+    homo_10m = np.repeat(
+        np.repeat(homo_block, scale, axis=0),
+        scale, axis=1,
+    )  # (H_e*scale, W_e*scale)
+
+    # Handle edge pixels if S2 tile isn't exactly divisible
+    mask_full = np.zeros((H_s2, W_s2), dtype=bool)
+    mask_full[:H_e * scale, :W_e * scale] = homo_10m
+
+    return mask_full.ravel()
 
 
 
@@ -421,28 +497,27 @@ def fit_tile(
     scale: int = 6,
     degree: int = 2,
     alpha: float = 1.0,
+    max_cv: float = 0.25,
     verbose: bool = True,
 ) -> tuple[S2ToEMITMatcher, dict]:
     """Fit 32 polynomial Ridge models from a single aligned tile pair.
 
-    Training is done at the **EMIT 60 m resolution**.  S2 is block-averaged
-    down to 60 m using :func:`align_s2_to_emit_grid`, producing a true 1:1
-    pixel pairing between sensors at the same spatial scale.
+    Training is done at the **native S2 10 m resolution** using only
+    pixels from **spectrally homogeneous** EMIT-scale blocks.  Each EMIT
+    60 m pixel is nearest-neighbour-repeated into a ``scale × scale``
+    block so that every 10 m S2 pixel is paired with its parent EMIT
+    value.  However, blocks that contain mixed land-cover (roads crossing
+    vegetation, field edges, etc.) are excluded from training via the
+    *max_cv* homogeneity threshold.
 
-    This avoids the mixed-label problem that arises when upsampling EMIT
-    to 10 m: sub-pixel features like roads that EMIT cannot resolve would
-    produce blurred/haloed predictions because the model is trained against
-    a spatially mixed EMIT target.
-
-    With 10 S2 features and ``degree=2``:
-    * 10 linear terms  (B2, B3, …, B12)
-    * 10 squared terms (B2², …, B12²)
-    * 45 cross terms   (B2·B3, …)
-    = **65 polynomial features** per model.
-
-    At inference the model is applied to S2 at its native 10 m resolution.
-    The learned spectral mapping is scale-invariant (it models sensor
-    spectral response, not spatial structure).
+    This avoids the mixed-label problem: in mixed blocks, the EMIT value
+    is an area-weighted average of spectrally different surfaces, so
+    training on those pixels would teach the model to predict blended
+    values for sub-pixel features, causing haloing at edges.  By training
+    only on homogeneous blocks, the model learns the true spectral mapping
+    from "pure" pixels.  At inference, roads and edges are predicted by
+    interpolation from these clean training examples rather than being
+    pulled toward a mixed target.
 
     Args:
         s2_tile_path:       Path to S2 GeoTIFF tile (10 bands, 10 m).
@@ -450,36 +525,63 @@ def fit_tile(
         scale:              S2/EMIT resolution ratio (default 6).
         degree:             Polynomial degree (default 2).
         alpha:              Ridge regularisation strength (default 1.0).
+        max_cv:             Maximum coefficient of variation (std/mean) within
+                            a ``scale × scale`` block for it to be considered
+                            homogeneous.  Default 0.25 (25 %).
         verbose:            Print progress and R² summary.
 
     Returns:
         ``(matcher, stats)`` where *stats* is a dict containing:
         ``n_train_pixels``, ``r2_per_band``, ``r2_mean``, ``r2_min``,
-        ``wavelengths_nm``.
+        ``wavelengths_nm``, ``n_homo_blocks``, ``n_total_blocks``.
     """
     s2_cube,  s2_prof,   s2_nodata   = _read_raster(s2_tile_path)
     emit_b32, emit_prof, emit_nodata = _read_raster(emit_b32_tile_path)
 
-    # Block-average S2 from 10 m to 60 m — true 1:1 pairing with EMIT.
-    s2_at_emit = align_s2_to_emit_grid(s2_cube, scale)  # (10, H_e, W_e)
+    # Upsample EMIT to 10 m by repeating each pixel into a scale×scale block.
+    emit_at_s2 = zoom(emit_b32, (1, scale, scale), order=1)
 
     band_indices, wavelengths_nm = _read_emit_band_meta(emit_b32_tile_path)
 
-    valid = _build_valid_mask(s2_at_emit, emit_b32, s2_nodata, emit_nodata)
+    # Standard nodata mask at 10 m
+    valid = _build_valid_mask(s2_cube, emit_at_s2, s2_nodata, emit_nodata)
 
-    B_s2   = s2_at_emit.shape[0]
-    H_e, W_e = emit_b32.shape[1], emit_b32.shape[2]
-    X_all = s2_at_emit.reshape(B_s2, H_e * W_e).T              # (N, 10)
-    Y_all = emit_b32.reshape(emit_b32.shape[0], H_e * W_e).T   # (N, 32)
+    # Homogeneity mask: only keep pixels inside spectrally uniform EMIT blocks
+    homo = _block_homogeneity_mask(s2_cube, scale, max_cv=max_cv,
+                                   s2_nodata=s2_nodata)
+    valid &= homo
+
+    B_s2, H, W = s2_cube.shape
+    X_all = s2_cube.reshape(B_s2, H * W).T                # (N, 10)
+    Y_all = emit_at_s2.reshape(emit_at_s2.shape[0], H * W).T  # (N, 32)
 
     X_train = X_all[valid]
     Y_train = Y_all[valid]
     n_out   = Y_train.shape[1]
 
+    # Homogeneity diagnostics
+    H_e = H // scale
+    W_e = W // scale
+    n_total_blocks = H_e * W_e
+    n_homo_pixels  = int(homo.sum())
+    n_homo_blocks  = n_homo_pixels // (scale * scale) if scale > 0 else 0
+
     if verbose:
+        print(
+            f"Homo:     {n_homo_blocks}/{n_total_blocks} blocks "
+            f"({100 * n_homo_blocks / max(1, n_total_blocks):.1f}%) "
+            f"pass CV<{max_cv}"
+        )
         print(
             f"Fitting:  {X_train.shape[0]:,} valid pixels  |  "
             f"{X_train.shape[1]} S2 bands  →  {n_out} EMIT bands"
+        )
+
+    if X_train.shape[0] < 100:
+        raise ValueError(
+            f"Only {X_train.shape[0]} valid training pixels after "
+            f"homogeneity filtering (max_cv={max_cv}). Try increasing "
+            f"max_cv or using fit_tiles_batch() to pool more tiles."
         )
 
     poly   = PolynomialFeatures(degree=degree, include_bias=False)
@@ -512,6 +614,9 @@ def fit_tile(
     stats = {
         "n_train_pixels": int(X_train.shape[0]),
         "n_emit_bands":   n_out,
+        "n_homo_blocks":  n_homo_blocks,
+        "n_total_blocks": n_total_blocks,
+        "max_cv":         max_cv,
         "r2_per_band":    r2_per_band.tolist(),
         "r2_mean":        float(r2_per_band.mean()),
         "r2_min":         float(r2_per_band.min()),
@@ -538,23 +643,25 @@ def fit_tiles_batch(
     scale: int = 6,
     degree: int = 2,
     alpha: float = 1.0,
+    max_cv: float = 0.25,
     verbose: bool = True,
 ) -> tuple[S2ToEMITMatcher, dict]:
-    """Fit 32 models by pooling 60 m pixels from multiple tile pairs.
+    """Fit 32 models by pooling 10 m pixels from multiple tile pairs.
 
     Preferred over per-tile fitting when many tiles are available: pooling
     captures a wider range of scene conditions and surface types, which makes
     the polynomial fit more robust and less prone to overfitting.
 
-    Training uses S2 block-averaged to 60 m paired 1:1 with EMIT at 60 m.
-    See :func:`fit_tile` for rationale (avoids mixed-label haloing).
+    Training uses native 10 m S2 pixels from spectrally homogeneous
+    EMIT-scale blocks only (CV < *max_cv*).  See :func:`fit_tile` for
+    rationale (avoids mixed-label haloing at edges).
 
     Band metadata (indices, wavelengths) is read from the first tile; all
     tiles in the batch are assumed to share the same EMIT-b32 band selection.
 
     Args:
         tile_pairs: Sequence of ``(s2_tile_path, emit_b32_tile_path)`` tuples.
-        scale, degree, alpha, verbose: same as :func:`fit_tile`.
+        scale, degree, alpha, max_cv, verbose: same as :func:`fit_tile`.
 
     Returns:
         ``(matcher, stats)`` with an additional ``n_tiles`` key in *stats*.
@@ -569,19 +676,23 @@ def fit_tiles_batch(
         s2_cube,  s2_prof,   s2_nodata   = _read_raster(s2_path)
         emit_b32, emit_prof, emit_nodata = _read_raster(emit_path)
 
-        # Block-average S2 from 10 m to 60 m — true 1:1 pairing with EMIT.
-        s2_at_emit = align_s2_to_emit_grid(s2_cube, scale)  # (10, H_e, W_e)
+        # Upsample EMIT to 10 m (nearest-neighbour repeat)
+        emit_at_s2 = zoom(emit_b32, (1, scale, scale), order=1)
 
         if band_indices is None:
             band_indices, wavelengths_nm = _read_emit_band_meta(emit_path)
-            n_s2_bands = s2_at_emit.shape[0]
+            n_s2_bands = s2_cube.shape[0]
 
-        valid = _build_valid_mask(s2_at_emit, emit_b32, s2_nodata, emit_nodata)
+        valid = _build_valid_mask(s2_cube, emit_at_s2, s2_nodata, emit_nodata)
 
-        B_s2   = s2_at_emit.shape[0]
-        H_e, W_e = emit_b32.shape[1], emit_b32.shape[2]
-        X = s2_at_emit.reshape(B_s2, H_e * W_e).T
-        Y = emit_b32.reshape(emit_b32.shape[0], H_e * W_e).T
+        # Homogeneity mask: only keep pixels inside spectrally uniform blocks
+        homo = _block_homogeneity_mask(s2_cube, scale, max_cv=max_cv,
+                                       s2_nodata=s2_nodata)
+        valid &= homo
+
+        B_s2, H, W = s2_cube.shape
+        X = s2_cube.reshape(B_s2, H * W).T
+        Y = emit_at_s2.reshape(emit_at_s2.shape[0], H * W).T
 
         all_X.append(X[valid])
         all_Y.append(Y[valid])
