@@ -459,7 +459,12 @@ class S2ToEMITMatcher:
 
         out_flat = np.full((H * W, n_out), out_nodata, dtype=np.float32)
         if valid.any():
-            out_flat[valid] = self.predict(X[valid])
+            pred = self.predict(X[valid])
+            # Clip to valid reflectance range: negative values are
+            # physically impossible and arise from polynomial extrapolation
+            # on dark pixels (roads, shadows, water).
+            np.clip(pred, 0.0, None, out=pred)
+            out_flat[valid] = pred
 
         result = out_flat.T.reshape(n_out, H, W)
 
