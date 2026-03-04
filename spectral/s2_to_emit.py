@@ -539,7 +539,7 @@ def fit_tile(
     emit_b32, emit_prof, emit_nodata = _read_raster(emit_b32_tile_path)
 
     # Upsample EMIT to 10 m by repeating each pixel into a scale×scale block.
-    emit_at_s2 = zoom(emit_b32, (1, scale, scale), order=1)
+    emit_at_s2 = zoom(emit_b32, (1, scale, scale), order=0)
 
     band_indices, wavelengths_nm = _read_emit_band_meta(emit_b32_tile_path)
 
@@ -677,7 +677,7 @@ def fit_tiles_batch(
         emit_b32, emit_prof, emit_nodata = _read_raster(emit_path)
 
         # Upsample EMIT to 10 m (nearest-neighbour repeat)
-        emit_at_s2 = zoom(emit_b32, (1, scale, scale), order=1)
+        emit_at_s2 = zoom(emit_b32, (1, scale, scale), order=0)
 
         if band_indices is None:
             band_indices, wavelengths_nm = _read_emit_band_meta(emit_path)
