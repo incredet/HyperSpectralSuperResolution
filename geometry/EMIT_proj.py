@@ -233,13 +233,20 @@ def open_any_nc(path):
 
 def run_cmd(cmd: list[str], check=True) -> dict:
     """Run a subprocess command and return a JSON-friendly record (with truncated stdout/stderr)."""
+    import time as _time
+    _label = cmd[0] if cmd else "?"
+    print(f"  [run_cmd] START  {shlex.join(cmd[:6])}{'…' if len(cmd) > 6 else ''}")
+    _t0 = _time.time()
     res = subprocess.run(cmd, text=True)
+    _elapsed = _time.time() - _t0
+    print(f"  [run_cmd] DONE   {_label}  rc={res.returncode}  {_elapsed:.1f}s")
     rec = {
         "cmd": cmd,
         "cmd_str": shlex.join(cmd),
         "returncode": res.returncode,
         "stdout_tail": (res.stdout[-5000:] if res.stdout else ""),
         "stderr_tail": (res.stderr[-5000:] if res.stderr else ""),
+        "elapsed_s": round(_elapsed, 2),
     }
     if check and res.returncode != 0:
         raise subprocess.CalledProcessError(res.returncode, cmd, output=res.stdout, stderr=res.stderr)
@@ -885,6 +892,22 @@ def nc_to_envi(
             if cols <= 0 or rows <= 0:
                 raise ValueError(f"Bad target shape cols={cols}, rows={rows} from snapped extent.")
 
+            # --- Diagnostics: source file info ---
+            import time as _time
+            _src_size_mb = os.path.getsize(src_path) / (1024 * 1024) if os.path.exists(src_path) else -1
+            try:
+                with rasterio.open(src_path) as _s:
+                    _src_bands = _s.count
+                    _src_h, _src_w = _s.height, _s.width
+            except Exception:
+                _src_bands = _src_h = _src_w = "?"
+            print(f"  [gdalwarp] src: {src_path}")
+            print(f"  [gdalwarp] src size: {_src_size_mb:.1f} MB, "
+                  f"bands={_src_bands}, shape=({_src_h}, {_src_w})")
+            print(f"  [gdalwarp] dst: {dst_path}")
+            print(f"  [gdalwarp] output grid: {cols} x {rows} px @ {step_x}x{step_y} m")
+            print(f"  [gdalwarp] te: [{left:.2f}, {bottom:.2f}, {right:.2f}, {top:.2f}]")
+
             cmd = ["gdalwarp"]
             if overwrite:
                 cmd.append("-overwrite")
@@ -903,6 +926,7 @@ def nc_to_envi(
             cmd += ["-srcnodata", str(NO_DATA_VALUE), "-dstnodata", str(NO_DATA_VALUE)]
             cmd += ["-wo", "NUM_THREADS=ALL_CPUS", "-wm", "4096", "-multi"]
             cmd += ["-r", "cubic", "-of", "ENVI", src_path, dst_path]
+            print(f"  [gdalwarp] cmd: {shlex.join(cmd)}")
 
             rec = run_cmd(cmd, check=True)
             rec["aligned_extent"] = {
