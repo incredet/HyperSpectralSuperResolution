@@ -314,6 +314,18 @@ def raster_meta(path: str) -> dict:
         return out
 
 
+def _bounds_to_out_crs_from_wgs84(
+    bounds_wgs84: tuple, out_crs: str,
+) -> tuple:
+    """Transform (left, bottom, right, top) in EPSG:4326 → *out_crs*."""
+    l, b, r, t = bounds_wgs84
+    tf = Transformer.from_crs("EPSG:4326", out_crs, always_xy=True)
+    xs = [l, l, r, r]
+    ys = [b, t, b, t]
+    X, Y = tf.transform(xs, ys)
+    return (min(X), min(Y), max(X), max(Y))
+
+
 def _bounds_to_out_crs(src_path: str, out_crs: str):
     with rasterio.open(src_path) as ds:
         b = ds.bounds
@@ -538,6 +550,194 @@ def export_obs_uint16_deflate_geotiff(
     }
     return rec
 
+
+# ---------------------------------------------------------------------------
+# VRT-based direct georeferencing helpers
+# ---------------------------------------------------------------------------
+
+_USE_GEOLOC_VRT = True   # module flag; set False to fall back to scatter loop
+
+
+def _build_geoloc_vrt(
+    raw_bin_path: str,
+    lon_tif_path: str,
+    lat_tif_path: str,
+    n_bands: int,
+    height: int,
+    width: int,
+    nodata: float,
+    out_vrt_path: str,
+) -> str:
+    """Build a VRT with GEOLOCATION metadata for gdalwarp direct georeferencing.
+
+    Parameters
+    ----------
+    raw_bin_path : ENVI flat binary holding raw reflectance in BSQ layout.
+    lon_tif_path : Single-band GeoTIFF with per-pixel longitudes.
+    lat_tif_path : Single-band GeoTIFF with per-pixel latitudes.
+    n_bands      : Number of spectral bands (e.g. 285).
+    height, width: Raw sensor grid dimensions (downtrack, crosstrack).
+    nodata       : Fill value (e.g. -9999.0).
+    out_vrt_path : Where to write the VRT XML.
+
+    Returns
+    -------
+    str – *out_vrt_path*.
+    """
+    lines = [
+        f'<VRTDataset rasterXSize="{width}" rasterYSize="{height}">',
+        f'  <Metadata domain="GEOLOCATION">',
+        f'    <MDI key="X_DATASET">{lon_tif_path}</MDI>',
+        f'    <MDI key="X_BAND">1</MDI>',
+        f'    <MDI key="Y_DATASET">{lat_tif_path}</MDI>',
+        f'    <MDI key="Y_BAND">1</MDI>',
+        f'    <MDI key="LINE_OFFSET">0</MDI>',
+        f'    <MDI key="LINE_STEP">1</MDI>',
+        f'    <MDI key="PIXEL_OFFSET">0</MDI>',
+        f'    <MDI key="PIXEL_STEP">1</MDI>',
+        f'    <MDI key="SRS">EPSG:4326</MDI>',
+        f'    <MDI key="GEOREFERENCING_CONVENTION">PIXEL_CENTER</MDI>',
+        f'  </Metadata>',
+    ]
+
+    for b in range(1, n_bands + 1):
+        lines += [
+            f'  <VRTRasterBand dataType="Float32" band="{b}">',
+            f'    <NoDataValue>{nodata}</NoDataValue>',
+            f'    <SimpleSource>',
+            f'      <SourceFilename relativeToVRT="0">{raw_bin_path}</SourceFilename>',
+            f'      <SourceBand>{b}</SourceBand>',
+            f'      <SourceProperties RasterXSize="{width}" '
+            f'RasterYSize="{height}" DataType="Float32" '
+            f'BlockXSize="{width}" BlockYSize="1" />',
+            f'      <SrcRect xOff="0" yOff="0" xSize="{width}" ySize="{height}" />',
+            f'      <DstRect xOff="0" yOff="0" xSize="{width}" ySize="{height}" />',
+            f'    </SimpleSource>',
+            f'  </VRTRasterBand>',
+        ]
+
+    lines.append('</VRTDataset>')
+
+    Path(out_vrt_path).write_text('\n'.join(lines), encoding='utf-8')
+    return out_vrt_path
+
+
+def _compute_dem_correction_raw_domain(
+    img_nc,
+    obs_file: str,
+    dem_src: str,
+    transpose_raw_yx: bool,
+    raw_lon: np.ndarray,
+    raw_lat: np.ndarray,
+    *,
+    dem_cache_dir: str | Path = "/tmp/dem_cache",
+    verbose: bool = True,
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    """Compute DEM parallax correction in the raw sensor domain.
+
+    Instead of correcting GLT scatter indices on the ortho grid, this
+    shifts the raw pixel lon/lat directly.  The corrected arrays can be
+    used as GEOLOCATION inputs for gdalwarp.
+
+    Returns
+    -------
+    (lon_corrected, lat_corrected, stats_dict)
+    """
+    _geom_dir = str(Path(__file__).resolve().parent)
+    if _geom_dir not in sys.path:
+        sys.path.insert(0, _geom_dir)
+    import dem_utils
+
+    # --- a) Raw elevation from LOC ---
+    loc_vars = img_nc.groups["location"].variables
+    raw_elev = np.asarray(loc_vars["elev"][:], dtype=np.float32)
+    if transpose_raw_yx:
+        raw_elev = raw_elev.T
+
+    # --- b) Viewing angles from OBS ---
+    obs_nc_h, _ = open_any_nc(obs_file)
+    try:
+        obs_cube_raw, obs_bnames = _read_obs_cube_and_names(obs_nc_h)
+    finally:
+        obs_nc_h.close()
+
+    azi_idx, zen_idx = 1, 2
+    for bi, bn in enumerate(obs_bnames):
+        bn_low = bn.lower()
+        if "azimuth" in bn_low and "sensor" in bn_low:
+            azi_idx = bi
+        elif "zenith" in bn_low and "sensor" in bn_low:
+            zen_idx = bi
+
+    raw_azimuth = np.array(obs_cube_raw[..., azi_idx])
+    raw_zenith  = np.array(obs_cube_raw[..., zen_idx])
+    del obs_cube_raw
+    if transpose_raw_yx:
+        raw_azimuth = raw_azimuth.T
+        raw_zenith  = raw_zenith.T
+
+    # --- c) Sample DEM at raw pixel locations ---
+    if verbose:
+        print("  [DEM-CORR-RAW] Sampling DEM at raw pixel locations ...")
+    dem_elev = dem_utils.sample_dem_at_points(
+        dem_src, raw_lon, raw_lat,
+        apply_geoid=True, verbose=verbose,
+    )
+
+    # --- d) Parallax shift ---
+    valid = (
+        np.isfinite(dem_elev)
+        & np.isfinite(raw_elev)
+        & (raw_zenith > 0)
+        & (raw_zenith < 90)
+        & np.isfinite(raw_lon)
+    )
+
+    dh = np.zeros_like(raw_lon)
+    dh[valid] = dem_elev[valid] - raw_elev[valid]
+
+    zen_rad = np.zeros_like(raw_lon)
+    azi_rad = np.zeros_like(raw_lon)
+    zen_rad[valid] = np.deg2rad(raw_zenith[valid])
+    azi_rad[valid] = np.deg2rad(raw_azimuth[valid])
+
+    dground = dh * np.tan(zen_rad)
+    dx_meters = dground * np.sin(azi_rad)   # east–west
+    dy_meters = dground * np.cos(azi_rad)   # north–south
+
+    cos_lat = np.clip(
+        np.cos(np.deg2rad(raw_lat)).astype(np.float32), 0.01, None,
+    )
+    dlon = dx_meters / (111_320.0 * cos_lat)
+    dlat = dy_meters / 110_540.0
+
+    lon_corrected = (raw_lon + dlon).astype(np.float32)
+    lat_corrected = (raw_lat + dlat).astype(np.float32)
+
+    # --- e) Stats ---
+    stats = {}
+    if np.any(valid):
+        stats = {
+            "mean_dh_m":      float(np.mean(dh[valid])),
+            "std_dh_m":       float(np.std(dh[valid])),
+            "max_abs_dh_m":   float(np.max(np.abs(dh[valid]))),
+            "mean_dlon_deg":  float(np.mean(dlon[valid])),
+            "mean_dlat_deg":  float(np.mean(dlat[valid])),
+            "max_abs_dlon_deg": float(np.max(np.abs(dlon[valid]))),
+            "max_abs_dlat_deg": float(np.max(np.abs(dlat[valid]))),
+            "valid_pixels":   int(np.count_nonzero(valid)),
+        }
+        if verbose:
+            print(f"  [DEM-CORR-RAW] dh: mean={stats['mean_dh_m']:.2f} m  "
+                  f"max_abs={stats['max_abs_dh_m']:.2f} m")
+            print(f"  [DEM-CORR-RAW] dlon: mean={stats['mean_dlon_deg']:.6f}°  "
+                  f"dlat: mean={stats['mean_dlat_deg']:.6f}°")
+
+    del dem_elev, raw_elev, raw_azimuth, raw_zenith
+    del dh, zen_rad, azi_rad, dground, dx_meters, dy_meters, dlon, dlat
+    import gc; gc.collect()
+
+    return lon_corrected, lat_corrected, stats
 
 
 def nc_to_envi(
@@ -864,8 +1064,18 @@ def nc_to_envi(
             xres: float = 60.0,
             yres: float = 60.0,
             src_srs: str | None = None,
+            src_bounds_wgs84: tuple | None = None,
         ) -> dict:
+            """Reproject *src_path* to UTM, aligned to S2 grid.
 
+            Parameters
+            ----------
+            src_bounds_wgs84 : Optional (left, bottom, right, top) in WGS-84.
+                When provided, these are used to compute the target extent
+                instead of reading bounds from the source file.  Required
+                for VRT GEOLOCATION sources whose identity transform doesn't
+                encode real geographic bounds.
+            """
             if s2_bounds is None:
                 raise ValueError("s2_bounds is None. Need s2_tif_path to align output grid.")
 
@@ -877,14 +1087,30 @@ def nc_to_envi(
             step_x = xres
             step_y = yres
 
-            left, bottom, right, top = _compute_te(
-                src_path,
-                s2_te_exact=s2_te_exact,
-                s2_origin_xy=(s2_x0, s2_y0),
-                out_crs=out_crs,
-                xres=xres,
-                yres=yres,
-            )
+            if src_bounds_wgs84 is not None:
+                # Use caller-supplied geographic bounds (for VRT sources)
+                _src_te_out = _bounds_to_out_crs_from_wgs84(
+                    src_bounds_wgs84, out_crs,
+                )
+                s2_te = tuple(map(float, s2_te_exact))
+                inter = _intersect(_src_te_out, s2_te)
+                if inter is None:
+                    raise ValueError("Source bounds do not intersect S2 tile.")
+                inter_left, inter_bottom, inter_right, inter_top = map(float, inter)
+                eps = 1e-9
+                left  = x0 + math.ceil(((inter_left  - x0) / step_x) - eps) * step_x
+                right = x0 + math.floor(((inter_right - x0) / step_x) + eps) * step_x
+                top    = y0 - math.ceil(((y0 - inter_top) / step_y) - eps) * step_y
+                bottom = y0 - math.floor(((y0 - inter_bottom) / step_y) + eps) * step_y
+            else:
+                left, bottom, right, top = _compute_te(
+                    src_path,
+                    s2_te_exact=s2_te_exact,
+                    s2_origin_xy=(s2_x0, s2_y0),
+                    out_crs=out_crs,
+                    xres=xres,
+                    yres=yres,
+                )
             # Compute expected dimensions for metadata (informational only)
             cols = int(round((right - left) / step_x))
             rows = int(round((top - bottom) / step_y))
@@ -960,410 +1186,272 @@ def nc_to_envi(
         if need_data:
             print(f"Exporting EMIT {product} dataset")
 
-            data_header = ht.io.envi_header_dict()
-            data_header["lines"] = glt.shape[0]
-            data_header["samples"] = glt.shape[1]
-            data_header["bands"] = data.shape[2]
-            data_header["byte order"] = 0
-            data_header["data ignore value"] = NO_DATA_VALUE
-            data_header["data type"] = 4
-            data_header["interleave"] = "bil"
-            data_header["map info"] = map_info
-
-            data_gcs = str(temp_dir_p / f"data_gcs_{tag}")
-            writer = ht.io.WriteENVI(data_gcs, data_header)
-
             B = data.shape[2]
-            chunk = 32  # tune 16/32/64 depending on RAM
+            chunk = 32  # bands per I/O chunk
 
-            use_dem_corr = False
-            if apply_dem_correction:
-                if obs_file is None:
-                    print("[WARN] apply_dem_correction=True but obs_file not "
-                          "provided (need viewing angles). Skipping.")
-                    info["dem_correction"] = {
-                        "applied": False, "reason": "obs_file not provided",
-                    }
-                else:
-                    print("[INFO] Computing DEM parallax shift field ...")
-                    _geom_dir = str(Path(__file__).resolve().parent)
-                    if _geom_dir not in sys.path:
-                        sys.path.insert(0, _geom_dir)
-                    import dem_utils
-
-                    scene_left = float(gt[0])
-                    scene_top = float(gt[3])
-                    scene_right = scene_left + W * float(gt[1])
-                    scene_bottom = scene_top  + H * float(gt[5])
-                    scene_bounds = (scene_left, scene_bottom,
-                                    scene_right, scene_top)
-
-                    if dem_path is not None:
-                        dem_src = dem_path
-                        info.setdefault("dem_correction", {})["dem_source"] = "user_provided"
-                    else:
-                        print("[DEM-CORR] Downloading Copernicus GLO-30 ...")
-                        dl = dem_utils.download_copernicus_dem(
-                            bounds_wgs84=scene_bounds,
-                            cache_dir=dem_cache_dir, verbose=True,
-                        )
-                        dem_src = dl["dem_path"]
-                        info.setdefault("dem_correction", {})["dem_download"] = dl
-                        info["dem_correction"]["dem_source"] = "copernicus_glo30"
-
-                    # c) Orthorectify elevation from LOC group
-                    loc_vars = img_nc.groups["location"].variables
-                    raw_elev = np.asarray(loc_vars["elev"][:], dtype=np.float32)
-                    if transpose_raw_yx:
-                        raw_elev = raw_elev.T
-                    emit_elev = np.full((H, W), NO_DATA_VALUE, dtype=np.float32)
-                    emit_elev[valid_glt2] = raw_elev[gy, gx]
-
-                    # d) Orthorectify viewing angles from OBS
-                    obs_nc_h, _ = open_any_nc(obs_file)
-                    try:
-                        obs_cube_raw, obs_bnames = _read_obs_cube_and_names(obs_nc_h)
-                    finally:
-                        obs_nc_h.close()
-
-                    azi_idx, zen_idx = 1, 2  
-                    for bi, bn in enumerate(obs_bnames):
-                        bn_low = bn.lower()
-                        if "azimuth" in bn_low and "sensor" in bn_low:
-                            azi_idx = bi
-                        elif "zenith" in bn_low and "sensor" in bn_low:
-                            zen_idx = bi
-
-                    raw_azimuth = np.array(obs_cube_raw[..., azi_idx])
-                    raw_zenith  = np.array(obs_cube_raw[..., zen_idx])
-                    del obs_cube_raw       # free the full OBS cube early
-                    if transpose_raw_yx:
-                        raw_azimuth = raw_azimuth.T
-                        raw_zenith  = raw_zenith.T
-
-                    ortho_azi = np.full((H, W), NO_DATA_VALUE, dtype=np.float32)
-                    ortho_zen = np.full((H, W), NO_DATA_VALUE, dtype=np.float32)
-                    ortho_azi[valid_glt2] = raw_azimuth[gy, gx]
-                    ortho_zen[valid_glt2] = raw_zenith[gy, gx]
-
-                    # e) Resample DEM to the EMIT ortho grid.
-                    #    We need a temporary ENVI written first (the uncorrected
-                    #    one is about to be created – but we only need the grid
-                    #    definition, not the data).  Use gdalwarp against a
-                    #    one-band placeholder derived from the ENVI header.
-                    #    Easier: write a tiny one-band GeoTIFF with the correct
-                    #    grid so dem_utils can match it.
-                    _grid_ref_tif = str(temp_dir_p / f"_grid_ref_{tag}.tif")
-                    _grid_tf = Affine(float(gt[1]), 0.0, float(gt[0]),
-                                      0.0, float(gt[5]), float(gt[3]))
-                    with rasterio.open(
-                        _grid_ref_tif, "w", driver="GTiff",
-                        height=H, width=W, count=1, dtype="float32",
-                        crs="EPSG:4326", transform=_grid_tf,
-                    ) as _dst:
-                        _dst.write(np.zeros((H, W), dtype=np.float32), 1)
-
-                    dem_resampled = str(temp_dir_p / f"dem_on_grid_{tag}.tif")
-                    dem_utils.resample_dem_to_emit_grid(
-                        dem_src, _grid_ref_tif, dem_resampled, verbose=True,
-                    )
-                    dem_arr, _ = dem_utils.load_dem_array(
-                        dem_resampled, apply_geoid=True, verbose=True,
-                    )
-
-                    # f) Compute parallax shift field
-                    corr_valid = (
-                        valid_glt2
-                        & np.isfinite(dem_arr)
-                        & (emit_elev != NO_DATA_VALUE)
-                        & (ortho_zen != NO_DATA_VALUE)
-                        & (ortho_azi != NO_DATA_VALUE)
-                    )
-
-                    dh = np.zeros((H, W), dtype=np.float32)
-                    dh[corr_valid] = dem_arr[corr_valid] - emit_elev[corr_valid]
-
-                    zen_rad = np.zeros((H, W), dtype=np.float32)
-                    azi_rad = np.zeros((H, W), dtype=np.float32)
-                    zen_rad[corr_valid] = np.deg2rad(ortho_zen[corr_valid])
-                    azi_rad[corr_valid] = np.deg2rad(ortho_azi[corr_valid])
-
-                    dground   = dh * np.tan(zen_rad)
-                    dx_meters = dground * np.sin(azi_rad)   # E-W
-                    dy_meters = dground * np.cos(azi_rad)   # N-S
-
-                    # Meters → pixels (geographic degrees, lat-dependent)
-                    deg_px_x = abs(float(gt[1]))
-                    deg_px_y = abs(float(gt[5]))
-                    y_orig   = float(gt[3]) + 0.5 * float(gt[5])
-                    row_lats = y_orig + np.arange(H, dtype=np.float64) * float(gt[5])
-                    cos_lat  = np.clip(
-                        np.cos(np.deg2rad(row_lats)).astype(np.float32),
-                        0.01, None,
-                    )
-                    m_per_deg_x = (111_320.0 * cos_lat)[:, np.newaxis]
-                    m_per_deg_y = 110_540.0
-
-                    dx_pixels = dx_meters / (m_per_deg_x * deg_px_x)
-                    dy_pixels = dy_meters / (m_per_deg_y * deg_px_y)
-
-                    # Stats
-                    v = corr_valid & np.isfinite(dh)
-                    corr_stats = {
-                        "mean_dh_m":  float(np.mean(dh[v]))  if np.any(v) else 0.0,
-                        "std_dh_m":   float(np.std(dh[v]))   if np.any(v) else 0.0,
-                        "max_abs_dh_m": float(np.max(np.abs(dh[v]))) if np.any(v) else 0.0,
-                        "mean_dx_px": float(np.mean(dx_pixels[v])) if np.any(v) else 0.0,
-                        "mean_dy_px": float(np.mean(dy_pixels[v])) if np.any(v) else 0.0,
-                        "max_abs_dx_px": float(np.max(np.abs(dx_pixels[v]))) if np.any(v) else 0.0,
-                        "max_abs_dy_px": float(np.max(np.abs(dy_pixels[v]))) if np.any(v) else 0.0,
-                        "valid_pixels": int(np.count_nonzero(v)),
-                    }
-                    print(f"  [DEM-CORR] dh : mean={corr_stats['mean_dh_m']:.2f} m  "
-                          f"max_abs={corr_stats['max_abs_dh_m']:.2f} m")
-                    print(f"  [DEM-CORR] dx : mean={corr_stats['mean_dx_px']:.3f} px  "
-                          f"max_abs={corr_stats['max_abs_dx_px']:.3f} px")
-                    print(f"  [DEM-CORR] dy : mean={corr_stats['mean_dy_px']:.3f} px  "
-                          f"max_abs={corr_stats['max_abs_dy_px']:.3f} px")
-
-                    # Optional diagnostics
-                    diag_info = {}
-                    if correction_diagnostics:
-                        _ddir = out_dir_p / "dem_diagnostics"
-                        _ddir.mkdir(parents=True, exist_ok=True)
-                        _dtf = _grid_tf
-                        for _nm, _ar in [("dh_meters", dh),
-                                         ("dx_pixels", dx_pixels),
-                                         ("dy_pixels", dy_pixels)]:
-                            _p = _ddir / f"dem_corr_{_nm}.tif"
-                            with rasterio.open(
-                                _p, "w", driver="GTiff", height=H, width=W,
-                                count=1, dtype="float32", crs="EPSG:4326",
-                                transform=_dtf, compress="DEFLATE",
-                            ) as _d:
-                                _d.write(_ar, 1)
-                            diag_info[_nm] = str(_p)
-
-                    # --- Precompute bilinear-scatter lookup tables ---
-                    # For each output pixel (r, c) the corrected source in
-                    # the ortho grid is (r + dy, c - dx).
-                    # dy_pixels is positive-northward (from cos(azimuth)),
-                    # but row index increases southward, so we ADD dy to
-                    # move toward the source (toward the sensor when
-                    # terrain is higher than assumed).
-                    # dx_pixels is positive-eastward (from sin(azimuth)),
-                    # same direction as column index, so we SUBTRACT dx.
-                    row_idx = np.arange(H, dtype=np.float32)[:, None]
-                    col_idx = np.arange(W, dtype=np.float32)[None, :]
-
-                    src_r = row_idx + dy_pixels          # (H, W)
-                    src_c = col_idx - dx_pixels          # (H, W)
-
-                    r0 = np.clip(np.floor(src_r).astype(np.int32), 0, H - 1)
-                    c0 = np.clip(np.floor(src_c).astype(np.int32), 0, W - 1)
-                    r1 = np.clip(r0 + 1, 0, H - 1)
-                    c1 = np.clip(c0 + 1, 0, W - 1)
-
-                    fr = np.clip(src_r - r0, 0.0, 1.0).astype(np.float32)
-                    fc = np.clip(src_c - c0, 0.0, 1.0).astype(np.float32)
-
-                    # Validity flags for each of the 4 neighbours
-                    v00 = valid_glt2[r0, c0]
-                    v01 = valid_glt2[r0, c1]
-                    v10 = valid_glt2[r1, c0]
-                    v11 = valid_glt2[r1, c1]
-
-                    # Bilinear weights (zero where neighbour is invalid)
-                    w00 = ((1 - fr) * (1 - fc) * v00).astype(np.float32)
-                    w01 = ((1 - fr) * fc       * v01).astype(np.float32)
-                    w10 = (fr       * (1 - fc) * v10).astype(np.float32)
-                    w11 = (fr       * fc       * v11).astype(np.float32)
-                    wsum = w00 + w01 + w10 + w11
-                    any_valid = wsum > 1e-8
-
-                    # Raw-sensor coordinates for each of the 4 neighbours
-                    gy00 = glt_y_full[r0, c0]; gx00 = glt_x_full[r0, c0]
-                    gy01 = glt_y_full[r0, c1]; gx01 = glt_x_full[r0, c1]
-                    gy10 = glt_y_full[r1, c0]; gx10 = glt_x_full[r1, c0]
-                    gy11 = glt_y_full[r1, c1]; gx11 = glt_x_full[r1, c1]
-
-                    # --- GLT contiguity check ---
-                    # If any pair of the 4 neighbours maps to raw-sensor
-                    # locations that are far apart (>2 pixels in either
-                    # row or column), blending them is physically wrong
-                    # (e.g. swath overlap edges). For those output pixels,
-                    # fall back to nearest-neighbour by zeroing the three
-                    # non-nearest weights.
-                    _GLT_CONTIG_THRESH = 2  # max allowed raw-coord gap
-                    _all_gy = np.stack([gy00, gy01, gy10, gy11], axis=-1)
-                    _all_gx = np.stack([gx00, gx01, gx10, gx11], axis=-1)
-                    _gy_span = np.ptp(_all_gy, axis=-1)  # max - min
-                    _gx_span = np.ptp(_all_gx, axis=-1)
-                    _not_contig = (
-                        (_gy_span > _GLT_CONTIG_THRESH)
-                        | (_gx_span > _GLT_CONTIG_THRESH)
-                    )
-                    if np.any(_not_contig):
-                        n_nc = int(np.count_nonzero(_not_contig))
-                        print(f"  [DEM-CORR] {n_nc} pixels have non-contiguous "
-                              f"GLT neighbours → nearest-neighbour fallback")
-                        # Pick the nearest of the 4 based on fractional position
-                        _nearest_is_r1 = fr > 0.5
-                        _nearest_is_c1 = fc > 0.5
-                        # Zero all weights for non-contiguous pixels, then
-                        # set only the nearest-neighbour weight to 1
-                        for _w in (w00, w01, w10, w11):
-                            _w[_not_contig] = 0.0
-                        nn00 = _not_contig & ~_nearest_is_r1 & ~_nearest_is_c1
-                        nn01 = _not_contig & ~_nearest_is_r1 &  _nearest_is_c1
-                        nn10 = _not_contig &  _nearest_is_r1 & ~_nearest_is_c1
-                        nn11 = _not_contig &  _nearest_is_r1 &  _nearest_is_c1
-                        w00[nn00] = 1.0
-                        w01[nn01] = 1.0
-                        w10[nn10] = 1.0
-                        w11[nn11] = 1.0
-                        wsum = w00 + w01 + w10 + w11
-                        any_valid = wsum > 1e-8
-                    del _all_gy, _all_gx, _gy_span, _gx_span, _not_contig
-
-                    # Normalize weights
-                    w00_n = np.where(any_valid, w00 / wsum, 0.0).astype(np.float32)
-                    w01_n = np.where(any_valid, w01 / wsum, 0.0).astype(np.float32)
-                    w10_n = np.where(any_valid, w10 / wsum, 0.0).astype(np.float32)
-                    w11_n = np.where(any_valid, w11 / wsum, 0.0).astype(np.float32)
-
-                    use_dem_corr = True
-                    info["dem_correction"] = {
-                        **(info.get("dem_correction", {})),
-                        "applied": True,
-                        "correction_stats": corr_stats,
-                        "diagnostics": diag_info,
-                        "scene_bounds_wgs84": list(scene_bounds),
-                    }
-
-                    # Free arrays we no longer need (obs_cube_raw already freed)
-                    del (dem_arr, emit_elev, ortho_azi, ortho_zen,
-                         raw_azimuth, raw_zenith, raw_elev,
-                         dh, dground, dx_meters, dy_meters, zen_rad, azi_rad,
-                         dx_pixels, dy_pixels, src_r, src_c, fr, fc,
-                         v00, v01, v10, v11, wsum,
-                         # These were only needed to build gy/gx lookups:
-                         r0, c0, r1, c1, glt_y_full, glt_x_full,
-                         # Unnormalized weights (normalized w00_n..w11_n are kept):
-                         w00, w01, w10, w11)
-                    import gc; gc.collect()
-
-            # --- Scatter loop (with or without DEM correction) ---
-            for b0 in range(0, B, chunk):
-                b1 = min(b0 + chunk, B)
-
-                # raw block: (raw_y, raw_x, nb)
-                raw_blk = np.asarray(data[:, :, b0:b1], dtype=np.float32)
-                if transpose_raw_yx:
-                    raw_blk = np.transpose(raw_blk, (1, 0, 2))
-
-                if use_dem_corr:
-                    # Bilinear scatter: blend 4 GLT-neighbour values
-                    # in-place to minimise peak memory (avoid 4 separate
-                    # (H,W,nb) temporaries).
-                    out_blk = np.full((H, W, b1 - b0), NO_DATA_VALUE,
-                                     dtype=np.float32)
-                    blended = (raw_blk[gy00, gx00, :] * w00_n[..., None])
-                    blended += raw_blk[gy01, gx01, :] * w01_n[..., None]
-                    blended += raw_blk[gy10, gx10, :] * w10_n[..., None]
-                    blended += raw_blk[gy11, gx11, :] * w11_n[..., None]
-                    out_blk[any_valid] = blended[any_valid]
-                    del blended
-                else:
-                    # Original nearest-neighbour GLT scatter
-                    out_blk = np.full((H, W, b1 - b0), NO_DATA_VALUE,
-                                     dtype=np.float32)
-                    out_blk[valid_glt2, :] = raw_blk[gy, gx, :]
-
-                # write each band (because WriteENVI is band-oriented)
-                for i, band_num in enumerate(range(b0, b1)):
-                    writer.write_band(out_blk[:, :, i], band_num)
-
-            # Free bilinear lookup tables if they were created
-            if use_dem_corr:
-                del (gy00, gx00, gy01, gx01, gy10, gx10, gy11, gx11,
-                     w00_n, w01_n, w10_n, w11_n, any_valid)
-                import gc; gc.collect()
-
-            # ---- Diagnostic quicklook (single band) for alignment checks ----
-            # Pick a stable band index (e.g., middle band) so it always exists
-            diag_band = int(data.shape[2] // 2)  # 0-based
-            diag_src = f"{data_gcs}"
-
+            diag_band = int(B // 2)  # for diagnostic exports
             diag_dir = out_dir_p / "diag"
             diag_dir.mkdir(parents=True, exist_ok=True)
-
-            diag_ortho_tif = diag_dir / f"{tag}_DATA_diag_band{diag_band:03d}_ortho_wgs84.tif"
-            diag_utm_tif   = diag_dir / f"{tag}_DATA_diag_band{diag_band:03d}_warp_utm.tif"
-
-            # Export only one band from the ortho ENVI to GeoTIFF (still uint16 reflectance scaling OK for DATA)
-            if save_geotiffs:
-                cmd = [
-                    "gdal_translate",
-                    "-b", str(diag_band + 1),  # GDAL is 1-based bands
-                    "-a_srs", "EPSG:4326",
-                    "-ot", "UInt16",
-                    "-co", "COMPRESS=DEFLATE", "-co", "PREDICTOR=2", "-co", "TILED=YES",
-                    "-scale", "0", "1", "0", "10000",  # reflectance scaling (keep your convention)
-                    diag_src, str(diag_ortho_tif),
-                ]
-                info["commands"]["gdal_translate_data_diag_ortho"] = run_cmd(cmd, check=True)
-                info["outputs"]["data_diag_ortho_tif"] = str(diag_ortho_tif)
-            # ---------------------------------------------------------------
-
-
+            diag_utm_tif = diag_dir / f"{tag}_DATA_diag_band{diag_band:03d}_warp_utm.tif"
 
             geotiff_dir = out_dir_p / "geotiff"
             geotiff_dir.mkdir(parents=True, exist_ok=True)
+            utm_tif = geotiff_dir / f"{tag}_DATA_warp_utm.tif"
 
-            ortho_tif = geotiff_dir / f"{tag}_DATA_ortho_wgs84.tif"
-            utm_tif   = geotiff_dir / f"{tag}_DATA_warp_utm.tif"
+            if _USE_GEOLOC_VRT:
+                # ============================================================
+                # VRT GEOLOCATION approach: raw sensor → UTM in one gdalwarp
+                # ============================================================
+                import time as _time
+                _t_vrt_start = _time.time()
 
-            # Save orthorectified GeoTIFF (this is your GLT-projected cube in Geographic Lat/Lon)
-            if save_geotiffs:
-                info["commands"]["gdal_translate_data_ortho"] = export_uint16_deflate_geotiff(
-                data_gcs, str(ortho_tif),
-                assign_epsg="EPSG:4326",
-                scale_mode="emit_reflectance_0_1"
-)
-                info["outputs"]["data_ortho_tif"] = str(ortho_tif)
-                info["rasters"]["data_ortho_tif"] = raster_meta(str(ortho_tif))
+                # a) Read raw lon/lat from LOC group
+                loc_vars = img_nc.groups["location"].variables
+                raw_lon = np.asarray(loc_vars["lon"][:], dtype=np.float32)
+                raw_lat = np.asarray(loc_vars["lat"][:], dtype=np.float32)
+                if transpose_raw_yx:
+                    raw_lon = raw_lon.T
+                    raw_lat = raw_lat.T
 
+                # Compute geographic bounds from raw lon/lat (needed for gdalwarp -te)
+                _vlon = raw_lon[np.isfinite(raw_lon)]
+                _vlat = raw_lat[np.isfinite(raw_lat)]
+                _raw_bounds_wgs84 = (
+                    float(_vlon.min()), float(_vlat.min()),
+                    float(_vlon.max()), float(_vlat.max()),
+                )
+                del _vlon, _vlat
 
-            # Free Python memory before gdalwarp (which is memory-intensive
-            # for 285-band ENVI files)
-            import gc; gc.collect()
+                # b) DEM correction (in raw sensor domain)
+                use_dem_corr = False
+                if apply_dem_correction:
+                    if obs_file is None:
+                        print("[WARN] apply_dem_correction=True but obs_file "
+                              "not provided. Skipping.")
+                        info["dem_correction"] = {
+                            "applied": False,
+                            "reason": "obs_file not provided",
+                        }
+                    else:
+                        scene_bounds = _raw_bounds_wgs84
 
-            print(f"Projecting data to {out_crs} {'(match S2 res)' if match_res else '(60 m)'} -> {data_utm}")
-            warp_rec = _run_gdalwarp(data_gcs, str(data_utm), xres=xres, yres=yres)
+                        _geom_dir = str(Path(__file__).resolve().parent)
+                        if _geom_dir not in sys.path:
+                            sys.path.insert(0, _geom_dir)
+                        import dem_utils
 
-            info["commands"]["gdalwarp_data"] = warp_rec
-            info["outputs"]["data_envi_bin"] = str(data_utm)
-            info["outputs"]["data_envi_hdr"] = str(data_hdr)
-            info["rasters"]["data_envi"] = raster_meta(str(data_utm))
+                        if dem_path is not None:
+                            dem_src = dem_path
+                            info.setdefault("dem_correction", {})["dem_source"] = "user_provided"
+                        else:
+                            print("[DEM-CORR] Downloading Copernicus GLO-30 ...")
+                            dl = dem_utils.download_copernicus_dem(
+                                bounds_wgs84=scene_bounds,
+                                cache_dir=dem_cache_dir, verbose=True,
+                            )
+                            dem_src = dl["dem_path"]
+                            info.setdefault("dem_correction", {})["dem_download"] = dl
+                            info["dem_correction"]["dem_source"] = "copernicus_glo30"
 
-            if save_geotiffs:
-                info["commands"]["gdal_translate_data_utm"] = export_uint16_deflate_geotiff(
-                str(data_utm), str(utm_tif),
-                scale_mode="emit_reflectance_0_1"
-)
-                info["outputs"]["data_utm_tif"] = str(utm_tif)
-                info["rasters"]["data_utm_tif"] = raster_meta(str(utm_tif))
-                cmd = [
-                    "gdal_translate",
-                    "-b", str(diag_band + 1),
-                    "-ot", "UInt16",
-                    "-co", "COMPRESS=DEFLATE", "-co", "PREDICTOR=2", "-co", "TILED=YES",
-                    "-scale", "0", "1", "0", "10000",
-                    str(data_utm), str(diag_utm_tif),
-                ]
-                info["commands"]["gdal_translate_data_diag_utm"] = run_cmd(cmd, check=True)
-                info["outputs"]["data_diag_utm_tif"] = str(diag_utm_tif)
+                        raw_lon, raw_lat, corr_stats = _compute_dem_correction_raw_domain(
+                            img_nc, obs_file, dem_src,
+                            transpose_raw_yx, raw_lon, raw_lat,
+                            dem_cache_dir=dem_cache_dir, verbose=True,
+                        )
+                        use_dem_corr = True
+                        info["dem_correction"] = {
+                            **(info.get("dem_correction", {})),
+                            "applied": True,
+                            "mode": "raw_domain_vrt",
+                            "correction_stats": corr_stats,
+                            "scene_bounds_wgs84": list(scene_bounds),
+                        }
+
+                # c) Write lon/lat as single-band GeoTIFFs
+                lon_tif = str(temp_dir_p / f"geoloc_lon_{tag}.tif")
+                lat_tif = str(temp_dir_p / f"geoloc_lat_{tag}.tif")
+                _id_tf = Affine(1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+                for _path, _arr in [(lon_tif, raw_lon), (lat_tif, raw_lat)]:
+                    with rasterio.open(
+                        _path, "w", driver="GTiff",
+                        height=_arr.shape[0], width=_arr.shape[1],
+                        count=1, dtype="float32",
+                        transform=_id_tf,
+                    ) as _dst:
+                        _dst.write(_arr, 1)
+                del raw_lon, raw_lat
+
+                # d) Write raw reflectance as BSQ flat binary + ENVI header
+                raw_bin = str(temp_dir_p / f"raw_bsq_{tag}")
+                raw_hdr_path = raw_bin + ".hdr"
+                raw_header = ht.io.envi_header_dict()
+                raw_header["lines"] = raw_h
+                raw_header["samples"] = raw_w
+                raw_header["bands"] = B
+                raw_header["byte order"] = 0
+                raw_header["data ignore value"] = NO_DATA_VALUE
+                raw_header["data type"] = 4     # float32
+                raw_header["interleave"] = "bsq"
+
+                writer = ht.io.WriteENVI(raw_bin, raw_header)
+                print(f"  [VRT] Writing raw BSQ ({raw_h}x{raw_w}x{B}) ...")
+                for b0 in range(0, B, chunk):
+                    b1 = min(b0 + chunk, B)
+                    blk = np.asarray(data[:, :, b0:b1], dtype=np.float32)
+                    if transpose_raw_yx:
+                        blk = np.transpose(blk, (1, 0, 2))
+                    for i in range(b1 - b0):
+                        writer.write_band(blk[:, :, i], b0 + i)
+
+                _raw_mb = os.path.getsize(raw_bin) / (1024 * 1024)
+                print(f"  [VRT] Raw BSQ written: {_raw_mb:.1f} MB")
+
+                # e) Build VRT with GEOLOCATION metadata
+                vrt_path = str(temp_dir_p / f"data_geoloc_{tag}.vrt")
+                _build_geoloc_vrt(
+                    raw_bin_path=raw_bin,
+                    lon_tif_path=lon_tif,
+                    lat_tif_path=lat_tif,
+                    n_bands=B,
+                    height=raw_h,
+                    width=raw_w,
+                    nodata=NO_DATA_VALUE,
+                    out_vrt_path=vrt_path,
+                )
+                print(f"  [VRT] VRT created: {vrt_path}")
+
+                # f) Single gdalwarp: VRT → UTM ENVI
+                import gc; gc.collect()
+                print(f"Projecting data to {out_crs} "
+                      f"{'(match S2 res)' if match_res else '(60 m)'} "
+                      f"-> {data_utm}")
+                warp_rec = _run_gdalwarp(
+                    vrt_path, str(data_utm),
+                    xres=xres, yres=yres,
+                    src_srs="EPSG:4326",
+                    src_bounds_wgs84=_raw_bounds_wgs84,
+                )
+
+                _t_vrt_elapsed = _time.time() - _t_vrt_start
+                print(f"  [VRT] Total DATA export: {_t_vrt_elapsed:.1f}s")
+
+                info["commands"]["gdalwarp_data"] = warp_rec
+                info["outputs"]["data_envi_bin"] = str(data_utm)
+                info["outputs"]["data_envi_hdr"] = str(data_hdr)
+                info["rasters"]["data_envi"] = raster_meta(str(data_utm))
+                info["vrt_approach"] = {
+                    "enabled": True,
+                    "vrt_path": vrt_path,
+                    "raw_bsq": raw_bin,
+                    "raw_bsq_mb": round(_raw_mb, 1),
+                    "dem_correction": use_dem_corr,
+                    "elapsed_s": round(_t_vrt_elapsed, 2),
+                }
+
+                # g) Post-warp GeoTIFF exports (UTM only — no ortho intermediate)
+                if save_geotiffs:
+                    info["commands"]["gdal_translate_data_utm"] = export_uint16_deflate_geotiff(
+                        str(data_utm), str(utm_tif),
+                        scale_mode="emit_reflectance_0_1"
+                    )
+                    info["outputs"]["data_utm_tif"] = str(utm_tif)
+                    info["rasters"]["data_utm_tif"] = raster_meta(str(utm_tif))
+                    cmd = [
+                        "gdal_translate",
+                        "-b", str(diag_band + 1),
+                        "-ot", "UInt16",
+                        "-co", "COMPRESS=DEFLATE", "-co", "PREDICTOR=2",
+                        "-co", "TILED=YES",
+                        "-scale", "0", "1", "0", "10000",
+                        str(data_utm), str(diag_utm_tif),
+                    ]
+                    info["commands"]["gdal_translate_data_diag_utm"] = run_cmd(cmd, check=True)
+                    info["outputs"]["data_diag_utm_tif"] = str(diag_utm_tif)
+
+            else:
+                # ============================================================
+                # FALLBACK: original scatter loop + gdalwarp (two-pass)
+                # ============================================================
+                data_header = ht.io.envi_header_dict()
+                data_header["lines"] = glt.shape[0]
+                data_header["samples"] = glt.shape[1]
+                data_header["bands"] = B
+                data_header["byte order"] = 0
+                data_header["data ignore value"] = NO_DATA_VALUE
+                data_header["data type"] = 4
+                data_header["interleave"] = "bil"
+                data_header["map info"] = map_info
+
+                data_gcs = str(temp_dir_p / f"data_gcs_{tag}")
+                writer = ht.io.WriteENVI(data_gcs, data_header)
+
+                # --- Scatter loop (nearest-neighbour, no DEM corr in fallback) ---
+                for b0 in range(0, B, chunk):
+                    b1 = min(b0 + chunk, B)
+                    raw_blk = np.asarray(data[:, :, b0:b1], dtype=np.float32)
+                    if transpose_raw_yx:
+                        raw_blk = np.transpose(raw_blk, (1, 0, 2))
+                    out_blk = np.full((H, W, b1 - b0), NO_DATA_VALUE,
+                                     dtype=np.float32)
+                    out_blk[valid_glt2, :] = raw_blk[gy, gx, :]
+                    for i, band_num in enumerate(range(b0, b1)):
+                        writer.write_band(out_blk[:, :, i], band_num)
+
+                diag_ortho_tif = diag_dir / f"{tag}_DATA_diag_band{diag_band:03d}_ortho_wgs84.tif"
+                ortho_tif = geotiff_dir / f"{tag}_DATA_ortho_wgs84.tif"
+
+                if save_geotiffs:
+                    cmd = [
+                        "gdal_translate",
+                        "-b", str(diag_band + 1),
+                        "-a_srs", "EPSG:4326",
+                        "-ot", "UInt16",
+                        "-co", "COMPRESS=DEFLATE", "-co", "PREDICTOR=2",
+                        "-co", "TILED=YES",
+                        "-scale", "0", "1", "0", "10000",
+                        data_gcs, str(diag_ortho_tif),
+                    ]
+                    info["commands"]["gdal_translate_data_diag_ortho"] = run_cmd(cmd, check=True)
+                    info["outputs"]["data_diag_ortho_tif"] = str(diag_ortho_tif)
+
+                    info["commands"]["gdal_translate_data_ortho"] = export_uint16_deflate_geotiff(
+                        data_gcs, str(ortho_tif),
+                        assign_epsg="EPSG:4326",
+                        scale_mode="emit_reflectance_0_1"
+                    )
+                    info["outputs"]["data_ortho_tif"] = str(ortho_tif)
+                    info["rasters"]["data_ortho_tif"] = raster_meta(str(ortho_tif))
+
+                import gc; gc.collect()
+                print(f"Projecting data to {out_crs} "
+                      f"{'(match S2 res)' if match_res else '(60 m)'} "
+                      f"-> {data_utm}")
+                warp_rec = _run_gdalwarp(data_gcs, str(data_utm),
+                                         xres=xres, yres=yres)
+
+                info["commands"]["gdalwarp_data"] = warp_rec
+                info["outputs"]["data_envi_bin"] = str(data_utm)
+                info["outputs"]["data_envi_hdr"] = str(data_hdr)
+                info["rasters"]["data_envi"] = raster_meta(str(data_utm))
+
+                if save_geotiffs:
+                    info["commands"]["gdal_translate_data_utm"] = export_uint16_deflate_geotiff(
+                        str(data_utm), str(utm_tif),
+                        scale_mode="emit_reflectance_0_1"
+                    )
+                    info["outputs"]["data_utm_tif"] = str(utm_tif)
+                    info["rasters"]["data_utm_tif"] = raster_meta(str(utm_tif))
+                    cmd = [
+                        "gdal_translate",
+                        "-b", str(diag_band + 1),
+                        "-ot", "UInt16",
+                        "-co", "COMPRESS=DEFLATE", "-co", "PREDICTOR=2",
+                        "-co", "TILED=YES",
+                        "-scale", "0", "1", "0", "10000",
+                        str(data_utm), str(diag_utm_tif),
+                    ]
+                    info["commands"]["gdal_translate_data_diag_utm"] = run_cmd(cmd, check=True)
+                    info["outputs"]["data_diag_utm_tif"] = str(diag_utm_tif)
 
 
             # Fix header

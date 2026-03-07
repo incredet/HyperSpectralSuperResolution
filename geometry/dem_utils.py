@@ -329,6 +329,88 @@ def geoid_undulation_grid(
 
 
 # ---------------------------------------------------------------------------
+# Sample DEM at arbitrary lon/lat points
+# ---------------------------------------------------------------------------
+
+def sample_dem_at_points(
+    dem_path: str,
+    lons: np.ndarray,
+    lats: np.ndarray,
+    *,
+    apply_geoid: bool = False,
+    verbose: bool = True,
+) -> np.ndarray:
+    """Sample DEM elevation at arbitrary (lon, lat) coordinates.
+
+    Uses bilinear interpolation via ``scipy.ndimage.map_coordinates``.
+
+    Parameters
+    ----------
+    dem_path    : Path to DEM GeoTIFF (or VRT).
+    lons, lats  : float32 arrays of WGS-84 coordinates (any shape, must match).
+    apply_geoid : Add EGM2008 undulation to convert orthometric → ellipsoidal.
+
+    Returns
+    -------
+    float32 array (same shape as *lons*) with elevation in metres.
+    Pixels outside the DEM extent are set to NaN.
+    """
+    from scipy.ndimage import map_coordinates
+
+    shape = lons.shape
+    lon_flat = lons.ravel().astype(np.float64)
+    lat_flat = lats.ravel().astype(np.float64)
+
+    with rasterio.open(dem_path) as ds:
+        arr = ds.read(1).astype(np.float32)
+        nd = ds.nodata
+        tf = ds.transform
+        inv_tf = ~tf  # inverse: (lon, lat) → (col, row)
+
+    if nd is not None:
+        arr[arr == nd] = np.nan
+
+    # Convert (lon, lat) → fractional (col, row) in the DEM grid
+    col_f, row_f = inv_tf * (lon_flat, lat_flat)
+
+    # map_coordinates expects (row, col) as coordinates arrays
+    sampled = map_coordinates(
+        arr,
+        [row_f, col_f],
+        order=1,        # bilinear
+        mode="constant",
+        cval=np.nan,
+    )
+
+    out = sampled.reshape(shape).astype(np.float32)
+
+    if apply_geoid:
+        from pyproj import Transformer
+        _ensure_proj_geoid_grid(verbose=verbose)
+        t = Transformer.from_crs(
+            "EPSG:4326+3855", "EPSG:4979", always_xy=True,
+        )
+        _, _, N = t.transform(
+            lons.astype(np.float64),
+            lats.astype(np.float64),
+            np.zeros_like(lons, dtype=np.float64),
+        )
+        out += N.astype(np.float32)
+        if verbose:
+            print(f"  [DEM] geoid undulation applied to sampled points: "
+                  f"mean N={np.nanmean(N):.2f} m")
+
+    if verbose:
+        valid = np.isfinite(out)
+        n_valid = int(np.count_nonzero(valid))
+        print(f"  [DEM] sampled {n_valid}/{out.size} points from {dem_path}")
+        if n_valid > 0:
+            print(f"  [DEM] elev range: {np.nanmin(out):.1f} – {np.nanmax(out):.1f} m")
+
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Load DEM array
 # ---------------------------------------------------------------------------
 
