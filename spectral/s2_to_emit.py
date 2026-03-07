@@ -434,8 +434,7 @@ class S2ToEMITMatcher:
         s2_tile_path: str | Path,
         *,
         out_path: str | Path | None = None,
-        out_nodata: float = -9999.0,
-        brighness_cap: float = 1.5
+        out_nodata: float = -9999.0
     ) -> np.ndarray:
         """Apply the model to an S2 tile at its native 10 m resolution.
 
@@ -463,18 +462,7 @@ class S2ToEMITMatcher:
             X_valid = X[valid]
             pred = self.predict(X_valid)
 
-            # Clip to valid reflectance range: negative values are
-            # physically impossible and arise from polynomial extrapolation
-            # on dark pixels (roads, shadows, water).
             np.clip(pred, 0.0, None, out=pred)
-
-            # Cap bright extrapolation: for dark pixels (shadows, roads),
-            # the polynomial can "floor out" at the intercept, predicting
-            # values brighter than the S2 input.  Cap each predicted band
-            # at a multiple of the pixel's max S2 value to prevent this.
-            s2_max = X_valid.max(axis=1, keepdims=True)  # (N_valid, 1)
-            cap = s2_max * brighness_cap # allow 50% headroom for spectral differences
-            pred = np.minimum(pred, cap)
 
             out_flat[valid] = pred
 

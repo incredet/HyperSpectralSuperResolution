@@ -901,7 +901,7 @@ def nc_to_envi(
             # rounding in the cols/rows computation.
             cmd += ["-tr", str(step_x), str(step_y)]
             cmd += ["-srcnodata", str(NO_DATA_VALUE), "-dstnodata", str(NO_DATA_VALUE)]
-            cmd += ["-multi", "-wo", "NUM_THREADS=ALL_CPUS", "-wm", "4096"]
+            cmd += ["-wo", "NUM_THREADS=ALL_CPUS", "-wm", "4096", "-multi"]
             cmd += ["-r", "cubic", "-of", "ENVI", src_path, dst_path]
 
             rec = run_cmd(cmd, check=True)
@@ -1010,8 +1010,9 @@ def nc_to_envi(
                         elif "zenith" in bn_low and "sensor" in bn_low:
                             zen_idx = bi
 
-                    raw_azimuth = obs_cube_raw[..., azi_idx]
-                    raw_zenith  = obs_cube_raw[..., zen_idx]
+                    raw_azimuth = np.array(obs_cube_raw[..., azi_idx])
+                    raw_zenith  = np.array(obs_cube_raw[..., zen_idx])
+                    del obs_cube_raw       # free the full OBS cube early
                     if transpose_raw_yx:
                         raw_azimuth = raw_azimuth.T
                         raw_zenith  = raw_zenith.T
@@ -1216,12 +1217,17 @@ def nc_to_envi(
                         "scene_bounds_wgs84": list(scene_bounds),
                     }
 
-                    # Free arrays we no longer need
+                    # Free arrays we no longer need (obs_cube_raw already freed)
                     del (dem_arr, emit_elev, ortho_azi, ortho_zen,
-                         obs_cube_raw, raw_azimuth, raw_zenith, raw_elev,
+                         raw_azimuth, raw_zenith, raw_elev,
                          dh, dground, dx_meters, dy_meters, zen_rad, azi_rad,
                          dx_pixels, dy_pixels, src_r, src_c, fr, fc,
-                         v00, v01, v10, v11, wsum)
+                         v00, v01, v10, v11, wsum,
+                         # These were only needed to build gy/gx lookups:
+                         r0, c0, r1, c1, glt_y_full, glt_x_full,
+                         # Unnormalized weights (normalized w00_n..w11_n are kept):
+                         w00, w01, w10, w11)
+                    import gc; gc.collect()
 
             # --- Scatter loop (with or without DEM correction) ---
             for b0 in range(0, B, chunk):
@@ -1233,23 +1239,17 @@ def nc_to_envi(
                     raw_blk = np.transpose(raw_blk, (1, 0, 2))
 
                 if use_dem_corr:
-                    # Bilinear scatter: for each output pixel, blend the
-                    # raw values at the 4 GLT-neighbour positions of the
-                    # corrected source coordinate.  This goes directly
-                    # from raw sensor data to the corrected ortho grid in
-                    # one step — no intermediate nearest-neighbour image.
+                    # Bilinear scatter: blend 4 GLT-neighbour values
+                    # in-place to minimise peak memory (avoid 4 separate
+                    # (H,W,nb) temporaries).
                     out_blk = np.full((H, W, b1 - b0), NO_DATA_VALUE,
                                      dtype=np.float32)
-                    s00 = raw_blk[gy00, gx00, :]   # (H, W, nb)
-                    s01 = raw_blk[gy01, gx01, :]
-                    s10 = raw_blk[gy10, gx10, :]
-                    s11 = raw_blk[gy11, gx11, :]
-
-                    blended = (s00 * w00_n[..., None]
-                             + s01 * w01_n[..., None]
-                             + s10 * w10_n[..., None]
-                             + s11 * w11_n[..., None])
+                    blended = (raw_blk[gy00, gx00, :] * w00_n[..., None])
+                    blended += raw_blk[gy01, gx01, :] * w01_n[..., None]
+                    blended += raw_blk[gy10, gx10, :] * w10_n[..., None]
+                    blended += raw_blk[gy11, gx11, :] * w11_n[..., None]
                     out_blk[any_valid] = blended[any_valid]
+                    del blended
                 else:
                     # Original nearest-neighbour GLT scatter
                     out_blk = np.full((H, W, b1 - b0), NO_DATA_VALUE,
@@ -1263,8 +1263,8 @@ def nc_to_envi(
             # Free bilinear lookup tables if they were created
             if use_dem_corr:
                 del (gy00, gx00, gy01, gx01, gy10, gx10, gy11, gx11,
-                     w00, w01, w10, w11, w00_n, w01_n, w10_n, w11_n,
-                     any_valid, r0, c0, r1, c1)
+                     w00_n, w01_n, w10_n, w11_n, any_valid)
+                import gc; gc.collect()
 
             # ---- Diagnostic quicklook (single band) for alignment checks ----
             # Pick a stable band index (e.g., middle band) so it always exists
@@ -1310,6 +1310,10 @@ def nc_to_envi(
                 info["outputs"]["data_ortho_tif"] = str(ortho_tif)
                 info["rasters"]["data_ortho_tif"] = raster_meta(str(ortho_tif))
 
+
+            # Free Python memory before gdalwarp (which is memory-intensive
+            # for 285-band ENVI files)
+            import gc; gc.collect()
 
             print(f"Projecting data to {out_crs} {'(match S2 res)' if match_res else '(60 m)'} -> {data_utm}")
             warp_rec = _run_gdalwarp(data_gcs, str(data_utm), xres=xres, yres=yres)
