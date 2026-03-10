@@ -155,8 +155,8 @@ class RunPaths:
 
     # ── Per-pair root ──────────────────────────────────────────────────────
     local_root: Path
-    local_raw_emit: Path
-    local_raw_s2: Path
+    local_emit: Path
+    local_s2: Path
     local_alignment: Path          # was emit_utm
     local_plots: Path
     local_tiles: Path
@@ -169,9 +169,9 @@ class RunPaths:
 
     # drive (mirrors local under a shared output root)
     drive_root: Optional[Path] = None
-    drive_raw_emit: Optional[Path] = None
-    drive_raw_s2: Optional[Path] = None
-    drive_alignment: Optional[Path] = None     # was drive_emit_utm
+    drive_emit: Optional[Path] = None
+    drive_s2: Optional[Path] = None
+    drive_alignment: Optional[Path] = None   
     drive_plots: Optional[Path] = None
     drive_tiles: Optional[Path] = None
     drive_synthetic: Optional[Path] = None
@@ -181,30 +181,6 @@ class RunPaths:
     drive_report_md: Optional[Path] = None
     drive_manifest_csv: Optional[Path] = None
 
-    # ── Backward-compat aliases ────────────────────────────────────────────
-    @property
-    def local_emit(self) -> Path:
-        return self.local_raw_emit
-
-    @property
-    def local_s2(self) -> Path:
-        return self.local_raw_s2
-
-    @property
-    def local_emit_utm(self) -> Path:
-        return self.local_alignment
-
-    @property
-    def drive_emit(self) -> Optional[Path]:
-        return self.drive_raw_emit
-
-    @property
-    def drive_s2(self) -> Optional[Path]:
-        return self.drive_raw_s2
-
-    @property
-    def drive_emit_utm(self) -> Optional[Path]:
-        return self.drive_alignment
 
     # ── ID extraction ──────────────────────────────────────────────────────
 
@@ -248,8 +224,8 @@ class RunPaths:
 
         # ── local dirs ─────────────────────────────────────────────────
         local_root = ensure_dir(local_root)
-        local_raw_emit = ensure_dir(local_root / "raw" / "emit")
-        local_raw_s2 = ensure_dir(local_root / "raw" / "s2")
+        local_emit = ensure_dir(local_root / "emit")
+        local_s2 = ensure_dir(local_root / "s2")
         local_alignment = ensure_dir(local_root / "alignment")
         local_plots = ensure_dir(local_root / "plots")
         local_tiles = ensure_dir(local_root / "tiles")
@@ -265,8 +241,8 @@ class RunPaths:
                 run_id=run_id,
                 pair_id=pair_id,
                 local_root=local_root,
-                local_raw_emit=local_raw_emit,
-                local_raw_s2=local_raw_s2,
+                local_emit = local_emit,
+                local_s2 = local_s2,
                 local_alignment=local_alignment,
                 local_plots=local_plots,
                 local_tiles=local_tiles,
@@ -280,8 +256,8 @@ class RunPaths:
 
         # ── drive dirs (under pair_id subfolder) ───────────────────────
         drive_root = ensure_dir(Path(drive_base) / pair_id)
-        drive_raw_emit = ensure_dir(drive_root / "raw" / "emit")
-        drive_raw_s2 = ensure_dir(drive_root / "raw" / "s2")
+        drive_emit = ensure_dir(local_root / "emit")
+        drive_s2 = ensure_dir(local_root / "s2")
         drive_alignment = ensure_dir(drive_root / "alignment")
         drive_plots = ensure_dir(drive_root / "plots")
         drive_tiles = ensure_dir(drive_root / "tiles")
@@ -294,9 +270,9 @@ class RunPaths:
             run_id=run_id,
             pair_id=pair_id,
             local_root=local_root,
-            local_raw_emit=local_raw_emit,
-            local_raw_s2=local_raw_s2,
-            local_alignment=local_alignment,
+            local_emit = local_emit,
+            local_s2 = local_s2,
+            local_alignment=local_alignment,            
             local_plots=local_plots,
             local_tiles=local_tiles,
             local_synthetic=local_synthetic,
@@ -306,8 +282,8 @@ class RunPaths:
             local_report_md=local_report_md,
             local_manifest_csv=local_manifest_csv,
             drive_root=drive_root,
-            drive_raw_emit=drive_raw_emit,
-            drive_raw_s2=drive_raw_s2,
+            drive_emit = drive_emit,
+            drive_s2 = drive_s2,
             drive_alignment=drive_alignment,
             drive_plots=drive_plots,
             drive_tiles=drive_tiles,
