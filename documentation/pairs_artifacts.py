@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,42 +39,181 @@ def write_json(path: str | Path, obj: Any, *, indent: int = 2) -> Path:
     return path
 
 
+# ---------------------------------------------------------------------------
+# Pair-ID generation
+# ---------------------------------------------------------------------------
+
+_EMIT_DT_RE = re.compile(r"(\d{8}T\d{6})")
+
+
+def _emit_datetime_from_nc(emit_nc: str | Path) -> str:
+    """Extract the YYYYMMDDTHHMMSS timestamp from an EMIT L2A NC filename.
+
+    Example::
+
+        >>> _emit_datetime_from_nc("EMIT_L2A_RFL_001_20230615T123456_2312311_007.nc")
+        '20230615T123456'
+    """
+    stem = Path(emit_nc).stem
+    m = _EMIT_DT_RE.search(stem)
+    if m:
+        return m.group(1)
+    # Fallback: return whole stem (shouldn't happen with real EMIT filenames)
+    return stem
+
+
+def _s2_tile_id_from_item(s2_item: dict) -> str:
+    """Extract the MGRS tile ID (e.g. 'T11SQA') from an S2 STAC item dict.
+
+    Tries ``grid:code`` in properties first, then parses the item ``id``
+    (format like ``S2B_32TQM_20230615_0_L2A``).
+    """
+    props = s2_item.get("properties", {}) or {}
+    grid_code = props.get("grid:code")
+    if grid_code:
+        # grid:code is like "MGRS-32TQM" → strip prefix and add "T"
+        code = str(grid_code).replace("MGRS-", "")
+        if not code.startswith("T"):
+            code = "T" + code
+        return code
+
+    # Parse from item id: S2B_32TQM_20230615_0_L2A → "T32TQM"
+    item_id = s2_item.get("id", "")
+    parts = item_id.split("_")
+    if len(parts) >= 2:
+        tile_part = parts[1]
+        if not tile_part.startswith("T"):
+            tile_part = "T" + tile_part
+        return tile_part
+
+    return "TUNKNOWN"
+
+
+def _s2_date_from_item(s2_item: dict) -> str:
+    """Extract YYYYMMDD from an S2 STAC item dict."""
+    props = s2_item.get("properties", {}) or {}
+    dt_str = props.get("datetime", "")
+    if dt_str:
+        # ISO format: 2023-06-15T10:30:00Z → 20230615
+        dt_str = str(dt_str).replace("-", "").replace(":", "")
+        m = re.match(r"(\d{8})", dt_str)
+        if m:
+            return m.group(1)
+
+    # Parse from item id: S2B_32TQM_20230615_0_L2A → "20230615"
+    item_id = s2_item.get("id", "")
+    parts = item_id.split("_")
+    if len(parts) >= 3:
+        m = re.match(r"(\d{8})", parts[2])
+        if m:
+            return m.group(1)
+
+    return "00000000"
+
+
+def make_pair_id(emit_nc: str | Path, s2_item: dict) -> str:
+    """Build a unique pair identifier: ``{EMIT_datetime}_{S2_tile}_{S2_date}``.
+
+    Examples::
+
+        >>> make_pair_id(
+        ...     "EMIT_L2A_RFL_001_20230615T123456_2312311_007.nc",
+        ...     {"id": "S2B_11SQA_20230615_0_L2A",
+        ...      "properties": {"datetime": "2023-06-15T10:30:00Z",
+        ...                     "grid:code": "MGRS-11SQA"}},
+        ... )
+        '20230615T123456_T11SQA_20230615'
+
+    Args:
+        emit_nc:  Path to EMIT L2A reflectance netCDF.
+        s2_item:  Sentinel-2 STAC item dictionary.
+
+    Returns:
+        A filesystem-safe string uniquely identifying this EMIT–S2 pair.
+    """
+    emit_dt = _emit_datetime_from_nc(emit_nc)
+    s2_tile = _s2_tile_id_from_item(s2_item)
+    s2_date = _s2_date_from_item(s2_item)
+    return f"{emit_dt}_{s2_tile}_{s2_date}"
+
+
+# ---------------------------------------------------------------------------
+# RunPaths — folder layout for one pair
+# ---------------------------------------------------------------------------
+
+
 @dataclass(frozen=True)
 class RunPaths:
-    """
-    Folder layout for one pair.
+    """Folder layout for one EMIT–S2 pair.
+
+    The canonical folder name is ``pair_id`` (built by :func:`make_pair_id`).
+    ``run_id`` (EMIT-only) is kept for backward compatibility.
     """
 
     run_id: str
+    pair_id: str
 
-    # local
+    # ── Per-pair root ──────────────────────────────────────────────────────
     local_root: Path
-    local_emit: Path
-    local_s2: Path
-    local_emit_utm: Path
+    local_raw_emit: Path
+    local_raw_s2: Path
+    local_alignment: Path          # was emit_utm
     local_plots: Path
     local_tiles: Path
+    local_synthetic: Path
+    local_matchers: Path
     local_meta: Path
     local_tile_meta: Path
     local_report_md: Path
     local_manifest_csv: Path
 
-    # drive
+    # drive (mirrors local under a shared output root)
     drive_root: Optional[Path] = None
-    drive_emit: Optional[Path] = None
-    drive_s2: Optional[Path] = None
-    drive_emit_utm: Optional[Path] = None
+    drive_raw_emit: Optional[Path] = None
+    drive_raw_s2: Optional[Path] = None
+    drive_alignment: Optional[Path] = None     # was drive_emit_utm
     drive_plots: Optional[Path] = None
     drive_tiles: Optional[Path] = None
+    drive_synthetic: Optional[Path] = None
+    drive_matchers: Optional[Path] = None
     drive_meta: Optional[Path] = None
     drive_tile_meta: Optional[Path] = None
     drive_report_md: Optional[Path] = None
     drive_manifest_csv: Optional[Path] = None
 
+    # ── Backward-compat aliases ────────────────────────────────────────────
+    @property
+    def local_emit(self) -> Path:
+        return self.local_raw_emit
+
+    @property
+    def local_s2(self) -> Path:
+        return self.local_raw_s2
+
+    @property
+    def local_emit_utm(self) -> Path:
+        return self.local_alignment
+
+    @property
+    def drive_emit(self) -> Optional[Path]:
+        return self.drive_raw_emit
+
+    @property
+    def drive_s2(self) -> Optional[Path]:
+        return self.drive_raw_s2
+
+    @property
+    def drive_emit_utm(self) -> Optional[Path]:
+        return self.drive_alignment
+
+    # ── ID extraction ──────────────────────────────────────────────────────
+
     @staticmethod
     def emit_id_from_nc(emit_nc: str | Path) -> str:
         stem = Path(emit_nc).stem
         return stem.replace("EMIT_L2A_RFL_", "", 1)
+
+    # ── Builder ────────────────────────────────────────────────────────────
 
     @classmethod
     def build(
@@ -82,16 +222,39 @@ class RunPaths:
         emit_nc: str | Path,
         local_root: str | Path,
         drive_base: str | Path | None = None,
+        pair_id: str | None = None,
+        s2_item: dict | None = None,
     ) -> "RunPaths":
+        """Create folder layout for one pair.
+
+        Args:
+            emit_nc:    Path to EMIT L2A netCDF.
+            local_root: Working directory for local outputs.
+            drive_base: If set, persistent output root.  A subfolder
+                        named ``pair_id`` is created under this.
+            pair_id:    Explicit pair identifier.  If *None* and *s2_item*
+                        is given, computed via :func:`make_pair_id`.
+                        Falls back to ``emit_id_from_nc`` for backward compat.
+            s2_item:    S2 STAC item dict (used to compute *pair_id* when
+                        not provided explicitly).
+        """
         run_id = cls.emit_id_from_nc(emit_nc)
 
-        # local
+        if pair_id is None:
+            if s2_item is not None:
+                pair_id = make_pair_id(emit_nc, s2_item)
+            else:
+                pair_id = run_id  # backward compat
+
+        # ── local dirs ─────────────────────────────────────────────────
         local_root = ensure_dir(local_root)
-        local_emit = ensure_dir(local_root / "emit")
-        local_s2 = ensure_dir(local_root / "s2")
-        local_emit_utm = ensure_dir(local_root / "emit_utm")
+        local_raw_emit = ensure_dir(local_root / "raw" / "emit")
+        local_raw_s2 = ensure_dir(local_root / "raw" / "s2")
+        local_alignment = ensure_dir(local_root / "alignment")
         local_plots = ensure_dir(local_root / "plots")
         local_tiles = ensure_dir(local_root / "tiles")
+        local_synthetic = ensure_dir(local_root / "synthetic")
+        local_matchers = ensure_dir(local_root / "matchers")
         local_meta = ensure_dir(local_root / "metadata")
         local_tile_meta = ensure_dir(local_meta / "tiles")
         local_report_md = local_root / "report.md"
@@ -100,59 +263,61 @@ class RunPaths:
         if drive_base is None:
             return cls(
                 run_id=run_id,
+                pair_id=pair_id,
                 local_root=local_root,
-                local_emit=local_emit,
-                local_s2=local_s2,
-                local_emit_utm=local_emit_utm,
+                local_raw_emit=local_raw_emit,
+                local_raw_s2=local_raw_s2,
+                local_alignment=local_alignment,
                 local_plots=local_plots,
                 local_tiles=local_tiles,
+                local_synthetic=local_synthetic,
+                local_matchers=local_matchers,
                 local_meta=local_meta,
                 local_tile_meta=local_tile_meta,
                 local_report_md=local_report_md,
                 local_manifest_csv=local_manifest_csv,
             )
 
-        drive_root = ensure_dir(Path(drive_base) / run_id)
-        drive_emit = ensure_dir(drive_root / "emit")
-        drive_s2 = ensure_dir(drive_root / "s2")
-        drive_emit_utm = ensure_dir(drive_root / "emit_utm")
+        # ── drive dirs (under pair_id subfolder) ───────────────────────
+        drive_root = ensure_dir(Path(drive_base) / pair_id)
+        drive_raw_emit = ensure_dir(drive_root / "raw" / "emit")
+        drive_raw_s2 = ensure_dir(drive_root / "raw" / "s2")
+        drive_alignment = ensure_dir(drive_root / "alignment")
         drive_plots = ensure_dir(drive_root / "plots")
         drive_tiles = ensure_dir(drive_root / "tiles")
+        drive_synthetic = ensure_dir(drive_root / "synthetic")
+        drive_matchers = ensure_dir(drive_root / "matchers")
         drive_meta = ensure_dir(drive_root / "metadata")
         drive_tile_meta = ensure_dir(drive_meta / "tiles")
 
         return cls(
             run_id=run_id,
+            pair_id=pair_id,
             local_root=local_root,
-            local_emit=local_emit,
-            local_s2=local_s2,
-            local_emit_utm=local_emit_utm,
+            local_raw_emit=local_raw_emit,
+            local_raw_s2=local_raw_s2,
+            local_alignment=local_alignment,
             local_plots=local_plots,
             local_tiles=local_tiles,
+            local_synthetic=local_synthetic,
+            local_matchers=local_matchers,
             local_meta=local_meta,
             local_tile_meta=local_tile_meta,
             local_report_md=local_report_md,
             local_manifest_csv=local_manifest_csv,
             drive_root=drive_root,
-            drive_emit=drive_emit,
-            drive_s2=drive_s2,
-            drive_emit_utm=drive_emit_utm,
+            drive_raw_emit=drive_raw_emit,
+            drive_raw_s2=drive_raw_s2,
+            drive_alignment=drive_alignment,
             drive_plots=drive_plots,
             drive_tiles=drive_tiles,
+            drive_synthetic=drive_synthetic,
+            drive_matchers=drive_matchers,
             drive_meta=drive_meta,
             drive_tile_meta=drive_tile_meta,
             drive_report_md=drive_root / "report.md",
             drive_manifest_csv=drive_root / "manifest.csv",
         )
-
-    # @classmethod
-    # def from_emit_nc(
-    #     cls,
-    #     emit_nc: str | Path,
-    #     local_root: str | Path,
-    #     drive_root_base: str | Path | None = None,
-    # ) -> "RunPaths":
-    #     return cls.build(emit_nc=emit_nc, local_root=local_root, drive_base=drive_root_base)
 
 
 class ReportWriter:
@@ -484,6 +649,7 @@ class TileRecord:
     idx: int
     emit_tif: str
     s2_tif: str
+    pair_id: str = ""
     plot_png: Optional[str] = None
 
     emit_black_frac: Optional[float] = None
@@ -500,6 +666,7 @@ class TileRecord:
 
     def to_manifest_row(self) -> dict:
         row = {
+            "pair_id": self.pair_id,
             "idx": int(self.idx),
             "emit_tif": self.emit_tif,
             "s2_tif": self.s2_tif,
@@ -533,12 +700,16 @@ def write_tile_metadata(
     s2_datetime: str | None = None,
     params: dict | None = None,
 ) -> tuple[Path, dict]:
-    """
-    write summary for tiles 
+    """Write per-tile metadata JSON.
+
+    Filename includes ``pair_id`` when available for multi-scene
+    provenance (e.g. ``20230615T123456_T11SQA_20230615_tile003.json``).
+    Falls back to ``tile_003.json`` when ``pair_id`` is empty.
     """
     out_dir = ensure_dir(out_dir)
 
     doc = {
+        "pair_id": record.pair_id,
         "tile_id": int(record.idx),
         "created_utc": utc_now_iso(),
         "pair": {
@@ -569,15 +740,14 @@ def write_tile_metadata(
         "tile_info": tile_info or {},
     }
 
-    path = out_dir / f"tile_{record.idx:03d}.json"
+    prefix = f"{record.pair_id}_" if record.pair_id else ""
+    path = out_dir / f"{prefix}tile{record.idx:03d}.json"
     write_json(path, doc)
     return path, record.to_manifest_row()
 
 
 def write_manifest_csv(path: str | Path, rows: list[dict] | list[TileRecord]) -> Path:
-    """
-    Write manifest.csv
-    """
+    """Write per-pair manifest.csv."""
 
     path = Path(path)
     ensure_dir(path.parent)
@@ -587,12 +757,64 @@ def write_manifest_csv(path: str | Path, rows: list[dict] | list[TileRecord]) ->
         return path
 
     if isinstance(rows[0], TileRecord):
-        data = [r.to_manifest_row() for r in rows] 
+        data = [r.to_manifest_row() for r in rows]
     else:
         data = rows
 
     pd.DataFrame(data).to_csv(path, index=False)
     return path
+
+
+def write_global_manifest(
+    output_root: str | Path,
+    pair_manifests: list[str | Path] | None = None,
+    *,
+    filename: str = "global_manifest.csv",
+) -> Path:
+    """Concatenate per-pair manifests into a single global manifest.
+
+    If *pair_manifests* is ``None``, all ``manifest.csv`` files found
+    one level below *output_root* are collected automatically::
+
+        output_root/
+        ├── pair_a/manifest.csv
+        ├── pair_b/manifest.csv
+        └── global_manifest.csv   ← written here
+
+    Args:
+        output_root:     Root output directory containing per-pair folders.
+        pair_manifests:  Explicit list of per-pair manifest CSV paths.
+                         If *None*, discovered by globbing.
+        filename:        Name of the global manifest file.
+
+    Returns:
+        Path to the written global manifest CSV.
+    """
+    output_root = Path(output_root)
+    ensure_dir(output_root)
+    out_path = output_root / filename
+
+    if pair_manifests is None:
+        pair_manifests = sorted(output_root.glob("*/manifest.csv"))
+
+    frames: list[pd.DataFrame] = []
+    for csv_path in pair_manifests:
+        csv_path = Path(csv_path)
+        if csv_path.exists() and csv_path.stat().st_size > 0:
+            try:
+                df = pd.read_csv(csv_path)
+                if not df.empty:
+                    frames.append(df)
+            except Exception:
+                pass
+
+    if frames:
+        combined = pd.concat(frames, ignore_index=True)
+    else:
+        combined = pd.DataFrame()
+
+    combined.to_csv(out_path, index=False)
+    return out_path
 
 
 # -----------------------------------------------------------------------------

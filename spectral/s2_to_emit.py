@@ -434,7 +434,7 @@ class S2ToEMITMatcher:
         s2_tile_path: str | Path,
         *,
         out_path: str | Path | None = None,
-        out_nodata: float = -9999.0
+        out_nodata: float = 65535.0
     ) -> np.ndarray:
         """Apply the model to an S2 tile at its native 10 m resolution.
 
@@ -504,16 +504,17 @@ def fit_tile(
     alpha: float = 1.0,
     max_cv: float = 0.25,
     verbose: bool = True,
+    emit_upsample_order: int = 1,
 ) -> tuple[S2ToEMITMatcher, dict]:
     """Fit 32 polynomial Ridge models from a single aligned tile pair.
 
     Training is done at the **native S2 10 m resolution** using only
     pixels from **spectrally homogeneous** EMIT-scale blocks.  Each EMIT
-    60 m pixel is nearest-neighbour-repeated into a ``scale × scale``
-    block so that every 10 m S2 pixel is paired with its parent EMIT
-    value.  However, blocks that contain mixed land-cover (roads crossing
-    vegetation, field edges, etc.) are excluded from training via the
-    *max_cv* homogeneity threshold.
+    60 m pixel is upsampled into a ``scale × scale`` block so that every
+    10 m S2 pixel is paired with its parent EMIT value.  However, blocks
+    that contain mixed land-cover (roads crossing vegetation, field
+    edges, etc.) are excluded from training via the *max_cv* homogeneity
+    threshold.
 
     This avoids the mixed-label problem: in mixed blocks, the EMIT value
     is an area-weighted average of spectrally different surfaces, so
@@ -534,6 +535,9 @@ def fit_tile(
                             a ``scale × scale`` block for it to be considered
                             homogeneous.  Default 0.25 (25 %).
         verbose:            Print progress and R² summary.
+        emit_upsample_order: Interpolation order for upsampling EMIT to the
+                            S2 grid.  0 = nearest-neighbour, 1 = bilinear
+                            (default), 3 = bicubic.
 
     Returns:
         ``(matcher, stats)`` where *stats* is a dict containing:
@@ -543,8 +547,8 @@ def fit_tile(
     s2_cube,  s2_prof,   s2_nodata   = _read_raster(s2_tile_path)
     emit_b32, emit_prof, emit_nodata = _read_raster(emit_b32_tile_path)
 
-    # Upsample EMIT to 10 m by repeating each pixel into a scale×scale block.
-    emit_at_s2 = zoom(emit_b32, (1, scale, scale), order=0)
+    # Upsample EMIT to 10 m using the configured interpolation order.
+    emit_at_s2 = zoom(emit_b32, (1, scale, scale), order=emit_upsample_order)
 
     band_indices, wavelengths_nm = _read_emit_band_meta(emit_b32_tile_path)
 
@@ -650,6 +654,7 @@ def fit_tiles_batch(
     alpha: float = 1.0,
     max_cv: float = 0.25,
     verbose: bool = True,
+    emit_upsample_order: int = 1,
 ) -> tuple[S2ToEMITMatcher, dict]:
     """Fit 32 models by pooling 10 m pixels from multiple tile pairs.
 
@@ -667,6 +672,9 @@ def fit_tiles_batch(
     Args:
         tile_pairs: Sequence of ``(s2_tile_path, emit_b32_tile_path)`` tuples.
         scale, degree, alpha, max_cv, verbose: same as :func:`fit_tile`.
+        emit_upsample_order: Interpolation order for upsampling EMIT to the
+                            S2 grid.  0 = nearest-neighbour, 1 = bilinear
+                            (default), 3 = bicubic.
 
     Returns:
         ``(matcher, stats)`` with an additional ``n_tiles`` key in *stats*.
@@ -681,8 +689,8 @@ def fit_tiles_batch(
         s2_cube,  s2_prof,   s2_nodata   = _read_raster(s2_path)
         emit_b32, emit_prof, emit_nodata = _read_raster(emit_path)
 
-        # Upsample EMIT to 10 m (nearest-neighbour repeat)
-        emit_at_s2 = zoom(emit_b32, (1, scale, scale), order=0)
+        # Upsample EMIT to 10 m using the configured interpolation order.
+        emit_at_s2 = zoom(emit_b32, (1, scale, scale), order=emit_upsample_order)
 
         if band_indices is None:
             band_indices, wavelengths_nm = _read_emit_band_meta(emit_path)

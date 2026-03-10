@@ -27,7 +27,7 @@ import matplotlib.pyplot as plt
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from data.EMIT.emit_utils import closest_bands
+from data.EMIT.emit_utils import closest_bands, select_emit_bands
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +123,7 @@ def save_tile_pair(
     tile_info,
     out_dir,
     *,
+    pair_id: str = "",
     tiled=True,
     overwrite=True,
     emit_wavelengths_nm: Optional[np.ndarray] = None,
@@ -137,6 +138,10 @@ def save_tile_pair(
     The EMIT tile is saved as uint16 (scaled by *emit_scale*, nodata =
     *emit_nodata_u16*).  The S2 tile preserves its original dtype.
 
+    When *pair_id* is provided, tile filenames include it as a prefix
+    for multi-scene provenance (e.g. ``20230615T123456_T11SQA_20230615_tile003_emit.tif``).
+    When empty, falls back to the original ``tile_003_emit.tif`` pattern.
+
     When *emit_wavelengths_nm* is provided (full 285-band array from the
     cached JSON), per-band ``wavelength`` and ``emit_band_index`` tags are
     merged with any existing source tags and written to the EMIT tile, making
@@ -148,6 +153,7 @@ def save_tile_pair(
         s2_path:             Source S2 raster.
         tile_info:           Dict returned by :func:`find_valid_paired_tiles`.
         out_dir:             Directory where tile files are written.
+        pair_id:             Pair identifier prefix for filenames (default "").
         tiled:               Write tiled GeoTIFFs.
         overwrite:           Remove existing output files before writing.
         emit_wavelengths_nm: Full-spectrum wavelength array (all 285 EMIT
@@ -173,8 +179,9 @@ def save_tile_pair(
     out_dir.mkdir(parents=True, exist_ok=True)
     k = int(tile_info["idx"])
 
-    emit_out = out_dir / f"tile_{k:03d}_emit.tif"
-    s2_out   = out_dir / f"tile_{k:03d}_s2.tif"
+    prefix = f"{pair_id}_" if pair_id else ""
+    emit_out = out_dir / f"{prefix}tile{k:03d}_emit.tif"
+    s2_out   = out_dir / f"{prefix}tile{k:03d}_s2.tif"
 
     if overwrite:
         emit_out.unlink(missing_ok=True)
@@ -289,14 +296,23 @@ def write_emit_b32_tile(
     overwrite: bool = False,
     wavelengths_nm: Optional[np.ndarray] = None,
 ) -> tuple[Path, np.ndarray]:
-    """Write a subset of *num_keep* evenly-spaced EMIT bands as a new GeoTIFF.
+    """Write a subset of *num_keep* EMIT bands as a new GeoTIFF.
+
+    When *wavelengths_nm* is provided and *idx_0based* is ``None``, bands
+    are selected using :func:`select_emit_bands` which guarantees that all
+    10 Sentinel-2-corresponding bands are included and atmospheric
+    absorption windows (1350–1450 nm, 1800–1950 nm) are avoided.  The
+    remaining bands are distributed evenly across the valid spectral range.
+
+    If *wavelengths_nm* is not available, falls back to evenly-spaced
+    index selection via ``np.linspace``.
 
     The output file is written next to the input with a ``_b32`` suffix
     (or ``_b{num_keep}`` if *num_keep* ≠ 32).
 
     Per-band GeoTIFF tags ``wavelength`` and ``emit_band_index`` are written
     when *wavelengths_nm* is provided (pass the full 285-band array from the
-    cached JSON; the correct 32 values are selected automatically using
+    cached JSON; the correct values are selected automatically using
     *idx_0based*).  These tags are then read back by
     ``_read_emit_band_meta`` / ``fit_tile`` / ``plot_spectral_match`` with no
     extra arguments — the file is self-describing.
@@ -305,13 +321,12 @@ def write_emit_b32_tile(
         emit_tif_path:  Full-band EMIT tile GeoTIFF.
         num_keep:       Number of bands to keep (default 32).
         idx_0based:     Pre-computed 0-based band indices to reuse across
-                        tiles.  If *None*, indices are computed from the band
-                        count.
+                        tiles.  If *None*, indices are computed automatically.
         overwrite:      If *False* and the output already exists, return
                         immediately without re-writing.
         wavelengths_nm: Full-spectrum wavelength array (all 285 EMIT bands,
-                        nm).  The 32 selected wavelengths are embedded as
-                        per-band ``wavelength`` GeoTIFF tags.
+                        nm).  Used both for smart band selection and for
+                        embedding per-band ``wavelength`` GeoTIFF tags.
 
     Returns:
         ``(output_path, indices_array)`` where *indices_array* is a 1-D int
@@ -325,9 +340,14 @@ def write_emit_b32_tile(
         n_bands = src.count
 
         if idx_0based is None:
-            idx_0based = np.round(
-                np.linspace(0, n_bands - 1, num_keep)
-            ).astype(int)
+            if wavelengths_nm is not None:
+                idx_0based = select_emit_bands(
+                    wavelengths_nm, num_keep=num_keep,
+                )
+            else:
+                idx_0based = np.round(
+                    np.linspace(0, n_bands - 1, num_keep)
+                ).astype(int)
 
         if not overwrite and dst_path.exists():
             return dst_path, idx_0based
