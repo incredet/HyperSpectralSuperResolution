@@ -10,6 +10,7 @@ find_valid_paired_tiles  - scan an aligned pair and list non-black tile windows
 save_tile_pair           - write a single (EMIT, S2) tile pair as GeoTIFFs
 write_emit_b32_tile      - subsample an EMIT tile to 32 evenly-spaced bands
 plot_tile_pair_simple    - side-by-side RGB visualisation of one tile pair
+realign_s2_to_emit       - per-tile sub-pixel alignment via phase cross-correlation
 """
 
 from __future__ import annotations
@@ -114,6 +115,217 @@ def find_valid_paired_tiles(
 
 
 # ---------------------------------------------------------------------------
+# Per-tile sub-pixel realignment
+# ---------------------------------------------------------------------------
+
+# RGB target wavelengths (nm) used for cross-correlation alignment
+_ALIGN_RGB_NM = (650.0, 550.0, 470.0)   # R, G, B
+
+
+def _find_s2_rgb_indices(descriptions: list[str | None]) -> tuple[int, int, int]:
+    """Return 0-based (R, G, B) band indices from S2 band descriptions.
+
+    Looks for B04 (red), B03 (green), B02 (blue) in the description
+    strings.  Falls back to bands 0, 1, 2 if descriptions are absent.
+
+    Returns:
+        ``(r_idx, g_idx, b_idx)`` — 0-based indices into the S2 band array.
+    """
+    mapping: dict[str, int] = {}
+    for i, d in enumerate(descriptions):
+        if d is None:
+            continue
+        dl = d.lower()
+        if "b04" in dl or (("red" in dl) and "edge" not in dl):
+            mapping.setdefault("r", i)
+        elif "b03" in dl or "green" in dl:
+            mapping.setdefault("g", i)
+        elif "b02" in dl or "blue" in dl:
+            mapping.setdefault("b", i)
+    if len(mapping) == 3:
+        return mapping["r"], mapping["g"], mapping["b"]
+    # fallback: assume first three bands are B02, B03, B04 (common S2 order)
+    return 2, 1, 0
+
+
+def _block_average(arr_2d: np.ndarray, factor: int) -> np.ndarray:
+    """Downsample a 2-D array by *factor* using block averaging.
+
+    Trims the array to an exact multiple of *factor* before reshaping.
+    """
+    h, w = arr_2d.shape
+    h_trim = (h // factor) * factor
+    w_trim = (w // factor) * factor
+    trimmed = arr_2d[:h_trim, :w_trim]
+    return trimmed.reshape(h_trim // factor, factor,
+                           w_trim // factor, factor).mean(axis=(1, 3))
+
+
+def realign_s2_to_emit(
+    emit_tile: np.ndarray,
+    s2_tile: np.ndarray,
+    *,
+    scale: int = 6,
+    emit_wavelengths_nm: np.ndarray | None = None,
+    s2_descriptions: list[str | None] | None = None,
+    upsample_factor: int = 100,
+    max_shift_emit_px: float = 1.0,
+) -> tuple[np.ndarray, dict]:
+    """Sub-pixel realignment of an S2 tile to match its EMIT counterpart.
+
+    Uses phase cross-correlation on 3 RGB channels (R²-weighted average)
+    to estimate the shift in EMIT-pixel units, then applies
+    ``scipy.ndimage.shift`` to every S2 band at full (10 m) resolution.
+
+    The tile dimensions are preserved — no border crop is applied (Option A).
+
+    Parameters
+    ----------
+    emit_tile : ndarray, shape (C_emit, H_emit, W_emit)
+        EMIT tile in band-first layout.  Can be uint16 or float.
+    s2_tile : ndarray, shape (C_s2, H_s2, W_s2)
+        S2 tile in band-first layout.
+    scale : int
+        S2-pixel / EMIT-pixel ratio (default 6 for 10m / 60m).
+    emit_wavelengths_nm : ndarray or None
+        Full wavelength array for the EMIT tile's bands (same length as
+        ``C_emit``).  Used to pick the 3 RGB bands closest to 650 / 550 /
+        470 nm.  If None, bands at ⅔, ½, ⅙ of the total count are used.
+    s2_descriptions : list of str or None
+        Rasterio band descriptions for the S2 tile, used to identify
+        B04 / B03 / B02.  Falls back to indices 2 / 1 / 0 if absent.
+    upsample_factor : int
+        Sub-pixel precision for ``phase_cross_correlation`` (default 100
+        → 0.01 EMIT-pixel precision).
+    max_shift_emit_px : float
+        Maximum acceptable shift magnitude in EMIT pixels.  If the
+        estimated shift exceeds this, the S2 tile is returned unchanged
+        and ``stats["applied"]`` is False.
+
+    Returns
+    -------
+    s2_shifted : ndarray
+        Realigned S2 tile (same shape and dtype as input).
+    stats : dict
+        ``shift_emit_px``  – (dy, dx) shift in EMIT pixels
+        ``shift_s2_px``    – (dy, dx) shift in S2 pixels
+        ``r2_per_channel`` – per-RGB-channel correlation from phase_cross_correlation
+        ``applied``        – whether the shift was actually applied
+    """
+    from skimage.registration import phase_cross_correlation
+    from scipy.ndimage import shift as ndimage_shift
+
+    c_emit, h_emit, w_emit = emit_tile.shape
+    c_s2, h_s2, w_s2 = s2_tile.shape
+
+    # ── Identify RGB bands ────────────────────────────────────────────────
+    if emit_wavelengths_nm is not None:
+        wl = np.atleast_1d(np.asarray(emit_wavelengths_nm, dtype=np.float64))
+        emit_rgb_idx, _ = closest_bands(wl, list(_ALIGN_RGB_NM), verbose=False)
+    else:
+        n = c_emit
+        emit_rgb_idx = [max(0, n * 2 // 3), max(0, n // 2), max(0, n // 6)]
+
+    if s2_descriptions is not None:
+        s2_r, s2_g, s2_b = _find_s2_rgb_indices(s2_descriptions)
+    else:
+        s2_r, s2_g, s2_b = 2, 1, 0
+    s2_rgb_idx = [s2_r, s2_g, s2_b]
+
+    # ── Prepare coarse-resolution images for correlation ──────────────────
+    emit_float = emit_tile.astype(np.float64)
+    s2_float = s2_tile.astype(np.float64)
+
+    # Build EMIT RGB at native resolution (H_emit × W_emit)
+    emit_rgb = np.stack(
+        [emit_float[i] for i in emit_rgb_idx], axis=-1
+    )  # (H_emit, W_emit, 3)
+
+    # Block-average S2 RGB to EMIT resolution
+    s2_rgb_coarse = np.stack(
+        [_block_average(s2_float[i], scale) for i in s2_rgb_idx], axis=-1
+    )  # (H_emit, W_emit, 3)  — after trimming
+
+    # Trim EMIT to match (in case S2 wasn't exact multiple)
+    h_match = min(emit_rgb.shape[0], s2_rgb_coarse.shape[0])
+    w_match = min(emit_rgb.shape[1], s2_rgb_coarse.shape[1])
+    emit_rgb = emit_rgb[:h_match, :w_match]
+    s2_rgb_coarse = s2_rgb_coarse[:h_match, :w_match]
+
+    # ── Phase cross-correlation per channel ───────────────────────────────
+    shifts_per_ch = []     # [(dy, dx), ...]
+    correlations = []      # per-channel correlation (used as weight)
+
+    for ch in range(3):
+        ref = emit_rgb[:, :, ch]
+        mov = s2_rgb_coarse[:, :, ch]
+
+        # Skip channel if it's all-constant (zero variance)
+        if np.std(ref) < 1e-10 or np.std(mov) < 1e-10:
+            shifts_per_ch.append((0.0, 0.0))
+            correlations.append(0.0)
+            continue
+
+        shift_yx, error, phase_diff = phase_cross_correlation(
+            ref, mov, upsample_factor=upsample_factor,
+        )
+        shifts_per_ch.append((float(shift_yx[0]), float(shift_yx[1])))
+        # phase_cross_correlation returns error = 1 - correlation;
+        # convert to correlation²  (R² weight like supervisor's code)
+        corr = max(0.0, 1.0 - error)
+        correlations.append(corr ** 2)
+
+    # ── R²-weighted average shift ─────────────────────────────────────────
+    dy_arr = np.array([s[0] for s in shifts_per_ch])
+    dx_arr = np.array([s[1] for s in shifts_per_ch])
+    rr = np.array(correlations)
+
+    if rr.sum() > 0:
+        dy_emit = float(np.sum(dy_arr * rr) / np.sum(rr))
+        dx_emit = float(np.sum(dx_arr * rr) / np.sum(rr))
+    else:
+        dy_emit, dx_emit = 0.0, 0.0
+
+    stats = {
+        "shift_emit_px": (dy_emit, dx_emit),
+        "shift_s2_px": (dy_emit * scale, dx_emit * scale),
+        "r2_per_channel": correlations,
+        "applied": False,
+    }
+
+    # ── Apply shift if within tolerance ───────────────────────────────────
+    if max(abs(dy_emit), abs(dx_emit)) > max_shift_emit_px:
+        return s2_tile.copy(), stats
+
+    if abs(dy_emit) < 1e-6 and abs(dx_emit) < 1e-6:
+        # Negligible shift — skip to avoid unnecessary interpolation
+        stats["applied"] = True
+        return s2_tile.copy(), stats
+
+    dy_s2 = dy_emit * scale
+    dx_s2 = dx_emit * scale
+
+    # Shift every S2 band at full resolution using spline interpolation
+    s2_shifted = np.empty_like(s2_tile)
+    for b in range(c_s2):
+        s2_shifted[b] = ndimage_shift(
+            s2_float[b], (dy_s2, dx_s2),
+            order=3,        # cubic spline
+            mode="nearest",  # fill edges by replicating boundary values
+        )
+
+    # Preserve original dtype
+    if np.issubdtype(s2_tile.dtype, np.integer):
+        s2_shifted = np.clip(s2_shifted, 0, np.iinfo(s2_tile.dtype).max)
+        s2_shifted = np.rint(s2_shifted).astype(s2_tile.dtype)
+    else:
+        s2_shifted = s2_shifted.astype(s2_tile.dtype)
+
+    stats["applied"] = True
+    return s2_shifted, stats
+
+
+# ---------------------------------------------------------------------------
 # Tile saving
 # ---------------------------------------------------------------------------
 
@@ -132,7 +344,9 @@ def save_tile_pair(
     compress="DEFLATE",
     zlevel=1,
     num_threads="ALL_CPUS",
-) -> tuple[Path, Path]:
+    realign: bool = False,
+    realign_max_shift: float = 1.0,
+) -> tuple[Path, Path, dict | None]:
     """Write one EMIT/S2 tile pair as GeoTIFFs.
 
     The EMIT tile is saved as uint16 (scaled by *emit_scale*, nodata =
@@ -147,6 +361,13 @@ def save_tile_pair(
     merged with any existing source tags and written to the EMIT tile, making
     it self-describing for all downstream consumers (``write_emit_b32_tile``,
     ``fit_tile``, ``plot_spectral_match``).
+
+    When *realign* is True, per-tile sub-pixel alignment is performed via
+    phase cross-correlation before writing the S2 tile.  The shift is
+    estimated at EMIT resolution and applied to the full-resolution S2
+    tile using cubic spline interpolation.  Tiles stay their original size
+    (no border crop).  Realignment statistics are stored in the S2
+    GeoTIFF tags and returned as the third element of the tuple.
 
     Args:
         emit_path:           Source EMIT raster.
@@ -163,9 +384,12 @@ def save_tile_pair(
         compress:            GDAL compression codec (default DEFLATE).
         zlevel:              Compression level (default 1 = fast).
         num_threads:         GDAL write threads (default ALL_CPUS).
+        realign:             Enable per-tile sub-pixel alignment (default False).
+        realign_max_shift:   Max acceptable shift in EMIT pixels (default 1.0).
 
     Returns:
-        ``(emit_tile_path, s2_tile_path)`` as :class:`pathlib.Path` objects.
+        ``(emit_tile_path, s2_tile_path, realign_stats)`` where
+        *realign_stats* is a dict when ``realign=True`` or ``None`` otherwise.
     """
     def _auto_block_size(width: int, height: int) -> int:
         m = min(width, height)
@@ -202,6 +426,21 @@ def save_tile_pair(
             raise ValueError(f"Empty EMIT tile idx={k}, window={w_emit}")
         if s2_tile.size == 0:
             raise ValueError(f"Empty S2 tile idx={k}, window={w_s2}")
+
+        # ── Per-tile sub-pixel realignment ────────────────────────────
+        realign_stats: dict | None = None
+        if realign:
+            # Use the raw float EMIT reflectance for correlation, not
+            # the uint16-scaled version — avoids quantisation noise.
+            emit_raw_float = emit_tile.astype(np.float32)
+            s2_tile, realign_stats = realign_s2_to_emit(
+                emit_raw_float,
+                s2_tile,
+                scale=int(round(s2_tile.shape[1] / emit_tile.shape[1])),
+                emit_wavelengths_nm=wl_arr,
+                s2_descriptions=s2_desc,
+                max_shift_emit_px=realign_max_shift,
+            )
 
         emit_transform = window_transform(w_emit, emit_ds.transform)
         s2_transform   = window_transform(w_s2,   s2_ds.transform)
@@ -280,8 +519,19 @@ def save_tile_pair(
                 d = s2_desc[i - 1] if (i - 1) < len(s2_desc) else None
                 if d:
                     dst_s.set_band_description(i, d)
+            # Embed realignment metadata in S2 GeoTIFF tags
+            if realign_stats is not None:
+                dy_e, dx_e = realign_stats["shift_emit_px"]
+                dy_s, dx_s = realign_stats["shift_s2_px"]
+                dst_s.update_tags(
+                    realign_applied=str(realign_stats["applied"]),
+                    realign_shift_emit_dy=f"{dy_e:.6f}",
+                    realign_shift_emit_dx=f"{dx_e:.6f}",
+                    realign_shift_s2_dy=f"{dy_s:.6f}",
+                    realign_shift_s2_dx=f"{dx_s:.6f}",
+                )
 
-    return emit_out, s2_out
+    return emit_out, s2_out, realign_stats
 
 
 # ---------------------------------------------------------------------------

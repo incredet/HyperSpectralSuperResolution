@@ -6,12 +6,13 @@ and export to both markdown and self-contained HTML.
 
 Public API
 ----------
-ReportBuilder     — extends ReportWriter with image/table/stats support
-R2Aggregator      — collects per-tile R² stats and computes summaries
-plot_r2_histogram — histogram of per-tile mean R²
-plot_r2_per_band  — box-plot of R² by wavelength/band
-plot_side_by_side_rgb — save S2 vs EMIT comparison to PNG
-plot_example_tiles    — generate example tile-pair images
+ReportBuilder            — extends ReportWriter with image/table/stats support
+R2Aggregator             — collects per-tile R² stats and computes summaries
+plot_r2_histogram        — histogram of per-tile mean R²
+plot_r2_per_band         — box-plot of R² by wavelength/band
+plot_side_by_side_rgb    — save S2 vs EMIT comparison to PNG
+plot_example_tiles       — generate example tile-pair images
+plot_realignment_summary — scatter + histogram of per-tile alignment shifts
 """
 
 from __future__ import annotations
@@ -178,6 +179,88 @@ def plot_r2_per_band(
     ax.set_ylim(bottom=max(0, ax.get_ylim()[0] - 0.05))
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    return out_path
+
+
+def plot_realignment_summary(
+    tile_records: list,
+    out_path: str | Path,
+    *,
+    title: str = "Per-tile realignment shifts",
+) -> Path | None:
+    """Create a 2-panel figure: scatter of (dx, dy) shifts + histogram of magnitudes.
+
+    Only tiles with ``realign_stats`` that were actually applied are plotted.
+
+    Args:
+        tile_records: List of :class:`TileRecord` objects (with ``realign_stats``).
+        out_path:     Where to save the PNG.
+        title:        Figure super-title.
+
+    Returns:
+        Path to the saved PNG, or ``None`` if no realigned tiles found.
+    """
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Collect shift data from tile records
+    dys, dxs = [], []
+    rejected = 0
+    for rec in tile_records:
+        rs = getattr(rec, "realign_stats", None)
+        if rs is None:
+            continue
+        if not rs.get("applied", False):
+            rejected += 1
+            continue
+        dy, dx = rs["shift_emit_px"]
+        dys.append(dy)
+        dxs.append(dx)
+
+    if not dys:
+        return None
+
+    dys_arr = np.array(dys)
+    dxs_arr = np.array(dxs)
+    mags = np.sqrt(dys_arr ** 2 + dxs_arr ** 2)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+
+    # ── Left panel: scatter of (dx, dy) shifts ───────────────────────────
+    sc = ax1.scatter(dxs_arr, dys_arr, c=mags, cmap="viridis",
+                     s=30, alpha=0.7, edgecolors="white", linewidth=0.3)
+    ax1.axhline(0, color="grey", ls="--", lw=0.5)
+    ax1.axvline(0, color="grey", ls="--", lw=0.5)
+    ax1.set_xlabel("dx (EMIT pixels)")
+    ax1.set_ylabel("dy (EMIT pixels)")
+    ax1.set_title("Shift direction per tile")
+    ax1.set_aspect("equal")
+    cbar = fig.colorbar(sc, ax=ax1, shrink=0.8)
+    cbar.set_label("magnitude (EMIT px)")
+
+    # Mean shift marker
+    mean_dy = float(np.mean(dys_arr))
+    mean_dx = float(np.mean(dxs_arr))
+    ax1.plot(mean_dx, mean_dy, "rx", markersize=10, markeredgewidth=2,
+             label=f"mean ({mean_dx:.3f}, {mean_dy:.3f})")
+    ax1.legend(fontsize=8)
+
+    # ── Right panel: histogram of shift magnitudes ────────────────────────
+    ax2.hist(mags, bins=min(20, max(5, len(mags) // 2)),
+             edgecolor="white", color="#4C72B0", alpha=0.85)
+    ax2.axvline(float(np.mean(mags)), color="crimson", ls="--", lw=1.5,
+                label=f"mean = {float(np.mean(mags)):.4f}")
+    ax2.axvline(float(np.median(mags)), color="orange", ls="-.", lw=1.5,
+                label=f"median = {float(np.median(mags)):.4f}")
+    ax2.set_xlabel("Shift magnitude (EMIT pixels)")
+    ax2.set_ylabel("Count")
+    ax2.set_title("Shift magnitude distribution")
+    ax2.legend(fontsize=9)
+
+    fig.suptitle(title, fontsize=12, y=1.02)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return out_path
 
@@ -385,6 +468,59 @@ class ReportBuilder(ReportWriter):
     def add_table(self, heading: str, markdown_table: str) -> None:
         """Append a pre-formatted markdown table."""
         self.raw(f"\n## {heading}\n\n{markdown_table}\n")
+
+    # ── realignment section ──────────────────────────────────────────────
+
+    def add_realignment_section(
+        self,
+        tile_records: list,
+        *,
+        plot_path: Path | None = None,
+    ) -> None:
+        """Write the per-tile realignment summary to the report.
+
+        Args:
+            tile_records: List of :class:`TileRecord` with ``realign_stats``.
+            plot_path:    Path to the shift summary PNG (from
+                          :func:`plot_realignment_summary`).
+        """
+        # Gather stats
+        applied, rejected, total = 0, 0, 0
+        dys, dxs = [], []
+        for rec in tile_records:
+            rs = getattr(rec, "realign_stats", None)
+            if rs is None:
+                continue
+            total += 1
+            if rs.get("applied", False):
+                applied += 1
+                dy, dx = rs["shift_emit_px"]
+                dys.append(dy)
+                dxs.append(dx)
+            else:
+                rejected += 1
+
+        if total == 0:
+            self.section("Per-Tile Realignment", ["Realignment was not enabled."])
+            return
+
+        lines = [
+            f"Tiles processed: {total}",
+            f"Shifts applied: {applied}",
+            f"Shifts rejected (exceeded threshold): {rejected}",
+        ]
+        if dys:
+            mags = [np.sqrt(dy**2 + dx**2) for dy, dx in zip(dys, dxs)]
+            lines += [
+                f"Mean shift: dy={np.mean(dys):.4f}, dx={np.mean(dxs):.4f} EMIT px",
+                f"Mean magnitude: {np.mean(mags):.4f} EMIT px",
+                f"Max magnitude: {np.max(mags):.4f} EMIT px",
+            ]
+
+        self.section("Per-Tile Realignment", lines)
+
+        if plot_path and Path(plot_path).exists():
+            self.add_image("Realignment Shift Distribution", plot_path)
 
     # ── R² section ───────────────────────────────────────────────────────
 

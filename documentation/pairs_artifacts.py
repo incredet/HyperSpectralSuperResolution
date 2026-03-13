@@ -640,6 +640,9 @@ class TileRecord:
     emit_b32_tif: str | None = None
     emit_b32_indices_0based: list[int] | None = None
 
+    # Per-tile realignment stats (populated by save_tile_pair when realign=True)
+    realign_stats: dict | None = None
+
     def to_manifest_row(self) -> dict:
         row = {
             "pair_id": self.pair_id,
@@ -651,6 +654,16 @@ class TileRecord:
             "s2_black_frac": self.s2_black_frac,
             "emit_b32_tif": self.emit_b32_tif,
         }
+        # Flatten realignment stats into manifest columns
+        if self.realign_stats is not None:
+            rs = self.realign_stats
+            row["realign_applied"] = rs.get("applied", False)
+            dy_e, dx_e = rs.get("shift_emit_px", (0.0, 0.0))
+            dy_s, dx_s = rs.get("shift_s2_px", (0.0, 0.0))
+            row["realign_shift_emit_dy"] = dy_e
+            row["realign_shift_emit_dx"] = dx_e
+            row["realign_shift_s2_dy"] = dy_s
+            row["realign_shift_s2_dx"] = dx_s
 
         def _pull(prefix: str, g: Optional[dict]):
             if not isinstance(g, dict):
@@ -713,6 +726,7 @@ def write_tile_metadata(
             "plot_png": record.plot_png,
             "emit_b32_tif": record.emit_b32_tif
         },
+        "realignment": record.realign_stats,
         "tile_info": tile_info or {},
     }
 

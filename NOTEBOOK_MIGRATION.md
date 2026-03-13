@@ -17,6 +17,7 @@ from documentation.report_builder import (
     ReportBuilder, R2Aggregator,
     plot_r2_histogram, plot_r2_per_band,
     plot_side_by_side_rgb, plot_example_tiles,
+    plot_realignment_summary,
 )
 from geometry.alignment import align_emit_s2_pair
 ```
@@ -225,9 +226,11 @@ Remove the mid-execution `git pull`, `%cd`, `importlib.reload`, and re-import ce
 
 ---
 
-## Cell 44 → Update tiling loop with pair_id
+## Cell 44 → Update tiling loop with pair_id and per-tile realignment
 
-The tile-saving loop now passes `pair_id` to `save_tile_pair` and `TileRecord` for multi-scene provenance:
+The tile-saving loop now passes `pair_id` to `save_tile_pair` and `TileRecord` for multi-scene provenance.
+It also enables per-tile sub-pixel realignment via phase cross-correlation (`realign=True`), which
+shifts the S2 tile to better align with EMIT before writing. Tiles stay 100x100 / 600x600 (no crop).
 
 ```python
 tile_records: list[TileRecord] = []
@@ -236,13 +239,16 @@ emit_b32_idx: np.ndarray | None = None
 for tile_info in tqdm(valid_tiles):
     k = int(tile_info["idx"])
 
-    # pair_id is included in tile filenames
-    emit_out, s2_out = save_tile_pair(
+    # pair_id is included in tile filenames; realign refines S2→EMIT alignment per tile
+    emit_out, s2_out, realign_stats = save_tile_pair(
         emit_path = str(envi_bin_trimmed),
         s2_path   = str(out_s2_tif_trimmed),
         tile_info = tile_info,
         out_dir   = paths.drive_tiles,
-        pair_id   = paths.pair_id,        # ← NEW
+        pair_id   = paths.pair_id,
+        emit_wavelengths_nm = wl_nm,
+        realign   = True,                  # ← per-tile sub-pixel alignment
+        realign_max_shift = 1.0,           # reject shifts > 1 EMIT pixel
     )
 
     emit_out_b32, emit_b32_idx = write_emit_b32_tile(
@@ -266,13 +272,15 @@ for tile_info in tqdm(valid_tiles):
         idx             = k,
         emit_tif        = str(emit_out),
         s2_tif          = str(s2_out),
-        pair_id         = paths.pair_id,  # ← NEW
+        pair_id         = paths.pair_id,
         plot_png        = str(plot_png),
         emit_black_frac = tile_info.get("emit_black_frac"),
         s2_black_frac   = tile_info.get("s2_black_frac"),
     )
     rec.emit_geo = tif_geo_summary(emit_out)
     rec.s2_geo   = tif_geo_summary(s2_out)
+    if realign_stats is not None:
+        rec.realign_stats = realign_stats  # shift_emit_px, shift_s2_px, applied
     rec.emit_b32_tif = str(emit_out_b32)
     rec.emit_b32_indices_0based = emit_b32_idx.tolist()
 
@@ -289,6 +297,14 @@ for tile_info in tqdm(valid_tiles):
     tile_records.append(rec)
 
 write_manifest_csv(paths.drive_manifest_csv, tile_records)
+
+# ── Realignment report (after tiling, before fitting) ─────────────────
+realign_plot = plot_realignment_summary(
+    tile_records,
+    paths.drive_plots / "realignment_shifts.png",
+    title=f"Realignment — {paths.pair_id}",
+)
+report.add_realignment_section(tile_records, plot_path=realign_plot)
 ```
 
 ---

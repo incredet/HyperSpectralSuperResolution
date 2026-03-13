@@ -785,6 +785,7 @@ def plot_spectral_match(
     percentile: tuple[float, float] = (2.0, 98.0),
     gamma: float = 1 / 2.2,
     title_suffix: str = "",
+    r2_mean: float | None = None,
     save_path: str | Path | None = None,
     show: bool = True,
 ) -> None:
@@ -817,6 +818,7 @@ def plot_spectral_match(
         percentile:         Low/high percentile for per-channel contrast stretch.
         gamma:              Display gamma (default 1/2.2 ≈ sRGB).
         title_suffix:       Appended to the first panel title (e.g. tile index).
+        r2_mean:            If provided, displayed in the S2 panel title.
         save_path:          Optional path to save the figure.
         show:               Call ``plt.show()`` after plotting.
     """
@@ -903,11 +905,12 @@ def plot_spectral_match(
 
     # ── Plot ──────────────────────────────────────────────────────────────
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    r2_str = f"  R²={r2_mean:.4f}" if r2_mean is not None else ""
     for ax, img, title in zip(
         axes,
         [_stretch_rgb(s2_rgb), _stretch_rgb(pred_rgb), _stretch_rgb(emit_rgb)],
         [
-            f"S2  10 m{('  ' + title_suffix) if title_suffix else ''}",
+            f"S2  10 m{('  ' + title_suffix) if title_suffix else ''}{r2_str}",
             f"S2 → EMIT synth  10 m\n({wl_str})",
             f"EMIT  60 m\n({wl_str})",
         ],
