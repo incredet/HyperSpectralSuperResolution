@@ -15,8 +15,10 @@ realign_s2_to_emit       - per-tile sub-pixel alignment via phase cross-correlat
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Optional
+import warnings
 
 import numpy as np
 import rasterio
@@ -35,6 +37,36 @@ from data.EMIT.emit_utils import closest_bands, select_emit_bands
 # Tile discovery
 # ---------------------------------------------------------------------------
 
+def _pixel_offset(emit_tf, s2_tf) -> tuple[int, int]:
+    """Compute the S2 pixel index of EMIT pixel (0, 0)'s upper-left corner.
+
+    With ``align_grids=True`` in AROSICS the offsets should be exact
+    integers.  A warning is emitted if the fractional part exceeds 0.1 px.
+
+    Returns:
+        ``(s2_row0, s2_col0)`` — S2 pixel indices for EMIT origin.
+    """
+    s2_dx = abs(float(s2_tf.a))
+    s2_dy = abs(float(s2_tf.e))
+
+    col_exact = (float(emit_tf.c) - float(s2_tf.c)) / s2_dx
+    row_exact = (float(s2_tf.f) - float(emit_tf.f)) / s2_dy
+
+    s2_col0 = round(col_exact)
+    s2_row0 = round(row_exact)
+
+    col_err = abs(col_exact - s2_col0)
+    row_err = abs(row_exact - s2_row0)
+    if col_err > 0.1 or row_err > 0.1:
+        warnings.warn(
+            f"EMIT/S2 pixel grids are misaligned by "
+            f"({row_err:.3f}, {col_err:.3f}) S2 pixels. "
+            f"Check align_grids in AROSICS."
+        )
+
+    return s2_row0, s2_col0
+
+
 def find_valid_paired_tiles(
     emit_path: str | Path,
     s2_path: str | Path,
@@ -42,25 +74,34 @@ def find_valid_paired_tiles(
     scale: int = 6,
     max_black_frac: float = 0.0,
 ) -> list[dict]:
-    """Find all non-black tile windows across an aligned EMIT/S2 pair.
+    """Find valid tile positions across an EMIT / S2 pair.
 
-    Tiles are non-overlapping patches of ``emit_tile_size × emit_tile_size``
-    EMIT pixels (corresponding to ``emit_tile_size*scale × emit_tile_size*scale``
-    S2 pixels at the given scale factor).
+    Unlike a simple grid starting at pixel (0, 0), this function:
+
+    1. **Pixel correspondence via geotransforms** — computes the exact
+       S2 pixel offset for each EMIT pixel using the raster transforms,
+       so the two rasters need not share the same origin or extent.
+    2. **Valid-data bbox** — reads one band from EMIT to find where data
+       actually exists and restricts the search range accordingly.
+    3. **Smart grid origin** — starts the tiling grid at the first valid
+       row/col instead of (0, 0), maximising the number of fully-valid
+       tiles and avoiding waste at nodata edges.
+
+    The resulting ``s2_window`` in each tile dict uses the transform-
+    derived offset, so downstream code (``save_tile_pair``) reads the
+    correct S2 pixels regardless of whether the rasters were trimmed.
 
     Args:
         emit_path:      Path to orthorectified EMIT raster (ENVI or GeoTIFF).
         s2_path:        Path to co-registered S2 GeoTIFF.
         emit_tile_size: Tile edge length in EMIT pixels.
-        scale:          Integer S2/EMIT resolution ratio (typically 6 for
-                        60m EMIT vs 10m S2).
-        max_black_frac: Maximum allowed fraction of zero/nodata pixels in
-                        *either* sensor before a tile is rejected.
+        scale:          Integer S2/EMIT resolution ratio (typically 6).
+        max_black_frac: Maximum allowed nodata fraction per tile in
+                        *either* sensor (default 0 = zero tolerance).
 
     Returns:
-        List of dicts, each with keys:
-        ``idx``, ``emit_window``, ``s2_window``,
-        ``emit_black_frac``, ``s2_black_frac``.
+        List of dicts, each with keys ``idx``, ``emit_window``,
+        ``s2_window``, ``emit_black_frac``, ``s2_black_frac``.
     """
     emit_path = str(emit_path)
     s2_path   = str(s2_path)
@@ -71,32 +112,92 @@ def find_valid_paired_tiles(
 
     with rasterio.open(emit_path) as emit_ds, rasterio.open(s2_path) as s2_ds:
         emit_h, emit_w = emit_ds.height, emit_ds.width
+        s2_h,   s2_w   = s2_ds.height,  s2_ds.width
         emit_nodata = emit_ds.nodata
+        s2_nodata   = s2_ds.nodata
 
-        for row in range(0, emit_h - emit_tile_size + 1, emit_tile_size):
-            for col in range(0, emit_w - emit_tile_size + 1, emit_tile_size):
+        # ── Pixel correspondence ─────────────────────────────────────
+        # For EMIT pixel (r, c), the S2 tile starts at:
+        #   s2_row = s2_row0 + r * scale
+        #   s2_col = s2_col0 + c * scale
+        s2_row0, s2_col0 = _pixel_offset(emit_ds.transform, s2_ds.transform)
+
+        # ── Geometric search bounds (where both tiles fit in-bounds) ─
+        # EMIT tile at (row, col) needs:
+        #   row + tile_size <= emit_h
+        #   s2_row0 + row*scale >= 0
+        #   s2_row0 + row*scale + s2_tile <= s2_h
+        # (same logic for columns)
+        r_lo = max(0, math.ceil(-s2_row0 / scale)) if s2_row0 < 0 else 0
+        r_hi = min(
+            emit_h - emit_tile_size,
+            math.floor((s2_h - s2_tile - s2_row0) / scale),
+        )
+        c_lo = max(0, math.ceil(-s2_col0 / scale)) if s2_col0 < 0 else 0
+        c_hi = min(
+            emit_w - emit_tile_size,
+            math.floor((s2_w - s2_tile - s2_col0) / scale),
+        )
+
+        if r_hi < r_lo or c_hi < c_lo:
+            return []
+
+        # ── Valid-data bbox in EMIT pixel coords ─────────────────────
+        # Read one EMIT band to find where data exists, then restrict
+        # the grid search to start at that region's corner.
+        emit_band1 = emit_ds.read(1)
+        if emit_nodata is not None:
+            emit_data_mask = (emit_band1 != emit_nodata)
+        else:
+            emit_data_mask = (emit_band1 != 0)
+
+        valid_ys, valid_xs = np.where(emit_data_mask)
+        if len(valid_ys) == 0:
+            return []
+
+        vr_min = int(valid_ys.min())
+        vr_max = int(valid_ys.max())
+        vc_min = int(valid_xs.min())
+        vc_max = int(valid_xs.max())
+
+        # Tiling search range: start at the valid bbox, clamped to
+        # geometric bounds.  The grid walks by emit_tile_size steps.
+        r_start = max(r_lo, vr_min)
+        r_end   = min(r_hi, vr_max - emit_tile_size + 1)
+        c_start = max(c_lo, vc_min)
+        c_end   = min(c_hi, vc_max - emit_tile_size + 1)
+
+        if r_end < r_start or c_end < c_start:
+            return []
+
+        # ── Scan candidate tiles ─────────────────────────────────────
+        for row in range(r_start, r_end + 1, emit_tile_size):
+            for col in range(c_start, c_end + 1, emit_tile_size):
 
                 emit_win = Window(col, row, emit_tile_size, emit_tile_size)
-                s2_win   = Window(col * scale, row * scale, s2_tile, s2_tile)
+                s2_win   = Window(
+                    s2_col0 + col * scale,
+                    s2_row0 + row * scale,
+                    s2_tile, s2_tile,
+                )
 
-                # ── EMIT black fraction (read representative band) ──────
-                emit_band = emit_ds.read(1, window=emit_win).astype(np.float32)
+                # ── EMIT nodata check ────────────────────────────────
+                emit_block = emit_ds.read(1, window=emit_win).astype(np.float32)
                 if emit_nodata is not None:
-                    emit_black = float(np.mean(emit_band == emit_nodata))
+                    emit_black = float(np.mean(emit_block == emit_nodata))
                 else:
-                    emit_black = float(np.mean(emit_band == 0))
+                    emit_black = float(np.mean(emit_block == 0))
 
                 if emit_black > max_black_frac:
                     idx += 1
                     continue
 
-                # ── S2 black fraction ───────────────────────────────────
-                s2_band = s2_ds.read(1, window=s2_win).astype(np.float32)
-                s2_nodata = s2_ds.nodata
+                # ── S2 nodata check ──────────────────────────────────
+                s2_block = s2_ds.read(1, window=s2_win).astype(np.float32)
                 if s2_nodata is not None:
-                    s2_black = float(np.mean(s2_band == s2_nodata))
+                    s2_black = float(np.mean(s2_block == s2_nodata))
                 else:
-                    s2_black = float(np.mean(s2_band == 0))
+                    s2_black = float(np.mean(s2_block == 0))
 
                 if s2_black > max_black_frac:
                     idx += 1

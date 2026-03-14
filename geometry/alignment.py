@@ -103,10 +103,11 @@ def align_emit_s2_pair(
     report: "ReportWriter | None" = None,
     keep_intermediate: bool = False,
     emit_info_save_path: str | Path | None = None,
+    trim: bool = False,
 ) -> AlignmentResult:
     """Run the full EMIT–S2 spatial alignment pipeline.
 
-    Orchestrates four steps:
+    Orchestrates three (or four) steps:
 
     1. **EMIT orthorectification** — ``convert_emit_nc_to_envi()`` with
        optional DEM parallax correction, producing a UTM ENVI cube and
@@ -116,8 +117,16 @@ def align_emit_s2_pair(
        spurious tie-points in nodata regions.
     3. **AROSICS co-registration** — local tie-point matching and warping
        of S2 to the EMIT reference grid.
-    4. **Trim** — remove edge artefacts, intersect valid extents, snap to
-       the 60 m grid, and crop both rasters to the final common extent.
+    4. **(Optional) Trim** — remove edge artefacts, intersect valid
+       extents, snap to the 60 m grid, and crop both rasters.
+       Controlled by the ``trim`` parameter (default False).
+
+    When ``trim=False`` (default), the rasters are returned as-is after
+    co-registration.  Nodata at edges is handled downstream by
+    ``find_valid_paired_tiles``, which uses geotransforms to compute
+    the pixel correspondence and places the tiling grid on the valid
+    data region.  This avoids the sub-pixel offset that ``gdal_translate
+    -projwin`` can introduce when trimming.
 
     Args:
         emit_nc:       Path to EMIT L2A reflectance netCDF.
@@ -131,6 +140,8 @@ def align_emit_s2_pair(
         keep_intermediate: If True, retain intermediate files (cropped S2,
                        untrimmed co-registered S2).
         emit_info_save_path: If set, save EMIT conversion info JSON here.
+        trim:          If True, run step 4 (gdal_translate trim to common
+                       extent).  Default False — tiling handles nodata.
 
     Returns:
         :class:`AlignmentResult` with paths to final outputs and metadata.
@@ -266,47 +277,73 @@ def align_emit_s2_pair(
             s2_overlap_path=s2_overlap,
         )
 
-    # ── Step 4: Trim to valid-pixel intersection, snap to 60 m grid ─────
+    # ── Step 4 (optional): Trim to valid-pixel intersection ─────────────
 
-    log.info("Step 4/4: Trim to common valid extent")
-    valid_te = valid_bbox_in_map_coords(str(out_s2_coreg), margin_px=2)
-    te_trim = intersect_bounds(TE_overlap, valid_te)
-    te_trim = snap_bounds_to_grid(te_trim, x0=x0, y0=y0, grid_m=60.0)
+    if trim:
+        log.info("Step 4/4: Trim to common valid extent")
+        valid_te = valid_bbox_in_map_coords(str(out_s2_coreg), margin_px=2)
+        te_trim = intersect_bounds(TE_overlap, valid_te)
+        te_trim = snap_bounds_to_grid(te_trim, x0=x0, y0=y0, grid_m=60.0)
 
-    s2_trimmed = s2_dir / (out_s2_coreg.stem + "_trimmed.tif")
-    envi_trimmed = emit_utm_dir / (envi_bin.stem + "_trimmed.bin")
+        s2_trimmed = s2_dir / (out_s2_coreg.stem + "_trimmed.tif")
+        envi_trimmed = emit_utm_dir / (envi_bin.stem + "_trimmed.bin")
 
-    gdal_crop_projwin(str(out_s2_coreg), str(s2_trimmed), te_trim,
-                      out_format="GTiff")
-    gdal_crop_projwin(str(envi_bin), str(envi_trimmed), te_trim,
-                      out_format="ENVI",
-                      extra=["-co", "INTERLEAVE=BIL"])
+        gdal_crop_projwin(str(out_s2_coreg), str(s2_trimmed), te_trim,
+                          out_format="GTiff")
+        gdal_crop_projwin(str(envi_bin), str(envi_trimmed), te_trim,
+                          out_format="ENVI",
+                          extra=["-co", "INTERLEAVE=BIL"])
+
+        if report:
+            report.section("Spatial Trimming", [
+                f"Trimmed EMIT: {envi_trimmed.name}",
+                f"Trimmed S2: {s2_trimmed.name}",
+                f"Bounds (L,B,R,T): {te_trim}",
+                f"Grid anchor: ({x0}, {y0}), step 60 m",
+            ])
+
+        # Clean up un-trimmed co-registered S2
+        if not keep_intermediate:
+            if out_s2_coreg.exists():
+                out_s2_coreg.unlink()
+                log.debug("Removed intermediate: %s", out_s2_coreg)
+
+        log.info("Alignment complete (trimmed).  EMIT: %s  S2: %s",
+                 envi_trimmed.name, s2_trimmed.name)
+
+        return AlignmentResult(
+            emit_envi_trimmed=envi_trimmed,
+            s2_tif_trimmed=s2_trimmed,
+            emit_utm_tif=emit_utm_tif,
+            emit_envi_full=envi_bin,
+            bounds_trimmed=te_trim,
+            anchor_x0=x0,
+            anchor_y0=y0,
+            emit_conv_info=emit_conv_info,
+            coreg_info=coreg_result,
+            success=True,
+            s2_overlap_path=s2_overlap if keep_intermediate else None,
+        )
+
+    # ── No trim: return co-registered rasters as-is ──────────────────────
+    # Nodata at edges is handled downstream by find_valid_paired_tiles.
 
     if report:
         report.section("Spatial Trimming", [
-            f"Trimmed EMIT: {envi_trimmed.name}",
-            f"Trimmed S2: {s2_trimmed.name}",
-            f"Bounds (L,B,R,T): {te_trim}",
-            f"Grid anchor: ({x0}, {y0}), step 60 m",
+            "Trim disabled — tiling will handle nodata edges.",
+            f"EMIT (full): {envi_bin.name}",
+            f"S2 (co-registered): {out_s2_coreg.name}",
         ])
 
-    # ── Cleanup intermediates ────────────────────────────────────────────
-
-    if not keep_intermediate:
-        for p in [out_s2_coreg]:
-            if p.exists():
-                p.unlink()
-                log.debug("Removed intermediate: %s", p)
-
-    log.info("Alignment complete.  EMIT: %s  S2: %s",
-             envi_trimmed.name, s2_trimmed.name)
+    log.info("Alignment complete (no trim).  EMIT: %s  S2: %s",
+             envi_bin.name, out_s2_coreg.name)
 
     return AlignmentResult(
-        emit_envi_trimmed=envi_trimmed,
-        s2_tif_trimmed=s2_trimmed,
+        emit_envi_trimmed=envi_bin,          # not trimmed, but field name kept
+        s2_tif_trimmed=out_s2_coreg,         # not trimmed, but field name kept
         emit_utm_tif=emit_utm_tif,
         emit_envi_full=envi_bin,
-        bounds_trimmed=te_trim,
+        bounds_trimmed=TE_overlap,           # full overlap extent
         anchor_x0=x0,
         anchor_y0=y0,
         emit_conv_info=emit_conv_info,

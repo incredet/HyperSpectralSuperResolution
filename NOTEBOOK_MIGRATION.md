@@ -165,19 +165,26 @@ alignment = align_emit_s2_pair(
     report       = report,
     keep_intermediate = False,
     emit_info_save_path = paths.drive_alignment / "emit_conversion.json",
+    trim         = False,                       # ← no trim; tiling handles nodata
 )
 
 if not alignment.success:
     raise RuntimeError(f"Co-registration failed: {alignment.coreg_info}")
 
-envi_bin_trimmed    = alignment.emit_envi_trimmed
-out_s2_tif_trimmed  = alignment.s2_tif_trimmed
+envi_bin_trimmed    = alignment.emit_envi_trimmed   # full ENVI when trim=False
+out_s2_tif_trimmed  = alignment.s2_tif_trimmed      # co-registered S2 (no trim)
 emit_conv_info      = alignment.emit_conv_info
 envi_bin            = alignment.emit_envi_full
 
 print(f"EMIT: {envi_bin_trimmed}")
 print(f"S2:   {out_s2_tif_trimmed}")
 ```
+
+> **Note:** With `trim=False`, the rasters may have nodata at edges. This is
+> intentional — `find_valid_paired_tiles` uses geotransforms to compute the
+> exact EMIT↔S2 pixel correspondence and places the tiling grid on the valid
+> data region automatically. This avoids the sub-pixel offset that geographic-
+> coordinate trimming (`gdal_translate -projwin`) can introduce.
 
 ---
 
@@ -208,6 +215,10 @@ report.add_image("S2 vs EMIT — After Co-registration", rgb_after)
 ---
 
 ## Cell 38 → Use config for tiling
+
+`find_valid_paired_tiles` now computes EMIT↔S2 pixel correspondence via
+geotransforms and places the tiling grid on the valid data region (not at
+pixel 0,0). This maximises tile yield even without trimming.
 
 ```python
 valid_tiles = find_valid_paired_tiles(
