@@ -19,8 +19,10 @@ Usage::
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field, asdict, fields
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -39,6 +41,13 @@ class PipelineConfig:
     aoi_buffer_m: float = 5_000.0
     s2_api: str = "https://earth-search.aws.element84.com/v1"
     s2_collection: str = "sentinel-2-l2a"
+
+    # ── Search temporal bounds (ISO 8601 strings, e.g. "2023-01-01") ─────
+    # When set, EMIT/S2 searches are bounded to this window, making
+    # results immune to newly-ingested imagery.  If None, defaults to
+    # "all available" (non-reproducible — a warning is printed).
+    search_start: Optional[str] = None
+    search_end: Optional[str] = None
 
     # ── Pairing ──────────────────────────────────────────────────────────
     pairing_days: float = 3.0
@@ -155,3 +164,51 @@ class PipelineConfig:
             "max_cv": self.spectral_max_cv,
             "emit_upsample_order": self.spectral_emit_upsample_order,
         }
+
+    @property
+    def run_fingerprint(self) -> str:
+        """Short deterministic hash of the config for quick comparison.
+
+        Two configs with the same parameters (excluding ``local_root``
+        and ``drive_root``) produce the same fingerprint.
+        """
+        d = self.to_dict()
+        # Exclude paths — they don't affect scientific results
+        for k in ("local_root", "drive_root"):
+            d.pop(k, None)
+        blob = json.dumps(d, sort_keys=True).encode()
+        return hashlib.sha256(blob).hexdigest()[:12]
+
+    @property
+    def search_bounds(self) -> tuple[Optional[datetime], Optional[datetime]]:
+        """Parse search_start / search_end into timezone-aware datetimes.
+
+        Returns (None, None) if not set.
+        """
+        import warnings
+        from datetime import datetime as _dt
+
+        def _parse(s: Optional[str]) -> Optional[datetime]:
+            if s is None:
+                return None
+            s = s.strip()
+            for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ"):
+                try:
+                    dt = _dt.strptime(s, fmt)
+                    return dt.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    continue
+            raise ValueError(f"Cannot parse date string: {s!r}")
+
+        start = _parse(self.search_start)
+        end = _parse(self.search_end)
+
+        if start is None and end is None:
+            warnings.warn(
+                "search_start and search_end are both None — EMIT search "
+                "will return ALL available granules. Set these for "
+                "reproducible runs.",
+                stacklevel=2,
+            )
+
+        return start, end

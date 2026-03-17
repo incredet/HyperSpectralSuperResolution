@@ -77,9 +77,14 @@ S2_BAND_WAVELENGTHS_NM: dict[str, float] = {
 }
 
 # ── Atmospheric absorption windows to exclude (nm) ───────────────────────
+# Ranges are intentionally wider than the textbook H₂O windows because
+# EMIT L2A products zero-fill bands well beyond the nominal edges:
+#   Window 1: bands 127-141  → 1327–1432 nm (textbook ~1350-1450)
+#   Window 2: bands 187-212  → 1774–1960 nm (textbook ~1800-1950)
+# Using ~20 nm margin on each side of the observed zero-data region.
 ATMOSPHERIC_EXCLUDE_NM: list[tuple[float, float]] = [
-    (1350.0, 1450.0),  # Water vapour
-    (1800.0, 1950.0),  # Water vapour
+    (1310.0, 1455.0),  # Water vapour (EMIT zeroes 1327-1432 nm)
+    (1755.0, 1980.0),  # Water vapour (EMIT zeroes 1774-1960 nm)
 ]
 
 

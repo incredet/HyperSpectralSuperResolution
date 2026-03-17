@@ -231,6 +231,7 @@ def pair_emit_to_s2_batched(
                     "emit_cloud_pct": emit_cloud_pct(emit_item),
                     "s2_id": getattr(s2_item, "id", None) if s2_item is not None else None,
                     "s2_cloud_frac": s2_cloud,
+                    "s2_key": (dbg.get("picked") or {}).get("s2_key"),
                     "debug": dbg,
                 }
 

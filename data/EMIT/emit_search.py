@@ -218,7 +218,23 @@ def search(
     short_name: str = EMIT_SHORT_NAME,
     cloud_cover=None,
     count: int = 200,
+    sort: bool = True,
 ):
+    """Search for EMIT granules within a bounding box and time window.
+
+    When *sort* is True (default), results are sorted by acquisition
+    time then by GranuleUR so the output order is deterministic
+    regardless of the CMR query response order.
+    """
+    if start is None and end is None:
+        import warnings
+        warnings.warn(
+            "EMIT search called with start=None and end=None — returning "
+            "ALL available granules.  This is non-reproducible; new "
+            "granules ingested into the archive will change results.",
+            stacklevel=2,
+        )
+
     kwargs = dict(short_name=short_name, temporal=(start, end), bounding_box=bbox, count=count)
     if cloud_cover is not None:
         kwargs["cloud_cover"] = cloud_cover
@@ -227,6 +243,15 @@ def search(
     if not result:
         print("No granules found for the given search criteria.")
         return None
+
+    # Deterministic sort: by acquisition time, then granule UR
+    if sort:
+        def _sort_key(item):
+            t = emit_item_datetime_utc(item)
+            ur = (item.get("umm") or {}).get("GranuleUR", "")
+            return (t or dt.datetime(1970, 1, 1, tzinfo=timezone), ur)
+        result = sorted(result, key=_sort_key)
+
     print(f"Found {len(result)} granule(s).")
     return result
 

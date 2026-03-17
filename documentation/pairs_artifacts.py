@@ -26,6 +26,112 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# ---------------------------------------------------------------------------
+# Run lock — freeze the selected pair so re-runs are deterministic
+# ---------------------------------------------------------------------------
+
+def load_pairs_sorted(
+    pairs_dir: str | Path,
+    *,
+    sort_by: str = "expected_clear_km2",
+) -> list[dict]:
+    """Load all valid pairs from JSONL batch files, sorted deterministically.
+
+    Pairs are sorted by *sort_by* (descending), then by ``emit_dt``
+    (ascending), then by ``s2_id`` (ascending) as tiebreaker.  This
+    guarantees the same ordering regardless of the filesystem glob order
+    or the CMR response order.
+
+    Args:
+        pairs_dir:  Directory containing ``pairs_batch_*.jsonl`` files.
+        sort_by:    Primary sort key (descending).  One of:
+                    ``"expected_clear_km2"`` (default — largest cloud-free
+                    overlap first) or ``"overlap_km2"``.
+
+    Returns:
+        List of pair dicts, each with keys ``emit_granuleur``,
+        ``emit_dt``, ``s2_id``, ``s2_cloud_frac``, ``debug``, etc.
+    """
+    import glob as _glob
+
+    pairs_dir = Path(pairs_dir)
+    pairs: list[dict] = []
+
+    for fn in sorted(_glob.glob(str(pairs_dir / "pairs_batch_*.jsonl"))):
+        with open(fn) as f:
+            for line in f:
+                rec = json.loads(line)
+                if rec.get("s2_id") and rec.get("s2_cloud_frac") is not None:
+                    pairs.append(rec)
+
+    def _sort_key(p):
+        dbg = p.get("debug") or {}
+        picked = dbg.get("picked") or {}
+
+        if sort_by == "overlap_km2":
+            primary = -picked.get("overlap_km2", 0)
+        else:
+            primary = -picked.get("expected_clear_km2", 0)
+
+        return (primary, p.get("emit_dt", ""), p.get("s2_id", ""))
+
+    pairs.sort(key=_sort_key)
+    return pairs
+
+
+def save_run_lock(
+    path: str | Path,
+    *,
+    pair: dict,
+    config_fingerprint: str = "",
+    config_path: Optional[str] = None,
+) -> Path:
+    """Persist the selected pair identity so re-runs pick the same data.
+
+    The run-lock file records the ``emit_granuleur`` and ``s2_id`` that
+    were chosen for processing.  On a subsequent run, if this file
+    exists, the notebook should reload it instead of re-running the
+    search/pairing pipeline.
+
+    Args:
+        path:                Where to write the lock file (JSON).
+        pair:                The selected pair dict (from ``load_pairs_sorted``).
+        config_fingerprint:  Hash of the config for cross-check.
+        config_path:         Path to the saved config JSON (for reference).
+
+    Returns:
+        Path to the written lock file.
+    """
+    path = Path(path)
+    ensure_dir(path.parent)
+
+    lock = {
+        "locked_utc": utc_now_iso(),
+        "emit_granuleur": pair.get("emit_granuleur"),
+        "emit_dt": pair.get("emit_dt"),
+        "s2_id": pair.get("s2_id"),
+        "s2_key": pair.get("s2_key") or (pair.get("debug", {}).get("picked", {}).get("s2_key")),
+        "s2_cloud_frac": pair.get("s2_cloud_frac"),
+        "config_fingerprint": config_fingerprint,
+        "config_path": str(config_path) if config_path else None,
+        "debug_summary": {
+            k: (pair.get("debug") or {}).get("picked", {}).get(k)
+            for k in ("expected_clear_km2", "overlap_km2", "sun_term", "dt_diff_h")
+        },
+    }
+
+    path.write_text(json.dumps(lock, indent=2))
+    return path
+
+
+def load_run_lock(path: str | Path) -> Optional[dict]:
+    """Read a previously-saved run lock, or return None if it doesn't exist."""
+    path = Path(path)
+    if not path.exists():
+        return None
+    return json.loads(path.read_text())
+
+
 def ensure_dir(p: str | Path) -> Path:
     p = Path(p)
     p.mkdir(parents=True, exist_ok=True)
