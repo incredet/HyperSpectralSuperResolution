@@ -1,6 +1,101 @@
 name,lat,lon,description,land_cover
-okavango_delta,-20.45,24.81,Okavango Delta inland wetland system — Botswana,wetland/savanna
+okavango_delta,-20.45,24.81,Okavango Delta inland wetland — Botswana,wetland/savanna
 grand_canyon,36.10,-112.11,Grand Canyon South Rim — Arizona USA,arid/canyon
 sahara_algeria,30.05,2.88,Central Saharan sand sea — Algeria,desert
-nile_delta,30.87,31.32,Nile Delta agricultural region — Egypt,agriculture/urban
+nile_delta,30.87,31.32,Nile Delta agricultural floodplain — Egypt,agriculture/urban
 sierra_nevada_spain,37.18,-3.60,Sierra Nevada foothills — Andalusia Spain,mediterranean/mountain
+amazon_manaus,-2.50,-60.00,Central Amazon basin — Manaus Brazil,tropical_forest
+congo_basin,0.50,21.50,Congo Basin lowland rainforest — DRC,tropical_forest
+borneo_sarawak,2.00,111.50,Borneo tropical peatland forest — Sarawak Malaysia,tropical_forest
+sumatra_riau,0.80,102.20,Sumatra lowland rainforest — Riau Indonesia,tropical_forest
+daintree,-16.25,145.40,Daintree tropical rainforest — Queensland Australia,tropical_forest
+costa_rica_osa,8.50,-83.50,Osa Peninsula tropical wet forest — Costa Rica,tropical_forest
+western_ghats,12.50,75.50,Western Ghats moist deciduous forest — Karnataka India,tropical_forest
+yucatan_calakmul,18.20,-89.80,Calakmul biosphere reserve — Yucatan Mexico,tropical_forest/karst
+sahara_libya,26.00,14.00,Murzuq sand sea — southern Libya,desert
+namib_desert,-24.50,15.50,Central Namib gravel plains — Namibia,desert
+atacama,-24.00,-69.50,Atacama hyperarid desert — Chile,desert
+rub_al_khali,20.00,50.00,Rub al Khali sand dunes — Saudi Arabia,desert
+thar_desert,26.50,71.00,Thar Desert sand dunes — Rajasthan India,desert
+simpson_desert,-25.50,137.00,Simpson Desert dunefields — Australia,desert
+sonoran_desert,32.00,-113.00,Sonoran saguaro desert — Arizona USA,desert
+mojave_desert,35.00,-116.50,Mojave Desert playas — California USA,desert
+taklamakan,39.00,83.00,Taklamakan sand desert — Xinjiang China,desert
+sahel_niger,14.00,3.00,Sahel semi-arid transition zone — Niger,semi-arid/grassland
+iowa_cropland,42.00,-93.50,Iowa corn belt intensive agriculture — USA,cropland
+punjab_agriculture,30.50,74.50,Punjab irrigated wheat-rice — Pakistan-India border,cropland
+mato_grosso,-13.00,-55.50,Mato Grosso soy-cerrado frontier — Brazil,cropland/savanna
+beauce_france,48.00,1.50,Beauce grain belt — central France,cropland
+ukraine_steppe,49.00,34.00,Ukrainian black-earth wheat belt,cropland/steppe
+huang_huai_plain,35.00,116.00,North China Plain winter wheat — Shandong,cropland
+nile_valley_upper,25.50,32.50,Upper Nile irrigated agriculture — Luxor Egypt,cropland/arid
+chao_phraya,14.50,100.50,Chao Phraya rice paddies — central Thailand,cropland/wetland
+california_central_valley,36.50,-119.50,Central Valley irrigated agriculture — California USA,cropland
+indus_sindh,26.00,68.50,Indus basin irrigated cotton — Sindh Pakistan,cropland/arid
+ganges_plain,26.00,81.00,Ganges alluvial plain rice-wheat — Uttar Pradesh India,cropland
+serengeti,-2.50,34.80,Serengeti grassland savanna — Tanzania,savanna/grassland
+cerrado_goias,-15.50,-49.00,Cerrado tropical savanna — Goias Brazil,savanna
+kakadu,-12.80,132.90,Kakadu tropical savanna woodland — Northern Territory Australia,savanna
+llanos_colombia,6.00,-70.00,Llanos tropical grassland — Colombia-Venezuela,savanna/grassland
+miombo_zambia,-12.00,28.50,Miombo woodland savanna — Zambia,savanna/woodland
+guinea_savanna,10.00,-1.50,Guinea savanna mosaic — Ghana,savanna
+texas_grassland,31.50,-100.00,Edwards Plateau semi-arid grassland — Texas USA,grassland/shrubland
+mongolian_steppe,47.50,108.00,Mongolian grass steppe — central Mongolia,steppe/grassland
+kazakh_steppe,49.00,66.00,Kazakh dry steppe — central Kazakhstan,steppe/grassland
+patagonia_steppe,-45.00,-70.00,Patagonian shrub steppe — Argentina,steppe/shrubland
+appalachian_forest,36.50,-81.50,Southern Appalachian mixed hardwood — Virginia USA,temperate_forest
+bavarian_forest,49.00,13.20,Bavarian mixed forest — Germany,temperate_forest
+japanese_forest,36.00,139.50,Kanto temperate deciduous forest — Honshu Japan,temperate_forest
+new_england_forest,44.00,-71.50,White Mountains mixed northern hardwood — New Hampshire USA,temperate_forest
+tasmania_forest,-42.00,146.00,Tasmanian temperate rainforest — Australia,temperate_forest
+sichuan_forest,30.50,103.00,Sichuan Basin subtropical evergreen forest — China,temperate_forest
+valdivian_forest,-40.00,-72.00,Valdivian temperate rainforest — Chile,temperate_forest
+carpathian_forest,47.50,24.50,Carpathian beech-fir forest — Romania,temperate_forest
+boreal_hokkaido,43.00,142.50,Hokkaido boreal-temperate transition forest — Japan,boreal_forest
+boreal_ontario,50.00,-84.00,Ontario boreal spruce-fir — Canada,boreal_forest
+boreal_manchuria,48.00,128.00,Manchurian boreal-mixed forest — Heilongjiang China,boreal_forest
+sundarbans,22.00,89.50,Sundarbans mangrove delta — Bangladesh-India,mangrove/wetland
+everglades,25.70,-80.80,Everglades freshwater marsh — Florida USA,wetland/marsh
+pantanal,-18.00,-56.50,Pantanal seasonal floodplain — Brazil,wetland/savanna
+tonle_sap,13.00,104.00,Tonle Sap floodplain — Cambodia,wetland/agriculture
+sudd_wetland,7.50,30.50,Sudd papyrus swamp — South Sudan,wetland
+mekong_delta,10.00,106.00,Mekong Delta rice and aquaculture — Vietnam,wetland/agriculture
+camargue,43.50,4.50,Camargue brackish lagoons and salt marsh — France,wetland/coastal
+danube_delta,45.00,29.50,Danube Delta reed beds — Romania,wetland
+shanghai,31.20,121.50,Shanghai megacity — east China,urban
+phoenix,33.45,-112.00,Phoenix sprawl desert city — Arizona USA,urban/arid
+mumbai,19.00,72.80,Mumbai megacity — Maharashtra India,urban/tropical
+cairo,30.05,31.25,Cairo urban-desert interface — Egypt,urban/arid
+sao_paulo,-23.50,-46.60,Sao Paulo sprawl — Brazil,urban/subtropical
+lagos,6.45,3.40,Lagos coastal megacity — Nigeria,urban/tropical
+tokyo,35.68,139.75,Tokyo-Yokohama metro — Japan,urban/temperate
+dubai,25.20,55.30,Dubai built-up desert coast — UAE,urban/arid
+great_barrier_reef,-18.50,147.00,Great Barrier Reef shallow lagoon — Australia,coral_reef/ocean
+red_sea_reef,22.00,38.80,Red Sea fringing coral reef — Saudi Arabia,coral_reef/coastal
+maldives,4.00,73.50,Maldives atoll shallow carbonate — Indian Ocean,coral_reef/ocean
+belize_barrier_reef,17.50,-87.80,Belize Barrier Reef — Caribbean,coral_reef/ocean
+dead_sea,31.50,35.50,Dead Sea hypersaline basin — Israel-Jordan,salt_flat/barren
+bonneville,40.75,-113.90,Bonneville Salt Flats — Utah USA,salt_flat/playa
+etosha_pan,-18.80,16.20,Etosha Pan seasonal salt lake — Namibia,salt_flat/savanna
+salar_uyuni,-20.00,-67.50,Salar de Uyuni salt flat — Bolivia,salt_flat
+lake_chad,13.00,14.00,Lake Chad shrinking basin — Chad-Nigeria,lake/semi-arid
+lake_titicaca,-15.80,-69.80,Lake Titicaca high-altitude lake — Peru-Bolivia,lake/alpine
+lake_turkana,3.50,36.00,Lake Turkana alkaline rift lake — Kenya,lake/arid
+aral_sea,45.00,58.50,Aral Sea remnant basin — Kazakhstan-Uzbekistan,lake/salt_flat
+tibetan_plateau,33.00,90.00,Tibetan Plateau alpine meadow — Qinghai China,alpine/grassland
+atlas_mountains,31.50,-6.50,High Atlas semi-arid peaks — Morocco,mountain/semi-arid
+andes_altiplano,-16.50,-68.50,Altiplano high-altitude grassland — Bolivia,alpine/grassland
+alps_switzerland,46.60,8.00,Swiss Alps alpine meadow and rock — Switzerland,alpine/mountain
+kilimanjaro,-3.00,37.30,Kilimanjaro montane forest-alpine — Tanzania,mountain/tropical
+himalayas_nepal,28.00,86.50,Khumbu high Himalaya — Nepal,alpine/glacier
+ethiopian_highlands,9.50,39.00,Ethiopian highland plateau agriculture — Amhara,mountain/cropland
+volcanic_hawaii,19.50,-155.50,Big Island lava fields and tropical — Hawaii USA,volcanic/tropical
+volcanic_reunion,-21.10,55.50,Piton de la Fournaise active volcano — Reunion France,volcanic/tropical
+volcanic_java,-7.50,110.50,Central Java volcanic slopes — Indonesia,volcanic/tropical_forest
+mississippi_delta,29.20,-89.50,Mississippi River Delta wetlands — Louisiana USA,coastal/wetland
+ganges_delta,22.00,89.00,Ganges-Brahmaputra delta — Bangladesh,coastal/wetland
+skeleton_coast,-20.00,13.00,Skeleton Coast fog desert — Namibia,coastal/desert
+mediterranean_sardinia,40.00,9.00,Sardinia maquis shrubland — Italy,mediterranean/shrubland
+mediterranean_crete,35.20,24.50,Crete olive groves and garrigue — Greece,mediterranean/agriculture
+cape_fynbos,-34.00,18.50,Cape fynbos heathland — South Africa,mediterranean/shrubland
+chaparral_california,34.50,-118.50,Santa Monica Mountains chaparral — California USA,mediterranean/shrubland
