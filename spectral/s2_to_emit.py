@@ -24,18 +24,19 @@ Training (per tile pair):
 
 Inference:
   - Apply the 32 fitted models to S2 at its native 10 m resolution.
-  - Output: (32, H_s2, W_s2) synthetic hyperspectral cube at 10 m.
+  - Output: (32, H_s2, W_s2) regression-synthetic hyperspectral cube at 10 m.
   - Training and inference see the same 10 m pixel distribution.
 
 Public API
 ----------
-  S2ToEMITMatcher          dataclass holding 32 fitted pipelines
+  S2ToEMITRegressor        dataclass holding 32 fitted pipelines
   fit_tile(...)            fit from a single tile pair
   fit_tiles_batch(...)     fit by pooling pixels from many tile pairs
   align_s2_to_emit_grid()  standalone block-average helper
-  plot_spectral_match()    3-panel: S2 | synth EMIT (from file) | EMIT ground truth
+  plot_spectral_match()    3-panel: S2 | regression synth (from file) | EMIT ground truth
   plot_r2_spectrum()       diagnostic: R² vs EMIT wavelength
   scatter_band()           diagnostic: predicted vs ground-truth for one band
+  S2ToEMITMatcher          backward-compat alias for S2ToEMITRegressor
 """
 
 from __future__ import annotations
@@ -309,7 +310,7 @@ def _write_geotiff(
 # ---------------------------------------------------------------------------
 
 @dataclass
-class S2ToEMITMatcher:
+class S2ToEMITRegressor:
     """Polynomial Ridge model mapping S2 (10 bands) → EMIT spectral space.
 
     Do not instantiate directly — use :func:`fit_tile` or
@@ -346,7 +347,7 @@ class S2ToEMITMatcher:
         ``(n_output_bands,)`` Ridge intercept vector.
     models_ :
         Legacy field — kept only for backward compatibility with older
-        serialised matchers.  Empty for newly fitted matchers.
+        serialised regressors.  Empty for newly fitted regressors.
     """
 
     band_indices_0based_:  Optional[np.ndarray] = None
@@ -363,13 +364,13 @@ class S2ToEMITMatcher:
     _W_:       Optional[np.ndarray] = field(default=None, repr=False)
     _b_:       Optional[np.ndarray] = field(default=None, repr=False)
 
-    # Legacy — only populated when loading old serialised matchers
+    # Legacy — only populated when loading old serialised regressors
     models_:               list = field(default_factory=list, repr=False)
 
     def _build_fast_weights(self) -> None:
         """Extract W/b from legacy ``models_`` list (old serialised format).
 
-        New matchers already have ``_W_`` and ``_b_`` set directly during
+        New regressors already have ``_W_`` and ``_b_`` set directly during
         fitting and do **not** need this method.
         """
         if self._W_ is not None or not self.models_:
@@ -402,7 +403,7 @@ class S2ToEMITMatcher:
             # Try legacy path
             self._build_fast_weights()
         if self._W_ is None:
-            raise RuntimeError("Matcher has not been fitted yet.")
+            raise RuntimeError("Regressor has not been fitted yet.")
 
         X_s2 = np.asarray(X_s2, dtype=np.float64)
         X_poly   = self._poly_.transform(X_s2)
@@ -444,7 +445,7 @@ class S2ToEMITMatcher:
             out_nodata:   Fill value for invalid pixels in the output.
 
         Returns:
-            ``(n_output_bands, H_s2, W_s2)`` float32 synthetic EMIT cube.
+            ``(n_output_bands, H_s2, W_s2)`` float32 regression-synthetic EMIT cube.
         """
         s2_cube, s2_prof, s2_nodata = _read_raster(s2_tile_path)
         B, H, W = s2_cube.shape
@@ -479,16 +480,21 @@ class S2ToEMITMatcher:
     # ── persistence ──────────────────────────────────────────────────────
 
     def save(self, path: str | Path) -> None:
-        """Serialise the matcher to disk with joblib."""
+        """Serialise the regressor to disk with joblib."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         joblib.dump(self, path)
-        print(f"Matcher saved → {path}")
+        print(f"Regressor saved → {path}")
 
     @staticmethod
-    def load(path: str | Path) -> "S2ToEMITMatcher":
-        """Deserialise a previously saved matcher."""
+    def load(path: str | Path) -> "S2ToEMITRegressor":
+        """Deserialise a previously saved regressor."""
         return joblib.load(path)
+
+
+# Backward-compat alias — old notebooks / serialised .joblib files reference
+# S2ToEMITMatcher.  This lets them unpickle and work without code changes.
+S2ToEMITMatcher = S2ToEMITRegressor
 
 
 # ---------------------------------------------------------------------------
@@ -505,7 +511,7 @@ def fit_tile(
     max_cv: float = 0.25,
     verbose: bool = True,
     emit_upsample_order: int = 1,
-) -> tuple[S2ToEMITMatcher, dict]:
+) -> tuple[S2ToEMITRegressor, dict]:
     """Fit 32 polynomial Ridge models from a single aligned tile pair.
 
     Training is done at the **native S2 10 m resolution** using only
@@ -601,7 +607,7 @@ def fit_tile(
     X_scaled = scaler.fit_transform(X_poly)
     ridge.fit(X_scaled, Y_train)
 
-    matcher = S2ToEMITMatcher(
+    regressor = S2ToEMITRegressor(
         band_indices_0based_ = band_indices,
         wavelengths_nm_ = wavelengths_nm,
         n_s2_bands_ = s2_cube.shape[0],
@@ -615,7 +621,7 @@ def fit_tile(
         _b_ = ridge.intercept_.astype(np.float64),
     )
 
-    Y_pred      = matcher.predict(X_train)
+    Y_pred      = regressor.predict(X_train)
     r2_per_band = np.array([
         r2_score(Y_train[:, i], Y_pred[:, i]) for i in range(n_out)
     ])
@@ -639,7 +645,7 @@ def fit_tile(
             f"max={max(stats['r2_per_band']):.4f}"
         )
 
-    return matcher, stats
+    return regressor, stats
 
 
 # ---------------------------------------------------------------------------
@@ -655,7 +661,7 @@ def fit_tiles_batch(
     max_cv: float = 0.25,
     verbose: bool = True,
     emit_upsample_order: int = 1,
-) -> tuple[S2ToEMITMatcher, dict]:
+) -> tuple[S2ToEMITRegressor, dict]:
     """Fit 32 models by pooling 10 m pixels from multiple tile pairs.
 
     Preferred over per-tile fitting when many tiles are available: pooling
@@ -732,7 +738,7 @@ def fit_tiles_batch(
     X_scaled = scaler.fit_transform(X_poly)
     ridge.fit(X_scaled, Y_train)
 
-    matcher = S2ToEMITMatcher(
+    regressor = S2ToEMITRegressor(
         band_indices_0based_ = band_indices,
         wavelengths_nm_      = wavelengths_nm,
         n_s2_bands_          = n_s2_bands or 10,
@@ -746,7 +752,7 @@ def fit_tiles_batch(
         _b_                  = ridge.intercept_.astype(np.float64),
     )
 
-    Y_pred      = matcher.predict(X_train)
+    Y_pred      = regressor.predict(X_train)
     r2_per_band = np.array([
         r2_score(Y_train[:, i], Y_pred[:, i]) for i in range(n_out)
     ])
@@ -768,7 +774,7 @@ def fit_tiles_batch(
             f"max={max(stats['r2_per_band']):.4f}"
         )
 
-    return matcher, stats
+    return regressor, stats
 
 
 # ---------------------------------------------------------------------------
@@ -789,7 +795,7 @@ def plot_spectral_match(
     save_path: str | Path | None = None,
     show: bool = True,
 ) -> None:
-    """Three-panel comparison: S2 | synthetic EMIT | EMIT ground truth.
+    """Three-panel comparison: S2 | regression-synth EMIT | EMIT ground truth.
 
     Reads all three panels directly from disk — no re-inference.  Call this
     after ``apply_to_tile`` has already written *synth_emit_path*.
@@ -911,7 +917,7 @@ def plot_spectral_match(
         [_stretch_rgb(s2_rgb), _stretch_rgb(pred_rgb), _stretch_rgb(emit_rgb)],
         [
             f"S2  10 m{('  ' + title_suffix) if title_suffix else ''}{r2_str}",
-            f"S2 → EMIT synth  10 m\n({wl_str})",
+            f"S2 → EMIT regression synth  10 m\n({wl_str})",
             f"EMIT  60 m\n({wl_str})",
         ],
     ):
@@ -978,7 +984,7 @@ def plot_r2_spectrum(
 
 
 def scatter_band(
-    matcher: S2ToEMITMatcher,
+    matcher: S2ToEMITRegressor,
     X_s2: np.ndarray,
     Y_emit: np.ndarray,
     band_idx: int = 0,
@@ -991,7 +997,7 @@ def scatter_band(
     """Scatter plot of predicted vs. ground-truth for one EMIT band.
 
     Args:
-        matcher:   Fitted :class:`S2ToEMITMatcher`.
+        matcher:   Fitted :class:`S2ToEMITRegressor`.
         X_s2:      ``(N, 10)`` S2 values.
         Y_emit:    ``(N, 32)`` EMIT ground-truth values.
         band_idx:  Which of the 32 EMIT bands to visualise (0-based).

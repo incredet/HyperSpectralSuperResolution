@@ -1,0 +1,23 @@
+{
+    "search_buffer_m": 5000,
+
+    "s2_api": "https://earth-search.aws.element84.com/v1",
+    "s2_collection": "sentinel-2-l2a",
+
+    "max_s2_cloud_frac": 0.70,
+    "max_emit_cloud_pct": 70.0,
+    "max_black_frac": 0.0,
+
+    "coreg_grid_res": 150,
+    "coreg_max_points": 600,
+    "coreg_window_size": [128, 128],
+    "coreg_max_shift": 50,
+
+    "spectral_degree": 2,
+    "spectral_alpha": 1.0,
+    "spectral_max_cv": 0.25,
+    "spectral_emit_upsample_order": 1,
+
+    "emit_tile_size": 100,
+    "tile_scale": 6
+}

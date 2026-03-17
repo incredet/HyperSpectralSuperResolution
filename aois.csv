@@ -1,0 +1,6 @@
+name,lat,lon,description,land_cover
+okavango_delta,-20.45,24.81,Okavango Delta inland wetland system — Botswana,wetland/savanna
+grand_canyon,36.10,-112.11,Grand Canyon South Rim — Arizona USA,arid/canyon
+sahara_algeria,30.05,2.88,Central Saharan sand sea — Algeria,desert
+nile_delta,30.87,31.32,Nile Delta agricultural region — Egypt,agriculture/urban
+sierra_nevada_spain,37.18,-3.60,Sierra Nevada foothills — Andalusia Spain,mediterranean/mountain

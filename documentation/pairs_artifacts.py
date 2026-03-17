@@ -27,8 +27,18 @@ def utc_now_iso() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Run lock — freeze the selected pair so re-runs are deterministic
+# Run identity & registry — reproducible pair selection
 # ---------------------------------------------------------------------------
+
+def _make_run_uid(pair_id: str) -> str:
+    """Generate a unique run identifier: ``{pair_id}__{compact_timestamp}``.
+
+    Human-readable, unique per processing attempt.  Two runs of the
+    same pair seconds apart get different UIDs.
+    """
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return f"{pair_id}__{ts}"
+
 
 def load_pairs_sorted(
     pairs_dir: str | Path,
@@ -79,54 +89,516 @@ def load_pairs_sorted(
     return pairs
 
 
-def save_run_lock(
-    path: str | Path,
-    *,
-    pair: dict,
-    config_fingerprint: str = "",
-    config_path: Optional[str] = None,
-) -> Path:
-    """Persist the selected pair identity so re-runs pick the same data.
+# ---------------------------------------------------------------------------
+# AOI identity & folder structure
+# ---------------------------------------------------------------------------
 
-    The run-lock file records the ``emit_granuleur`` and ``s2_id`` that
-    were chosen for processing.  On a subsequent run, if this file
-    exists, the notebook should reload it instead of re-running the
-    search/pairing pipeline.
+def aoi_slug(lat: float, lon: float) -> str:
+    """Build a filesystem-safe AOI folder name from coordinates.
+
+    Examples::
+
+        >>> aoi_slug(32.75, -114.96)
+        'aoi_lat32.75_lon-114.96'
+        >>> aoi_slug(36.1069, -112.1129)
+        'aoi_lat36.1069_lon-112.1129'
+
+    The format is deterministic — same coordinates always produce the same
+    slug, so re-running the notebook finds the existing AOI folder.
+    """
+    # Strip trailing zeros but keep at least one decimal place
+    def _fmt(v: float) -> str:
+        s = f"{v:.6f}".rstrip("0")
+        if s.endswith("."):
+            s += "0"
+        return s
+    return f"aoi_lat{_fmt(lat)}_lon{_fmt(lon)}"
+
+
+@dataclass(frozen=True)
+class AoiPaths:
+    """Folder layout for one AOI under a shared DRIVE_ROOT.
+
+    ::
+
+        {drive_root}/
+        ├── {aoi_slug}/
+        │   ├── aoi_config.json       ← PipelineConfig for this AOI
+        │   ├── pairs.csv             ← all available pairs, ranked
+        │   ├── pair_registry.jsonl   ← processing history
+        │   ├── {pair_id_1}/          ← per-pair folder (RunPaths)
+        │   ├── {pair_id_2}/
+        │   └── ...
+        ├── {another_aoi_slug}/
+        └── ...
+    """
+
+    slug: str
+    root: Path                   # drive_root / slug
+    config_json: Path            # aoi_config.json
+    pairs_csv: Path              # pairs.csv
+    registry_jsonl: Path         # pair_registry.jsonl
+
+    @classmethod
+    def build(
+        cls,
+        drive_root: str | Path,
+        lat: float,
+        lon: float,
+    ) -> "AoiPaths":
+        """Create (or locate) the AOI folder for the given coordinates.
+
+        Directories are created on disk.  If the folder already exists
+        (same coordinates, same drive_root), the same paths are returned.
+        """
+        slug = aoi_slug(lat, lon)
+        root = ensure_dir(Path(drive_root) / slug)
+        return cls(
+            slug=slug,
+            root=root,
+            config_json=root / "aoi_config.json",
+            pairs_csv=root / "pairs.csv",
+            registry_jsonl=root / "pair_registry.jsonl",
+        )
+
+
+def write_aoi_pairs_csv(
+    aoi: AoiPaths,
+    pairs: list[dict],
+    *,
+    config_dict: Optional[dict] = None,
+) -> Path:
+    """Write a ranked ``pairs.csv`` for one AOI and optionally save config.
+
+    The CSV contains one row per valid pair, sorted by the deterministic
+    ranking from :func:`load_pairs_sorted`.  Columns include a sequential
+    ``rank`` (0-based) that the user can pass to :func:`pick_pair_by_rank`
+    to select any pair — not just ``pairs[0]``.
 
     Args:
-        path:                Where to write the lock file (JSON).
-        pair:                The selected pair dict (from ``load_pairs_sorted``).
-        config_fingerprint:  Hash of the config for cross-check.
-        config_path:         Path to the saved config JSON (for reference).
+        aoi:          AOI paths (from :func:`AoiPaths.build`).
+        pairs:        Already-sorted list of pair dicts (from
+                      :func:`load_pairs_sorted`).
+        config_dict:  If provided, saved to ``aoi_config.json``.
 
     Returns:
-        Path to the written lock file.
+        Path to the written ``pairs.csv``.
     """
-    path = Path(path)
-    ensure_dir(path.parent)
+    if config_dict is not None:
+        write_json(aoi.config_json, config_dict)
 
-    lock = {
-        "locked_utc": utc_now_iso(),
+    rows: list[dict] = []
+    for rank, p in enumerate(pairs):
+        dbg = p.get("debug") or {}
+        picked = dbg.get("picked") or {}
+        rows.append({
+            "rank": rank,
+            "emit_granuleur": p.get("emit_granuleur"),
+            "emit_dt": p.get("emit_dt"),
+            "emit_cloud_pct": p.get("emit_cloud_pct"),
+            "s2_id": p.get("s2_id"),
+            "s2_key": p.get("s2_key") or picked.get("s2_key"),
+            "s2_cloud_frac": p.get("s2_cloud_frac"),
+            "overlap_km2": picked.get("overlap_km2"),
+            "expected_clear_km2": picked.get("expected_clear_km2"),
+            "sun_term": picked.get("sun_term"),
+            "dt_diff_h": picked.get("dt_diff_h"),
+        })
+
+    df = pd.DataFrame(rows)
+    df.to_csv(aoi.pairs_csv, index=False)
+    return aoi.pairs_csv
+
+
+def load_aoi_pairs_csv(aoi: AoiPaths) -> pd.DataFrame:
+    """Load the ranked pairs CSV for one AOI.
+
+    Returns:
+        DataFrame with columns ``rank``, ``emit_granuleur``, ``s2_id``, etc.
+        Rows are in rank order (best pair first).
+    """
+    if not aoi.pairs_csv.exists():
+        raise FileNotFoundError(
+            f"No pairs.csv found for AOI {aoi.slug}. "
+            f"Run write_aoi_pairs_csv() first."
+        )
+    return pd.read_csv(aoi.pairs_csv)
+
+
+def pick_pair_by_rank(
+    pairs: list[dict],
+    rank: int,
+) -> dict:
+    """Select a pair by its deterministic rank index.
+
+    Args:
+        pairs:  Sorted list from :func:`load_pairs_sorted`.
+        rank:   0-based index into the sorted list.
+
+    Returns:
+        The pair dict at the given rank.
+
+    Raises:
+        IndexError: If rank is out of range.
+    """
+    if rank < 0 or rank >= len(pairs):
+        raise IndexError(
+            f"Pair rank {rank} out of range [0, {len(pairs) - 1}]. "
+            f"Check pairs.csv for available ranks."
+        )
+    return pairs[rank]
+
+
+# ---------------------------------------------------------------------------
+# AOI catalogue — master CSV of all AOIs with descriptions
+# ---------------------------------------------------------------------------
+
+_AOIS_CATALOGUE_FILENAME = "aois.csv"
+_AOIS_CATALOGUE_COLUMNS = ["name", "lat", "lon", "description", "land_cover"]
+
+
+def load_aois_catalogue(
+    drive_root: str | Path,
+) -> pd.DataFrame:
+    """Load the master AOI catalogue from ``DRIVE_ROOT/aois.csv``.
+
+    The catalogue lists every AOI that has been (or will be) processed,
+    with human-readable names, descriptions, and land-cover labels.
+
+    Columns: ``name``, ``lat``, ``lon``, ``description``, ``land_cover``.
+
+    Args:
+        drive_root:  Top-level Drive folder containing ``aois.csv``.
+
+    Returns:
+        DataFrame sorted by ``name``.
+
+    Raises:
+        FileNotFoundError: if ``aois.csv`` does not exist.
+    """
+    csv_path = Path(drive_root) / _AOIS_CATALOGUE_FILENAME
+    if not csv_path.exists():
+        raise FileNotFoundError(
+            f"No AOI catalogue found at {csv_path}. "
+            f"Create one with save_aois_catalogue() or place a CSV there manually."
+        )
+    df = pd.read_csv(csv_path)
+    for col in _AOIS_CATALOGUE_COLUMNS:
+        if col not in df.columns:
+            raise ValueError(
+                f"AOI catalogue is missing required column '{col}'. "
+                f"Expected columns: {_AOIS_CATALOGUE_COLUMNS}"
+            )
+    return df.sort_values("name").reset_index(drop=True)
+
+
+def save_aois_catalogue(
+    drive_root: str | Path,
+    aois: list[dict] | pd.DataFrame,
+) -> Path:
+    """Write (or overwrite) the master AOI catalogue.
+
+    Each entry must have keys/columns: ``name``, ``lat``, ``lon``,
+    ``description``, ``land_cover``.
+
+    Args:
+        drive_root:  Top-level Drive folder.
+        aois:        List of dicts or DataFrame with the required columns.
+
+    Returns:
+        Path to the written ``aois.csv``.
+    """
+    df = pd.DataFrame(aois) if not isinstance(aois, pd.DataFrame) else aois.copy()
+    for col in _AOIS_CATALOGUE_COLUMNS:
+        if col not in df.columns:
+            raise ValueError(f"Missing required column '{col}'")
+    if df["name"].duplicated().any():
+        dupes = df.loc[df["name"].duplicated(keep=False), "name"].unique().tolist()
+        raise ValueError(f"Duplicate AOI names: {dupes}")
+
+    csv_path = Path(drive_root) / _AOIS_CATALOGUE_FILENAME
+    ensure_dir(csv_path.parent)
+    df[_AOIS_CATALOGUE_COLUMNS].to_csv(csv_path, index=False)
+    return csv_path
+
+
+def get_aoi_by_name(
+    drive_root: str | Path,
+    name: str,
+) -> dict:
+    """Look up a single AOI from the catalogue by name.
+
+    Args:
+        drive_root:  Top-level Drive folder containing ``aois.csv``.
+        name:        The ``name`` field to look up (case-sensitive).
+
+    Returns:
+        Dict with keys ``name``, ``lat``, ``lon``, ``description``,
+        ``land_cover``.
+
+    Raises:
+        KeyError: if no AOI with that name exists.
+    """
+    df = load_aois_catalogue(drive_root)
+    matches = df.loc[df["name"] == name]
+    if matches.empty:
+        available = df["name"].tolist()
+        raise KeyError(
+            f"AOI '{name}' not found. Available: {available}"
+        )
+    return matches.iloc[0].to_dict()
+
+
+def get_aoi_by_index(
+    drive_root: str | Path,
+    index: int,
+) -> dict:
+    """Look up a single AOI from the catalogue by row index.
+
+    The catalogue is sorted by ``name``, so index 0 is the
+    alphabetically-first AOI.
+
+    Args:
+        drive_root:  Top-level Drive folder containing ``aois.csv``.
+        index:       0-based row index into the sorted catalogue.
+
+    Returns:
+        Dict with keys ``name``, ``lat``, ``lon``, ``description``,
+        ``land_cover``.
+
+    Raises:
+        IndexError: if index is out of range.
+    """
+    df = load_aois_catalogue(drive_root)
+    if index < 0 or index >= len(df):
+        raise IndexError(
+            f"AOI index {index} out of range [0, {len(df) - 1}]. "
+            f"Catalogue has {len(df)} AOIs."
+        )
+    return df.iloc[index].to_dict()
+
+
+# ---------------------------------------------------------------------------
+# Pipeline defaults — shared config stored on Drive
+# ---------------------------------------------------------------------------
+
+_PIPELINE_DEFAULTS_FILENAME = "pipeline_defaults.json"
+
+
+def load_pipeline_defaults(drive_root: str | Path) -> dict:
+    """Load ``DRIVE_ROOT/pipeline_defaults.json``.
+
+    Returns the dict as-is; callers unpack what they need.
+
+    Raises:
+        FileNotFoundError: if the file does not exist.
+    """
+    path = Path(drive_root) / _PIPELINE_DEFAULTS_FILENAME
+    if not path.exists():
+        raise FileNotFoundError(
+            f"No pipeline defaults at {path}. "
+            f"Create one with save_pipeline_defaults() or place a JSON there."
+        )
+    return json.loads(path.read_text())
+
+
+def save_pipeline_defaults(
+    drive_root: str | Path,
+    defaults: dict,
+) -> Path:
+    """Write (or overwrite) ``DRIVE_ROOT/pipeline_defaults.json``.
+
+    Returns:
+        Path to the written file.
+    """
+    path = Path(drive_root) / _PIPELINE_DEFAULTS_FILENAME
+    ensure_dir(path.parent)
+    write_json(path, defaults)
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Pair registry — root-level append-only ledger of all processed pairs
+# ---------------------------------------------------------------------------
+
+_REGISTRY_FILENAME = "pair_registry.jsonl"
+
+
+def load_pair_registry(drive_root: str | Path | "AoiPaths") -> list[dict]:
+    """Read the pair registry (all entries, chronological order).
+
+    *drive_root* can be a plain path (the folder containing the registry)
+    or an :class:`AoiPaths` instance (uses ``aoi.registry_jsonl``).
+    """
+    if isinstance(drive_root, AoiPaths):
+        path = drive_root.registry_jsonl
+    else:
+        path = Path(drive_root) / _REGISTRY_FILENAME
+    if not path.exists():
+        return []
+    entries = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                entries.append(json.loads(line))
+    return entries
+
+
+def registry_has_pair(
+    drive_root: str | Path | "AoiPaths",
+    emit_granuleur: str,
+    s2_id: str,
+    *,
+    config_fingerprint: Optional[str] = None,
+    status: str = "completed",
+) -> Optional[dict]:
+    """Check if a pair has already been processed (and optionally completed).
+
+    Args:
+        drive_root:          Directory containing the registry, or
+                             :class:`AoiPaths` instance.
+        emit_granuleur:      EMIT granule UR to look for.
+        s2_id:               Sentinel-2 item ID to look for.
+        config_fingerprint:  If set, also require matching config hash.
+        status:              Required status (default ``"completed"``).
+                             Pass ``None`` to match any status.
+
+    Returns:
+        The matching registry entry dict, or ``None`` if not found.
+    """
+    for entry in load_pair_registry(drive_root):
+        if entry.get("emit_granuleur") != emit_granuleur:
+            continue
+        if entry.get("s2_id") != s2_id:
+            continue
+        if status is not None and entry.get("status") != status:
+            continue
+        if config_fingerprint and entry.get("config_fingerprint") != config_fingerprint:
+            continue
+        return entry
+    return None
+
+
+def register_pair(
+    drive_root: str | Path | "AoiPaths",
+    *,
+    pair: dict,
+    pair_id: str,
+    run_uid: Optional[str] = None,
+    config_fingerprint: str = "",
+    status: str = "started",
+) -> dict:
+    """Append a pair entry to the AOI-level registry.
+
+    Call once with ``status="started"`` before processing, then again
+    with ``status="completed"`` after success (or ``"failed"``).
+
+    Args:
+        drive_root:          AOI folder (or :class:`AoiPaths` instance)
+                             containing the registry.
+        pair:                The pair dict from ``load_pairs_sorted``.
+        pair_id:             The pair folder name (from ``make_pair_id``).
+        run_uid:             Unique run identifier.  Auto-generated if None.
+        config_fingerprint:  Config hash for cross-checking.
+        status:              ``"started"``, ``"completed"``, or ``"failed"``.
+
+    Returns:
+        The registry entry dict (includes ``run_uid``).
+    """
+    if isinstance(drive_root, AoiPaths):
+        reg_path = drive_root.registry_jsonl
+        ensure_dir(drive_root.root)
+    else:
+        drive_root = Path(drive_root)
+        ensure_dir(drive_root)
+        reg_path = drive_root / _REGISTRY_FILENAME
+
+    if run_uid is None:
+        run_uid = _make_run_uid(pair_id)
+
+    entry = {
+        "run_uid": run_uid,
+        "pair_id": pair_id,
         "emit_granuleur": pair.get("emit_granuleur"),
         "emit_dt": pair.get("emit_dt"),
         "s2_id": pair.get("s2_id"),
         "s2_key": pair.get("s2_key") or (pair.get("debug", {}).get("picked", {}).get("s2_key")),
         "s2_cloud_frac": pair.get("s2_cloud_frac"),
         "config_fingerprint": config_fingerprint,
-        "config_path": str(config_path) if config_path else None,
-        "debug_summary": {
-            k: (pair.get("debug") or {}).get("picked", {}).get(k)
-            for k in ("expected_clear_km2", "overlap_km2", "sun_term", "dt_diff_h")
+        "status": status,
+        "timestamp_utc": utc_now_iso(),
+    }
+
+    with reg_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry) + "\n")
+
+    return entry
+
+
+# ---------------------------------------------------------------------------
+# Per-pair run lock — self-contained reproducibility record
+# ---------------------------------------------------------------------------
+
+def save_run_lock(
+    pair_drive_root: str | Path,
+    *,
+    pair: dict,
+    pair_id: str,
+    run_uid: str,
+    config_fingerprint: str = "",
+    config_dict: Optional[dict] = None,
+) -> Path:
+    """Write a run-lock JSON inside the pair folder.
+
+    Makes the pair folder self-contained: anyone can look at
+    ``run_lock.json`` and know exactly what was processed, when,
+    and with what config — without needing the root registry.
+
+    Args:
+        pair_drive_root:     The pair's drive folder (e.g.
+                             ``DRIVE_ROOT / pair_id``).
+        pair:                The pair dict from ``load_pairs_sorted``.
+        pair_id:             Pair folder name.
+        run_uid:             Unique run identifier (from ``register_pair``).
+        config_fingerprint:  Config hash.
+        config_dict:         Full config dict to embed (optional but
+                             recommended for full reproducibility).
+
+    Returns:
+        Path to the written ``run_lock.json``.
+    """
+    path = Path(pair_drive_root) / "run_lock.json"
+    ensure_dir(path.parent)
+
+    dbg = pair.get("debug") or {}
+    picked = dbg.get("picked") or {}
+
+    lock = {
+        "run_uid": run_uid,
+        "pair_id": pair_id,
+        "locked_utc": utc_now_iso(),
+        "emit_granuleur": pair.get("emit_granuleur"),
+        "emit_dt": pair.get("emit_dt"),
+        "s2_id": pair.get("s2_id"),
+        "s2_key": pair.get("s2_key") or picked.get("s2_key"),
+        "s2_cloud_frac": pair.get("s2_cloud_frac"),
+        "config_fingerprint": config_fingerprint,
+        "pairing_summary": {
+            k: picked.get(k)
+            for k in ("expected_clear_km2", "overlap_km2", "sun_term",
+                       "dt_diff_h", "scl_cloud", "overlap_w_m", "overlap_h_m")
         },
+        "config": config_dict,
     }
 
     path.write_text(json.dumps(lock, indent=2))
     return path
 
 
-def load_run_lock(path: str | Path) -> Optional[dict]:
-    """Read a previously-saved run lock, or return None if it doesn't exist."""
-    path = Path(path)
+def load_run_lock(pair_drive_root: str | Path) -> Optional[dict]:
+    """Read a per-pair run lock, or None if it doesn't exist."""
+    path = Path(pair_drive_root) / "run_lock.json"
     if not path.exists():
         return None
     return json.loads(path.read_text())
@@ -266,8 +738,8 @@ class RunPaths:
     local_alignment: Path          # was emit_utm
     local_plots: Path
     local_tiles: Path
-    local_synthetic: Path
-    local_matchers: Path
+    local_regression_synth: Path
+    local_regression_matchers: Path
     local_meta: Path
     local_tile_meta: Path
     local_report_md: Path
@@ -280,8 +752,8 @@ class RunPaths:
     drive_alignment: Optional[Path] = None   
     drive_plots: Optional[Path] = None
     drive_tiles: Optional[Path] = None
-    drive_synthetic: Optional[Path] = None
-    drive_matchers: Optional[Path] = None
+    drive_regression_synth: Optional[Path] = None
+    drive_regression_matchers: Optional[Path] = None
     drive_meta: Optional[Path] = None
     drive_tile_meta: Optional[Path] = None
     drive_report_md: Optional[Path] = None
@@ -304,6 +776,7 @@ class RunPaths:
         emit_nc: str | Path,
         local_root: str | Path,
         drive_base: str | Path | None = None,
+        aoi: "AoiPaths | None" = None,
         pair_id: str | None = None,
         s2_item: dict | None = None,
     ) -> "RunPaths":
@@ -314,12 +787,21 @@ class RunPaths:
             local_root: Working directory for local outputs.
             drive_base: If set, persistent output root.  A subfolder
                         named ``pair_id`` is created under this.
+                        Ignored when *aoi* is provided.
+            aoi:        :class:`AoiPaths` instance.  When provided, the
+                        pair folder is created under ``aoi.root`` instead
+                        of *drive_base*.  This is the preferred API for
+                        the three-level hierarchy
+                        ``DRIVE_ROOT / aoi_slug / pair_id``.
             pair_id:    Explicit pair identifier.  If *None* and *s2_item*
                         is given, computed via :func:`make_pair_id`.
                         Falls back to ``emit_id_from_nc`` for backward compat.
             s2_item:    S2 STAC item dict (used to compute *pair_id* when
                         not provided explicitly).
         """
+        # If AoiPaths provided, use it as drive_base
+        if aoi is not None:
+            drive_base = aoi.root
         run_id = cls.emit_id_from_nc(emit_nc)
 
         if pair_id is None:
@@ -335,8 +817,8 @@ class RunPaths:
         local_alignment = ensure_dir(local_root / "alignment")
         local_plots = ensure_dir(local_root / "plots")
         local_tiles = ensure_dir(local_root / "tiles")
-        local_synthetic = ensure_dir(local_root / "synthetic")
-        local_matchers = ensure_dir(local_root / "matchers")
+        local_regression_synth = ensure_dir(local_root / "regression_synth")
+        local_regression_matchers = ensure_dir(local_root / "regression_matchers")
         local_meta = ensure_dir(local_root / "metadata")
         local_tile_meta = ensure_dir(local_meta / "tiles")
         local_report_md = local_root / "report.md"
@@ -352,8 +834,8 @@ class RunPaths:
                 local_alignment=local_alignment,
                 local_plots=local_plots,
                 local_tiles=local_tiles,
-                local_synthetic=local_synthetic,
-                local_matchers=local_matchers,
+                local_regression_synth=local_regression_synth,
+                local_regression_matchers=local_regression_matchers,
                 local_meta=local_meta,
                 local_tile_meta=local_tile_meta,
                 local_report_md=local_report_md,
@@ -367,8 +849,8 @@ class RunPaths:
         drive_alignment = ensure_dir(drive_root / "alignment")
         drive_plots = ensure_dir(drive_root / "plots")
         drive_tiles = ensure_dir(drive_root / "tiles")
-        drive_synthetic = ensure_dir(drive_root / "synthetic")
-        drive_matchers = ensure_dir(drive_root / "matchers")
+        drive_regression_synth = ensure_dir(drive_root / "regression_synth")
+        drive_regression_matchers = ensure_dir(drive_root / "regression_matchers")
         drive_meta = ensure_dir(drive_root / "metadata")
         drive_tile_meta = ensure_dir(drive_meta / "tiles")
 
@@ -381,8 +863,8 @@ class RunPaths:
             local_alignment=local_alignment,            
             local_plots=local_plots,
             local_tiles=local_tiles,
-            local_synthetic=local_synthetic,
-            local_matchers=local_matchers,
+            local_regression_synth=local_regression_synth,
+            local_regression_matchers=local_regression_matchers,
             local_meta=local_meta,
             local_tile_meta=local_tile_meta,
             local_report_md=local_report_md,
@@ -393,8 +875,8 @@ class RunPaths:
             drive_alignment=drive_alignment,
             drive_plots=drive_plots,
             drive_tiles=drive_tiles,
-            drive_synthetic=drive_synthetic,
-            drive_matchers=drive_matchers,
+            drive_regression_synth=drive_regression_synth,
+            drive_regression_matchers=drive_regression_matchers,
             drive_meta=drive_meta,
             drive_tile_meta=drive_tile_meta,
             drive_report_md=drive_root / "report.md",
@@ -862,7 +1344,7 @@ def write_manifest_csv(path: str | Path, rows: list[dict] | list[TileRecord]) ->
 
 
 def write_global_manifest(
-    output_root: str | Path,
+    output_root: str | Path | "AoiPaths",
     pair_manifests: list[str | Path] | None = None,
     *,
     filename: str = "global_manifest.csv",
@@ -877,8 +1359,11 @@ def write_global_manifest(
         ├── pair_b/manifest.csv
         └── global_manifest.csv   ← written here
 
+    When *output_root* is an :class:`AoiPaths`, the manifest is written
+    into the AOI folder (``aoi.root / filename``).
+
     Args:
-        output_root:     Root output directory containing per-pair folders.
+        output_root:     Root output directory or AoiPaths instance.
         pair_manifests:  Explicit list of per-pair manifest CSV paths.
                          If *None*, discovered by globbing.
         filename:        Name of the global manifest file.
@@ -886,6 +1371,8 @@ def write_global_manifest(
     Returns:
         Path to the written global manifest CSV.
     """
+    if isinstance(output_root, AoiPaths):
+        output_root = output_root.root
     output_root = Path(output_root)
     ensure_dir(output_root)
     out_path = output_root / filename

@@ -4,21 +4,38 @@
 
 from .pairs_artifacts import (
     utc_now_iso, ensure_dir, write_json,
-    RunPaths, ReportWriter,
-    emit_file_records, emit_related_urls, write_emit_metadata, 
-    bounds_from_bbox, centroid_from_bounds, pick_s2_assets_minimal, 
-    write_s2_metadata, tif_geo_summary, TileRecord, 
-    write_tile_metadata, write_manifest_csv, 
-    copy_any, write_archive_map, describe_tif
-
+    # AOI catalogue & structure
+    load_aois_catalogue, save_aois_catalogue, get_aoi_by_name, get_aoi_by_index,
+    aoi_slug, AoiPaths,
+    write_aoi_pairs_csv, load_aoi_pairs_csv, pick_pair_by_rank,
+    load_pipeline_defaults, save_pipeline_defaults,
+    # Pair-level structure
+    make_pair_id, RunPaths, ReportWriter,
+    load_pairs_sorted,
+    # Registry & run locks
+    load_pair_registry, registry_has_pair, register_pair,
+    save_run_lock, load_run_lock,
+    # Metadata & manifests
+    emit_file_records, emit_related_urls, write_emit_metadata,
+    bounds_from_bbox, centroid_from_bounds, pick_s2_assets_minimal,
+    write_s2_metadata, tif_geo_summary, TileRecord,
+    write_tile_metadata, write_manifest_csv, write_global_manifest,
+    copy_any, write_archive_map, describe_tif,
 )
 
 __all__ = [
     'utc_now_iso', 'ensure_dir', 'write_json',
-    'RunPaths', 'ReportWriter',
-    'emit_file_records', 'emit_related_urls', 'write_emit_metadata', 
-    'bounds_from_bbox', 'centroid_from_bounds', 'pick_s2_assets_minimal', 
-    'write_s2_metadata', 'tif_geo_summary', 'TileRecord', 
-    'write_tile_metadata', 'write_manifest_csv', 
-    'copy_any', 'write_archive_map', 'describe_tif'
+    'load_aois_catalogue', 'save_aois_catalogue', 'get_aoi_by_name', 'get_aoi_by_index',
+    'aoi_slug', 'AoiPaths',
+    'write_aoi_pairs_csv', 'load_aoi_pairs_csv', 'pick_pair_by_rank',
+    'load_pipeline_defaults', 'save_pipeline_defaults',
+    'make_pair_id', 'RunPaths', 'ReportWriter',
+    'load_pairs_sorted',
+    'load_pair_registry', 'registry_has_pair', 'register_pair',
+    'save_run_lock', 'load_run_lock',
+    'emit_file_records', 'emit_related_urls', 'write_emit_metadata',
+    'bounds_from_bbox', 'centroid_from_bounds', 'pick_s2_assets_minimal',
+    'write_s2_metadata', 'tif_geo_summary', 'TileRecord',
+    'write_tile_metadata', 'write_manifest_csv', 'write_global_manifest',
+    'copy_any', 'write_archive_map', 'describe_tif',
 ]
