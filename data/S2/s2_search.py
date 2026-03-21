@@ -502,12 +502,18 @@ def _download_band(item, key: str, out_dir: Path, stem: str) -> Path:
 def _inpaint_bad_pixels(stack: np.ndarray, bad_mask: np.ndarray) -> np.ndarray:
     """Replace bad pixels with the mean of their valid 3×3 neighbors.
 
+    Inpainting is **per-band**: a pixel flagged in *bad_mask* is only
+    overwritten in bands where its value is actually anomalous (saturated
+    at dtype max, or zero / nodata).  Bands with normal values are kept,
+    since a pixel can be saturated in visible bands but fine in NIR/SWIR.
+
     Parameters
     ----------
     stack : ndarray, shape (C, H, W)
         Multi-band image (uint16).
     bad_mask : ndarray, shape (H, W), dtype bool
-        True where pixels should be inpainted.
+        True where pixels are suspected defective (from SCL or
+        radiometric detection).
 
     Returns
     -------
@@ -518,12 +524,20 @@ def _inpaint_bad_pixels(stack: np.ndarray, bad_mask: np.ndarray) -> np.ndarray:
 
     from scipy.ndimage import uniform_filter
 
-    n_bad = int(bad_mask.sum())
-    H, W = bad_mask.shape
+    n_flagged = int(bad_mask.sum())
+    dmax = np.iinfo(stack.dtype).max if np.issubdtype(stack.dtype, np.integer) else np.inf
+    n_inpainted = 0
 
     for b in range(stack.shape[0]):
         band = stack[b].astype(np.float64)
-        valid = ~bad_mask & (band != 0)   # valid neighbours only
+
+        # Per-band bad: only inpaint where this band is actually bad
+        band_bad = bad_mask & ((band == 0) | (band >= dmax))
+        if not band_bad.any():
+            continue
+
+        n_inpainted += int(band_bad.sum())
+        valid = ~band_bad & (band > 0) & (band < dmax)
 
         # Compute local sum and count of valid neighbours
         vals = np.where(valid, band, 0.0)
@@ -534,11 +548,11 @@ def _inpaint_bad_pixels(stack: np.ndarray, bad_mask: np.ndarray) -> np.ndarray:
         cnt_sum = uniform_filter(counts, size=3, mode="nearest") * 9.0
 
         # Replace bad pixels where we have at least 1 valid neighbour
-        fillable = bad_mask & (cnt_sum > 0)
+        fillable = band_bad & (cnt_sum > 0)
         band[fillable] = val_sum[fillable] / cnt_sum[fillable]
-        stack[b] = np.clip(np.rint(band), 0, np.iinfo(stack.dtype).max).astype(stack.dtype)
+        stack[b] = np.clip(np.rint(band), 0, dmax).astype(stack.dtype)
 
-    print(f"  Inpainted {n_bad} defective pixels across {stack.shape[0]} bands.")
+    print(f"  Flagged {n_flagged} pixels; inpainted {n_inpainted} band-pixels.")
     return stack
 
 
@@ -638,9 +652,13 @@ def download_s2_spectral_stack(item, s2_dir: Path) -> Path:
 
     stack = np.stack([warp_to_ref(p, rs) for (_, p, rs) in band_order], axis=0)
 
-    # ── Inpaint SCL-flagged defective pixels ──────────────────────────────
-    # SCL class 0 = nodata, class 1 = saturated / defective.
-    # These are isolated bad detector pixels — replace with neighbour mean.
+    # ── Inpaint defective / saturated pixels ─────────────────────────────
+    # Two detection methods (combined with OR):
+    #   1. SCL class 0 (nodata) or 1 (saturated / defective)
+    #   2. Radiometric: any band at uint16 max (65535) — catches saturated
+    #      pixels that SCL misses (common in visible bands over bright targets)
+    bad_mask = np.zeros((H, W), dtype=bool)
+
     if scl_path is not None:
         with rasterio.open(scl_path) as scl_ds:
             scl_10m = np.zeros((H, W), dtype=np.uint8)
@@ -655,11 +673,17 @@ def download_s2_spectral_stack(item, s2_dir: Path) -> Path:
                 src_nodata=0,
                 dst_nodata=0,
             )
-        bad_mask = np.isin(scl_10m, [0, 1])
-        if bad_mask.any():
-            stack = _inpaint_bad_pixels(stack, bad_mask)
+        bad_mask |= np.isin(scl_10m, [0, 1])
     else:
-        print("WARNING: SCL not available — skipping defective-pixel inpainting.")
+        print("WARNING: SCL not available — using radiometric detection only.")
+
+    # Radiometric saturation: any band hitting uint16 max
+    if np.issubdtype(stack.dtype, np.unsignedinteger):
+        saturated = np.any(stack == np.iinfo(stack.dtype).max, axis=0)
+        bad_mask |= saturated
+
+    if bad_mask.any():
+        stack = _inpaint_bad_pixels(stack, bad_mask)
 
     with rasterio.open(paths["blue"]) as ref:
         profile = ref.profile.copy()
