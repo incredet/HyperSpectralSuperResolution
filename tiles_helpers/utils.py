@@ -73,6 +73,7 @@ def find_valid_paired_tiles(
     emit_tile_size: int = 100,
     scale: int = 6,
     max_black_frac: float = 0.0,
+    emit_check_bands: list[int] | np.ndarray | None = None,
 ) -> list[dict]:
     """Find valid tile positions across an EMIT / S2 pair.
 
@@ -98,6 +99,11 @@ def find_valid_paired_tiles(
         scale:          Integer S2/EMIT resolution ratio (typically 6).
         max_black_frac: Maximum allowed nodata fraction per tile in
                         *either* sensor (default 0 = zero tolerance).
+        emit_check_bands: Optional list of 1-based EMIT band indices to
+                        check for nodata (e.g. the 32 bands used for SR).
+                        If *None*, all bands are checked.  Checking only
+                        the bands actually used avoids false rejections
+                        from NaN in atmospheric absorption bands.
 
     Returns:
         List of dicts, each with keys ``idx``, ``emit_window``,
@@ -181,23 +187,50 @@ def find_valid_paired_tiles(
                     s2_tile, s2_tile,
                 )
 
-                # ── EMIT nodata check ────────────────────────────────
-                emit_block = emit_ds.read(1, window=emit_win).astype(np.float32)
+                # ── EMIT nodata check ─────────────────────────────────
+                # Stage 1: cheap band-1 pre-filter
+                emit_b1 = emit_ds.read(1, window=emit_win).astype(np.float32)
                 if emit_nodata is not None:
-                    emit_black = float(np.mean(emit_block == emit_nodata))
+                    emit_black = float(np.mean(emit_b1 == emit_nodata))
                 else:
-                    emit_black = float(np.mean(emit_block == 0))
+                    emit_black = float(np.mean(emit_b1 == 0))
+
+                if emit_black > max_black_frac:
+                    idx += 1
+                    continue
+
+                # Stage 2: check target bands for band-specific nodata
+                # (e.g. NaN in individual EMIT spectral bands that
+                # becomes 65535 in the saved uint16 tile).  Only run
+                # on tiles that passed the cheap band-1 check.
+                # When emit_check_bands is set, only those bands are
+                # read — avoids false rejections from NaN in unused
+                # atmospheric absorption bands.
+                if emit_check_bands is not None:
+                    emit_block = emit_ds.read(
+                        emit_check_bands, window=emit_win
+                    ).astype(np.float32)
+                else:
+                    emit_block = emit_ds.read(window=emit_win).astype(np.float32)
+                if emit_nodata is not None:
+                    emit_nodata_mask = (emit_block == emit_nodata)
+                else:
+                    emit_nodata_mask = (emit_block == 0)
+                # Any pixel with nodata in ANY band is bad
+                emit_black = float(emit_nodata_mask.any(axis=0).mean())
 
                 if emit_black > max_black_frac:
                     idx += 1
                     continue
 
                 # ── S2 nodata check ──────────────────────────────────
-                s2_block = s2_ds.read(1, window=s2_win).astype(np.float32)
+                # S2 has fewer bands (10), so all-band check is cheap
+                s2_block = s2_ds.read(window=s2_win).astype(np.float32)
                 if s2_nodata is not None:
-                    s2_black = float(np.mean(s2_block == s2_nodata))
+                    s2_nodata_mask = (s2_block == s2_nodata)
                 else:
-                    s2_black = float(np.mean(s2_block == 0))
+                    s2_nodata_mask = (s2_block == 0)
+                s2_black = float(s2_nodata_mask.any(axis=0).mean())
 
                 if s2_black > max_black_frac:
                     idx += 1
