@@ -499,6 +499,49 @@ def _download_band(item, key: str, out_dir: Path, stem: str) -> Path:
         download_asset(href, out)
     return out
 
+def _inpaint_bad_pixels(stack: np.ndarray, bad_mask: np.ndarray) -> np.ndarray:
+    """Replace bad pixels with the mean of their valid 3×3 neighbors.
+
+    Parameters
+    ----------
+    stack : ndarray, shape (C, H, W)
+        Multi-band image (uint16).
+    bad_mask : ndarray, shape (H, W), dtype bool
+        True where pixels should be inpainted.
+
+    Returns
+    -------
+    stack : ndarray (modified in-place)
+    """
+    if not bad_mask.any():
+        return stack
+
+    from scipy.ndimage import uniform_filter
+
+    n_bad = int(bad_mask.sum())
+    H, W = bad_mask.shape
+
+    for b in range(stack.shape[0]):
+        band = stack[b].astype(np.float64)
+        valid = ~bad_mask & (band != 0)   # valid neighbours only
+
+        # Compute local sum and count of valid neighbours
+        vals = np.where(valid, band, 0.0)
+        counts = valid.astype(np.float64)
+
+        # 3×3 box filter (sum of neighbours)
+        val_sum = uniform_filter(vals, size=3, mode="nearest") * 9.0
+        cnt_sum = uniform_filter(counts, size=3, mode="nearest") * 9.0
+
+        # Replace bad pixels where we have at least 1 valid neighbour
+        fillable = bad_mask & (cnt_sum > 0)
+        band[fillable] = val_sum[fillable] / cnt_sum[fillable]
+        stack[b] = np.clip(np.rint(band), 0, np.iinfo(stack.dtype).max).astype(stack.dtype)
+
+    print(f"  Inpainted {n_bad} defective pixels across {stack.shape[0]} bands.")
+    return stack
+
+
 def download_s2_spectral_stack(item, s2_dir: Path) -> Path:
     """
     For STAC items with assets named like:
@@ -529,6 +572,15 @@ def download_s2_spectral_stack(item, s2_dir: Path) -> Path:
     if "nir08" in assets:
         nir08_path = _download_band(item, "nir08", s2_dir, f"{item.id}_nir08")
 
+    # SCL (Scene Classification Layer) — 20 m, used to mask defective pixels
+    scl_path = None
+    scl_href = _find_scl_href(item)
+    if scl_href is not None:
+        scl_local = s2_dir / f"{item.id}_SCL.tif"
+        if not scl_local.exists():
+            download_asset(scl_href, scl_local)
+        scl_path = scl_local
+
     out_stack = s2_dir / f"{item.id}_S2_10band_10m.tif"
     if out_stack.exists():
         return out_stack
@@ -539,9 +591,9 @@ def download_s2_spectral_stack(item, s2_dir: Path) -> Path:
         ref_crs = ref.crs
         out_dtype = ref.dtypes[0]
 
-    def warp_to_ref(src_path: Path, resampling):
+    def warp_to_ref(src_path: Path, resampling, *, nodata=0):
         with rasterio.open(src_path) as src:
-            dst = np.zeros((H, W), dtype=out_dtype)
+            dst = np.full((H, W), nodata, dtype=out_dtype)
             reproject(
                 source=rasterio.band(src, 1),
                 destination=dst,
@@ -550,6 +602,8 @@ def download_s2_spectral_stack(item, s2_dir: Path) -> Path:
                 dst_transform=ref_transform,
                 dst_crs=ref_crs,
                 resampling=resampling,
+                src_nodata=nodata,
+                dst_nodata=nodata,
             )
             return dst
 
@@ -583,6 +637,29 @@ def download_s2_spectral_stack(item, s2_dir: Path) -> Path:
         print("WARNING: 'nir08' not included (missing or same resolution as 'nir'). Output will have 9 bands.")
 
     stack = np.stack([warp_to_ref(p, rs) for (_, p, rs) in band_order], axis=0)
+
+    # ── Inpaint SCL-flagged defective pixels ──────────────────────────────
+    # SCL class 0 = nodata, class 1 = saturated / defective.
+    # These are isolated bad detector pixels — replace with neighbour mean.
+    if scl_path is not None:
+        with rasterio.open(scl_path) as scl_ds:
+            scl_10m = np.zeros((H, W), dtype=np.uint8)
+            reproject(
+                source=rasterio.band(scl_ds, 1),
+                destination=scl_10m,
+                src_transform=scl_ds.transform,
+                src_crs=scl_ds.crs,
+                dst_transform=ref_transform,
+                dst_crs=ref_crs,
+                resampling=Resampling.nearest,
+                src_nodata=0,
+                dst_nodata=0,
+            )
+        bad_mask = np.isin(scl_10m, [0, 1])
+        if bad_mask.any():
+            stack = _inpaint_bad_pixels(stack, bad_mask)
+    else:
+        print("WARNING: SCL not available — skipping defective-pixel inpainting.")
 
     with rasterio.open(paths["blue"]) as ref:
         profile = ref.profile.copy()
