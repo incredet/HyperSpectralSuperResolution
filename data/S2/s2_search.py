@@ -514,6 +514,9 @@ def _inpaint_bad_pixels(
     safe ceiling).  Bands with normal values are kept, since a pixel
     can be saturated in visible bands but fine in NIR/SWIR.
 
+    Single-pass 3×3 mean filter — sufficient for the isolated single-pixel
+    defects typical of S2 detector failures.
+
     Parameters
     ----------
     stack : ndarray, shape (C, H, W)
@@ -549,15 +552,12 @@ def _inpaint_bad_pixels(
         n_inpainted += int(band_bad.sum())
         valid = ~band_bad & (band > 0) & (band <= physical_max)
 
-        # Compute local sum and count of valid neighbours
         vals = np.where(valid, band, 0.0)
         counts = valid.astype(np.float64)
 
-        # 3×3 box filter (sum of neighbours)
         val_sum = uniform_filter(vals, size=3, mode="nearest") * 9.0
         cnt_sum = uniform_filter(counts, size=3, mode="nearest") * 9.0
 
-        # Replace bad pixels where we have at least 1 valid neighbour
         fillable = band_bad & (cnt_sum > 0)
         band[fillable] = val_sum[fillable] / cnt_sum[fillable]
         stack[b] = np.clip(np.rint(band), 0, dmax).astype(stack.dtype)
@@ -663,12 +663,14 @@ def download_s2_spectral_stack(item, s2_dir: Path) -> Path:
     stack = np.stack([warp_to_ref(p, rs) for (_, p, rs) in band_order], axis=0)
 
     # ── Inpaint defective / saturated pixels ─────────────────────────────
-    # Two detection methods (combined with OR):
+    # Detection methods (combined with OR):
     #   1. SCL class 1 (saturated / defective) — isolated bad detector pixels
     #      Note: SCL class 0 is NOT included — it marks pixels outside the
     #      S2 tile footprint, which are legitimate nodata (not defective).
-    #   2. Radiometric: any band at uint16 max (65535) — catches saturated
-    #      pixels that SCL misses (common in visible bands over bright targets)
+    #   2. Radiometric saturation: any band at uint16 max (65535)
+    #   3. Anomalously high: any band exceeding physical ceiling (15000 DN)
+    #   4. Per-band dropout: any band is 0 while others have data — catches
+    #      single-detector failures (e.g. blue=0 but NIR=629)
     bad_mask = np.zeros((H, W), dtype=bool)
 
     if scl_path is not None:
@@ -689,10 +691,22 @@ def download_s2_spectral_stack(item, s2_dir: Path) -> Path:
     else:
         print("WARNING: SCL not available — using radiometric detection only.")
 
-    # Radiometric saturation: any band hitting uint16 max
+    # Radiometric detection: saturation + anomalously high values
+    PHYSICAL_MAX = 15000
     if np.issubdtype(stack.dtype, np.unsignedinteger):
         saturated = np.any(stack == np.iinfo(stack.dtype).max, axis=0)
         bad_mask |= saturated
+    anomalous = np.any(stack > PHYSICAL_MAX, axis=0)
+    bad_mask |= anomalous
+
+    # Per-band dropout: any band is 0 while at least one other band has
+    # data.  This catches single-detector failures where e.g. blue=0 but
+    # all other bands are normal.  Pixels where ALL bands are 0 are
+    # legitimate footprint nodata and are NOT flagged.
+    any_zero = np.any(stack == 0, axis=0)       # at least one band is 0
+    all_zero = np.all(stack == 0, axis=0)       # every band is 0 (edge nodata)
+    per_band_dropout = any_zero & ~all_zero
+    bad_mask |= per_band_dropout
 
     if bad_mask.any():
         stack = _inpaint_bad_pixels(stack, bad_mask)
@@ -705,6 +719,7 @@ def download_s2_spectral_stack(item, s2_dir: Path) -> Path:
         width=W,
         count=stack.shape[0],
         dtype=stack.dtype,
+        nodata=0,
         compress="DEFLATE",
         predictor=2,
         tiled=True,
