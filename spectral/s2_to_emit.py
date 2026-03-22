@@ -8,9 +8,9 @@ EMIT band.
 Pipeline overview
 -----------------
 Training (per tile pair):
-  1. Read S2  (10, 600, 600)  and EMIT-b32  (32, 100, 100).
+  1. Read S2  (10, 720, 720)  and EMIT-b32  (32, 120, 120).
   2. Nearest-neighbour-repeat EMIT to the S2 10 m grid:
-       np.repeat(emit, 6, axis=1/2)  → (32, 600, 600)
+       np.repeat(emit, 6, axis=1/2)  → (32, 720, 720)
      Each 60 m EMIT pixel is replicated into a 6×6 block, pairing every
      native 10 m S2 pixel with its parent EMIT value (many-to-one).
      This exposes the model to the full per-pixel spectral variability

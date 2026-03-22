@@ -70,7 +70,7 @@ def _pixel_offset(emit_tf, s2_tf) -> tuple[int, int]:
 def find_valid_paired_tiles(
     emit_path: str | Path,
     s2_path: str | Path,
-    emit_tile_size: int = 100,
+    emit_tile_size: int = 120,
     scale: int = 6,
     max_black_frac: float = 0.0,
     emit_check_bands: list[int] | np.ndarray | None = None,
