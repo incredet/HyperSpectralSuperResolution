@@ -499,13 +499,20 @@ def _download_band(item, key: str, out_dir: Path, stem: str) -> Path:
         download_asset(href, out)
     return out
 
-def _inpaint_bad_pixels(stack: np.ndarray, bad_mask: np.ndarray) -> np.ndarray:
+def _inpaint_bad_pixels(
+    stack: np.ndarray,
+    bad_mask: np.ndarray,
+    physical_max: int = 15000,
+) -> np.ndarray:
     """Replace bad pixels with the mean of their valid 3×3 neighbors.
 
     Inpainting is **per-band**: a pixel flagged in *bad_mask* is only
-    overwritten in bands where its value is actually anomalous (saturated
-    at dtype max, or zero / nodata).  Bands with normal values are kept,
-    since a pixel can be saturated in visible bands but fine in NIR/SWIR.
+    overwritten in bands where its value is actually anomalous.  A band
+    value is considered anomalous if it is zero (nodata) or exceeds
+    *physical_max* (S2 L2A reflectance scaled by 10 000 should not
+    exceed ~12 000 even for fresh snow with BOA offset; 15 000 is a
+    safe ceiling).  Bands with normal values are kept, since a pixel
+    can be saturated in visible bands but fine in NIR/SWIR.
 
     Parameters
     ----------
@@ -514,6 +521,9 @@ def _inpaint_bad_pixels(stack: np.ndarray, bad_mask: np.ndarray) -> np.ndarray:
     bad_mask : ndarray, shape (H, W), dtype bool
         True where pixels are suspected defective (from SCL or
         radiometric detection).
+    physical_max : int
+        Maximum physically plausible DN value.  Band values above this
+        in flagged pixels are inpainted (default 15 000).
 
     Returns
     -------
@@ -531,13 +541,13 @@ def _inpaint_bad_pixels(stack: np.ndarray, bad_mask: np.ndarray) -> np.ndarray:
     for b in range(stack.shape[0]):
         band = stack[b].astype(np.float64)
 
-        # Per-band bad: only inpaint where this band is actually bad
-        band_bad = bad_mask & ((band == 0) | (band >= dmax))
+        # Per-band bad: only inpaint where this band is actually anomalous
+        band_bad = bad_mask & ((band == 0) | (band > physical_max))
         if not band_bad.any():
             continue
 
         n_inpainted += int(band_bad.sum())
-        valid = ~band_bad & (band > 0) & (band < dmax)
+        valid = ~band_bad & (band > 0) & (band <= physical_max)
 
         # Compute local sum and count of valid neighbours
         vals = np.where(valid, band, 0.0)
@@ -654,7 +664,9 @@ def download_s2_spectral_stack(item, s2_dir: Path) -> Path:
 
     # ── Inpaint defective / saturated pixels ─────────────────────────────
     # Two detection methods (combined with OR):
-    #   1. SCL class 0 (nodata) or 1 (saturated / defective)
+    #   1. SCL class 1 (saturated / defective) — isolated bad detector pixels
+    #      Note: SCL class 0 is NOT included — it marks pixels outside the
+    #      S2 tile footprint, which are legitimate nodata (not defective).
     #   2. Radiometric: any band at uint16 max (65535) — catches saturated
     #      pixels that SCL misses (common in visible bands over bright targets)
     bad_mask = np.zeros((H, W), dtype=bool)
@@ -673,7 +685,7 @@ def download_s2_spectral_stack(item, s2_dir: Path) -> Path:
                 src_nodata=0,
                 dst_nodata=0,
             )
-        bad_mask |= np.isin(scl_10m, [0, 1])
+        bad_mask |= (scl_10m == 1)
     else:
         print("WARNING: SCL not available — using radiometric detection only.")
 
