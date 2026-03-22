@@ -12,15 +12,12 @@ daintree,-16.25,145.40,Daintree tropical rainforest — Queensland Australia,tro
 costa_rica_osa,8.50,-83.50,Osa Peninsula tropical wet forest — Costa Rica,tropical_forest
 western_ghats,12.50,75.50,Western Ghats moist deciduous forest — Karnataka India,tropical_forest
 yucatan_calakmul,18.20,-89.80,Calakmul biosphere reserve — Yucatan Mexico,tropical_forest/karst
-sahara_libya,26.00,14.00,Murzuq sand sea — southern Libya,desert
 namib_desert,-24.50,15.50,Central Namib gravel plains — Namibia,desert
 atacama,-24.00,-69.50,Atacama hyperarid desert — Chile,desert
 rub_al_khali,20.00,50.00,Rub al Khali sand dunes — Saudi Arabia,desert
 thar_desert,26.50,71.00,Thar Desert sand dunes — Rajasthan India,desert
-simpson_desert,-25.50,137.00,Simpson Desert dunefields — Australia,desert
 sonoran_desert,32.00,-113.00,Sonoran saguaro desert — Arizona USA,desert
 mojave_desert,35.00,-116.50,Mojave Desert playas — California USA,desert
-taklamakan,39.00,83.00,Taklamakan sand desert — Xinjiang China,desert
 sahel_niger,14.00,3.00,Sahel semi-arid transition zone — Niger,semi-arid/grassland
 iowa_cropland,42.00,-93.50,Iowa corn belt intensive agriculture — USA,cropland
 punjab_agriculture,30.50,74.50,Punjab irrigated wheat-rice — Pakistan-India border,cropland
@@ -53,7 +50,6 @@ valdivian_forest,-40.00,-72.00,Valdivian temperate rainforest — Chile,temperat
 carpathian_forest,47.50,24.50,Carpathian beech-fir forest — Romania,temperate_forest
 boreal_hokkaido,43.00,142.50,Hokkaido boreal-temperate transition forest — Japan,boreal_forest
 boreal_ontario,50.00,-84.00,Ontario boreal spruce-fir — Canada,boreal_forest
-boreal_manchuria,48.00,128.00,Manchurian boreal-mixed forest — Heilongjiang China,boreal_forest
 sundarbans,22.00,89.50,Sundarbans mangrove delta — Bangladesh-India,mangrove/wetland
 everglades,25.70,-80.80,Everglades freshwater marsh — Florida USA,wetland/marsh
 pantanal,-18.00,-56.50,Pantanal seasonal floodplain — Brazil,wetland/savanna
@@ -70,10 +66,6 @@ sao_paulo,-23.50,-46.60,Sao Paulo sprawl — Brazil,urban/subtropical
 lagos,6.45,3.40,Lagos coastal megacity — Nigeria,urban/tropical
 tokyo,35.68,139.75,Tokyo-Yokohama metro — Japan,urban/temperate
 dubai,25.20,55.30,Dubai built-up desert coast — UAE,urban/arid
-great_barrier_reef,-18.50,147.00,Great Barrier Reef shallow lagoon — Australia,coral_reef/ocean
-red_sea_reef,22.00,38.80,Red Sea fringing coral reef — Saudi Arabia,coral_reef/coastal
-maldives,4.00,73.50,Maldives atoll shallow carbonate — Indian Ocean,coral_reef/ocean
-belize_barrier_reef,17.50,-87.80,Belize Barrier Reef — Caribbean,coral_reef/ocean
 dead_sea,31.50,35.50,Dead Sea hypersaline basin — Israel-Jordan,salt_flat/barren
 bonneville,40.75,-113.90,Bonneville Salt Flats — Utah USA,salt_flat/playa
 etosha_pan,-18.80,16.20,Etosha Pan seasonal salt lake — Namibia,salt_flat/savanna
@@ -99,3 +91,71 @@ mediterranean_sardinia,40.00,9.00,Sardinia maquis shrubland — Italy,mediterran
 mediterranean_crete,35.20,24.50,Crete olive groves and garrigue — Greece,mediterranean/agriculture
 cape_fynbos,-34.00,18.50,Cape fynbos heathland — South Africa,mediterranean/shrubland
 chaparral_california,34.50,-118.50,Santa Monica Mountains chaparral — California USA,mediterranean/shrubland
+kansas_wheat,38.50,-98.50,Kansas winter wheat belt — USA,cropland
+argentina_pampas,-35.00,-61.00,Pampas soy-wheat agriculture — Buenos Aires Argentina,cropland
+rajasthan_agriculture,27.00,75.50,Rajasthan rainfed-irrigated transition — India,cropland/semi-arid
+ethiopia_rift_agriculture,7.50,38.50,Ethiopian Rift Valley smallholder farming,cropland/savanna
+morocco_draa,30.50,-6.00,Draa-Tafilalet oasis agriculture — Morocco,cropland/arid
+java_rice,-7.00,110.00,Java lowland rice paddies — Indonesia,cropland/tropical
+myanmar_irrawaddy,17.00,95.50,Irrawaddy Delta rice cultivation — Myanmar,cropland/wetland
+sudan_gezira,14.50,33.50,Gezira irrigated scheme — Sudan,cropland/arid
+peru_coastal_agriculture,-13.50,-76.00,Ica Valley coastal desert agriculture — Peru,cropland/arid
+turkey_anatolia,38.50,33.00,Central Anatolia dryland wheat — Turkey,cropland/steppe
+south_africa_maize,-27.00,27.50,Free State maize triangle — South Africa,cropland
+po_valley_italy,45.00,11.00,Po Valley intensive agriculture — Italy,cropland
+spain_meseta,39.50,-3.00,Castilla-La Mancha dryland cereals — Spain,cropland/semi-arid
+mexico_sinaloa,24.50,-107.50,Sinaloa irrigated agriculture — Mexico,cropland
+tanzania_sisal,-6.50,38.50,Coastal sisal-cashew plantations — Tanzania,cropland/tropical
+beijing_periurban,40.00,116.50,Beijing urban-agriculture fringe — China,urban/cropland
+delhi_ncr,28.60,77.20,Delhi NCR urban-rural transition — India,urban/cropland
+los_angeles,34.00,-118.20,Los Angeles basin sprawl — California USA,urban/mediterranean
+johannesburg,-26.20,28.00,Johannesburg-Pretoria metro — South Africa,urban/grassland
+bangkok,13.75,100.50,Bangkok sprawl and canals — Thailand,urban/tropical
+mexico_city,19.40,-99.10,Mexico City basin — Mexico,urban/mountain
+riyadh,24.70,46.70,Riyadh desert metropolis — Saudi Arabia,urban/desert
+lima,-12.00,-77.00,Lima coastal desert city — Peru,urban/arid
+nairobi,-1.30,36.80,Nairobi highland city — Kenya,urban/savanna
+deccan_plateau,16.00,77.50,Deccan Plateau semi-arid scrub — India,shrubland/cropland
+caatinga_brazil,-9.00,-39.00,Caatinga dry thorn scrub — Bahia Brazil,shrubland/semi-arid
+karoo_south_africa,-32.50,22.00,Great Karoo succulent shrubland — South Africa,shrubland
+great_basin,40.50,-117.00,Great Basin sagebrush steppe — Nevada USA,shrubland/steppe
+mulga_australia,-26.00,134.00,Mulga semi-arid woodland — South Australia,shrubland/woodland
+horn_of_africa,8.00,45.00,Somali semi-arid scrubland — Somalia,shrubland/semi-arid
+madagascar_dry_forest,-16.00,46.50,Western Madagascar dry deciduous forest,tropical_dry_forest
+chaco_argentina,-24.00,-61.00,Gran Chaco dry woodland — Argentina,tropical_dry_forest
+myanmar_dry_zone,21.00,95.50,Central Myanmar dry zone — Mandalay,tropical_dry_forest
+tamil_nadu_scrub,11.00,78.50,Tamil Nadu tropical dry scrub — India,tropical_dry_forest
+southeast_us_pine,32.00,-82.00,Georgia longleaf pine savanna — USA,temperate_forest/savanna
+ozark_forest,36.50,-92.50,Ozark Plateau oak-hickory forest — Missouri USA,temperate_forest
+korean_forest,36.00,128.00,Korean temperate mixed forest — South Korea,temperate_forest
+yangtze_subtropical,29.00,112.00,Yangtze middle reaches subtropical forest — Hunan China,subtropical_forest
+azores_laurel,38.70,-27.20,Azores laurel forest — Portugal,subtropical_forest
+reunion_forest,-21.00,55.60,Reunion montane cloud forest — France,tropical_montane_forest
+cameroon_highlands,6.00,10.00,Cameroon Highlands montane forest,tropical_montane_forest
+sri_lanka_highlands,7.00,80.50,Sri Lanka central highlands tea and forest,tropical_montane_forest
+new_guinea_highlands,-6.00,145.00,Papua New Guinea highland valleys,tropical_montane_forest
+morocco_argan,30.00,-9.50,Souss-Massa argan woodland — Morocco,woodland/semi-arid
+angola_woodland,-12.00,18.00,Angolan miombo-savanna mosaic,woodland/savanna
+mozambique_coast,-15.00,40.50,Mozambique coastal woodland — Zambeze,woodland/tropical
+queensland_savanna,-19.50,144.50,Queensland tropical savanna — Australia,savanna/woodland
+south_sudan_grassland,5.00,31.50,Bahr el Ghazal floodplain grassland — South Sudan,grassland/wetland
+uruaguay_pampa,-34.00,-55.00,Uruguayan pampa grassland,grassland
+inner_mongolia,42.00,115.00,Inner Mongolia temperate grassland — China,grassland/steppe
+jordan_valley,32.00,35.80,Jordan Valley irrigated agriculture — Jordan,cropland/arid
+kuwait_desert,29.30,47.50,Kuwait coastal desert — Kuwait,desert/coastal
+oman_hajar,23.00,57.50,Hajar Mountains arid peaks — Oman,mountain/arid
+sinai_peninsula,29.50,34.00,Sinai desert and wadis — Egypt,desert/mountain
+libya_fezzan,27.00,13.50,Fezzan oasis belt — Libya,desert/oasis
+iran_dasht,33.00,54.00,Dasht-e Kavir salt desert — Iran,desert/salt_flat
+baja_california,28.00,-113.50,Baja California desert coast — Mexico,desert/coastal
+namibia_brandberg,-21.00,14.50,Brandberg granite inselberg — Namibia,desert/mountain
+pilbara_australia,-22.50,118.50,Pilbara iron-rich terrain — Western Australia,desert/mineral
+sudan_bayuda,18.00,33.00,Bayuda volcanic desert — Sudan,desert/volcanic
+cuba_agriculture,22.50,-80.00,Central Cuba sugar-tobacco agriculture,cropland/tropical
+dominican_republic,19.00,-70.50,Cibao Valley agriculture — Dominican Republic,cropland/tropical
+senegal_groundnut,14.50,-15.50,Senegal groundnut basin — Kaolack,cropland/semi-arid
+zambia_agriculture,-15.50,28.00,Lusaka Province maize farming — Zambia,cropland/savanna
+vietnam_central_highlands,14.00,108.00,Central Highlands coffee plantations — Vietnam,cropland/forest
+colombia_coffee,5.00,-75.50,Colombian coffee axis — Quindio,cropland/tropical_montane
+taiwan_west,24.00,120.50,Western Taiwan rice-urban mosaic,cropland/urban
+hawaii_agriculture,20.80,-156.30,Maui sugar-pineapple agriculture — Hawaii USA,cropland/tropical
