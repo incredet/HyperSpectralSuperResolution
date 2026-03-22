@@ -439,14 +439,20 @@ def realign_s2_to_emit(
     dy_s2 = dy_emit * scale
     dx_s2 = dx_emit * scale
 
-    # Shift every S2 band at full resolution using spline interpolation
+    # Shift every S2 band at full resolution using cubic spline interpolation.
+    # Cubic can ring at sharp edges — overshoot is clamped per-band to
+    # the observed data range (with small margin) instead of uint16 max.
     s2_shifted = np.empty_like(s2_tile)
     for b in range(c_s2):
+        band = s2_float[b]
+        bmin, bmax = float(band.min()), float(band.max())
+        margin = (bmax - bmin) * 0.01          # 1 % headroom
         s2_shifted[b] = ndimage_shift(
-            s2_float[b], (dy_s2, dx_s2),
+            band, (dy_s2, dx_s2),
             order=3,        # cubic spline
-            mode="nearest",  # fill edges by replicating boundary values
+            mode="nearest",
         )
+        np.clip(s2_shifted[b], bmin, bmax + margin, out=s2_shifted[b])
 
     # Preserve original dtype
     if np.issubdtype(s2_tile.dtype, np.integer):
