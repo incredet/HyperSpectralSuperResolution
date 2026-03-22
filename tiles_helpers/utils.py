@@ -439,27 +439,24 @@ def realign_s2_to_emit(
     dy_s2 = dy_emit * scale
     dx_s2 = dx_emit * scale
 
-    # Shift every S2 band at full resolution using cubic spline interpolation.
-    # Cubic can ring at sharp edges — overshoot is clamped per-band to
-    # the observed data range (with small margin) instead of uint16 max.
-    s2_shifted = np.empty_like(s2_tile)
+    # Work in float32 reflectance space: uint16 DN / 10000 → [0, ~1.0]
+    # Cubic spline shift, per-band clamp to observed range, then back to uint16.
+    S2_SCALE = np.float32(10000.0)
+    s2_refl = s2_float.astype(np.float32) / S2_SCALE
+
+    s2_shifted_refl = np.empty(s2_refl.shape, dtype=np.float32)
     for b in range(c_s2):
-        band = s2_float[b]
-        bmin, bmax = float(band.min()), float(band.max())
-        margin = (bmax - bmin) * 0.01          # 1 % headroom
-        s2_shifted[b] = ndimage_shift(
+        band = s2_refl[b]
+        bmax = float(band.max())
+        s2_shifted_refl[b] = ndimage_shift(
             band, (dy_s2, dx_s2),
             order=3,        # cubic spline
             mode="nearest",
         )
-        np.clip(s2_shifted[b], bmin, bmax + margin, out=s2_shifted[b])
+        np.clip(s2_shifted_refl[b], 0.0, bmax, out=s2_shifted_refl[b])
 
-    # Preserve original dtype
-    if np.issubdtype(s2_tile.dtype, np.integer):
-        s2_shifted = np.clip(s2_shifted, 0, np.iinfo(s2_tile.dtype).max)
-        s2_shifted = np.rint(s2_shifted).astype(s2_tile.dtype)
-    else:
-        s2_shifted = s2_shifted.astype(s2_tile.dtype)
+    # Back to uint16 for storage
+    s2_shifted = np.rint(s2_shifted_refl * S2_SCALE).astype(np.uint16)
 
     stats["applied"] = True
     return s2_shifted, stats
