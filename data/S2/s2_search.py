@@ -502,17 +502,17 @@ def _download_band(item, key: str, out_dir: Path, stem: str) -> Path:
 def _inpaint_bad_pixels(
     stack: np.ndarray,
     bad_mask: np.ndarray,
-    physical_max: int = 15000,
+    physical_max: int = 20000,
 ) -> np.ndarray:
     """Replace bad pixels with the mean of their valid 3×3 neighbors.
 
     Inpainting is **per-band**: a pixel flagged in *bad_mask* is only
     overwritten in bands where its value is actually anomalous.  A band
     value is considered anomalous if it is zero (nodata) or exceeds
-    *physical_max* (S2 L2A reflectance scaled by 10 000 should not
-    exceed ~12 000 even for fresh snow with BOA offset; 15 000 is a
-    safe ceiling).  Bands with normal values are kept, since a pixel
-    can be saturated in visible bands but fine in NIR/SWIR.
+    *physical_max*.  Threshold 20 000 DN (≈ reflectance 1.9 with BOA
+    offset) is above anything physical but catches defective detector
+    pixels.  Bands with normal values are kept, since a pixel can be
+    saturated in visible bands but fine in NIR/SWIR.
 
     Single-pass 3×3 mean filter — sufficient for the isolated single-pixel
     defects typical of S2 detector failures.
@@ -691,22 +691,16 @@ def download_s2_spectral_stack(item, s2_dir: Path) -> Path:
     else:
         print("WARNING: SCL not available — using radiometric detection only.")
 
-    # Radiometric detection: saturation + anomalously high values
-    PHYSICAL_MAX = 15000
+    # Radiometric detection: saturation + anomalously high values.
+    # Threshold 20000 DN (≈ reflectance 1.9 with BOA offset) is well above
+    # anything physical (fresh snow peaks ~12000 DN) but catches defective
+    # detector pixels that typically sit at 20000–57000+.
+    PHYSICAL_MAX = 20000
     if np.issubdtype(stack.dtype, np.unsignedinteger):
         saturated = np.any(stack == np.iinfo(stack.dtype).max, axis=0)
         bad_mask |= saturated
     anomalous = np.any(stack > PHYSICAL_MAX, axis=0)
     bad_mask |= anomalous
-
-    # Per-band dropout: any band is 0 while at least one other band has
-    # data.  This catches single-detector failures where e.g. blue=0 but
-    # all other bands are normal.  Pixels where ALL bands are 0 are
-    # legitimate footprint nodata and are NOT flagged.
-    any_zero = np.any(stack == 0, axis=0)       # at least one band is 0
-    all_zero = np.all(stack == 0, axis=0)       # every band is 0 (edge nodata)
-    per_band_dropout = any_zero & ~all_zero
-    bad_mask |= per_band_dropout
 
     if bad_mask.any():
         stack = _inpaint_bad_pixels(stack, bad_mask)
