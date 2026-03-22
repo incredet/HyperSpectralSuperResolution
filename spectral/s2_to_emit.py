@@ -156,7 +156,7 @@ def _build_valid_mask(
 
     valid = np.isfinite(X).all(axis=1) & np.isfinite(Y).all(axis=1)
     if s2_nodata is not None:
-        valid &= ~np.any(np.isclose(X, s2_nodata), axis=1)
+        valid &= ~np.all(np.isclose(X, s2_nodata), axis=1)
     if emit_nodata is not None:
         valid &= ~np.any(np.isclose(Y, emit_nodata), axis=1)
     # also reject all-zero S2 pixels (common nodata sentinel in STAC downloads)
@@ -461,10 +461,13 @@ class S2ToEMITRegressor:
 
         X = s2_cube.reshape(B, H * W).T       # (N, 10)  — still in DN
 
-        # Build valid mask in DN space (before normalization)
+        # Build valid mask in DN space (before normalization).
+        # Use np.all (not np.any) for S2 nodata: only reject pixels where
+        # ALL bands are nodata.  Water pixels legitimately have near-zero
+        # SWIR reflectance — rejecting on any-band-zero kills them.
         valid = np.isfinite(X).all(axis=1)
         if s2_nodata is not None:
-            valid &= ~np.any(np.isclose(X, s2_nodata), axis=1)
+            valid &= ~np.all(np.isclose(X, s2_nodata), axis=1)
         valid &= ~np.all(X == 0, axis=1)
 
         out_flat = np.full((H * W, n_out), out_nodata, dtype=np.float32)
