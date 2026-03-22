@@ -268,11 +268,14 @@ def _write_geotiff(
     cube: np.ndarray,
     ref_profile: dict,
     out_path: str | Path,
-    nodata: float,
+    nodata: float | int,
     wavelengths_nm: np.ndarray | None,
     band_indices: np.ndarray | None,
 ) -> None:
-    """Write a ``(B, H, W)`` float32 cube as a compressed GeoTIFF.
+    """Write a ``(B, H, W)`` cube as a compressed GeoTIFF.
+
+    The output dtype and DEFLATE predictor are chosen automatically from
+    the array dtype (uint16 → predictor 2, float → predictor 3).
 
     Band descriptions and ``wavelength`` / ``emit_band_index`` tags are
     written if the corresponding arrays are provided.
@@ -280,14 +283,15 @@ def _write_geotiff(
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    is_int = np.issubdtype(cube.dtype, np.integer)
     profile = ref_profile.copy()
     profile.update(
         count=cube.shape[0],
-        dtype="float32",
+        dtype=str(cube.dtype),
         nodata=nodata,
         driver="GTiff",
         compress="DEFLATE",
-        predictor=3,        # floating-point predictor for better compression
+        predictor=2 if is_int else 3,
         tiled=True,
         BIGTIFF="IF_SAFER",
     )
@@ -436,22 +440,22 @@ class S2ToEMITRegressor:
         s2_tile_path: str | Path,
         *,
         out_path: str | Path | None = None,
-        out_nodata: float = 65535.0
+        out_nodata: int = 65535,
     ) -> np.ndarray:
         """Apply the model to an S2 tile at its native 10 m resolution.
 
         The model was trained in reflectance space (DN / 10000), so input
-        S2 values are normalised before prediction.  Output is written back
-        in the same reflectance scale as training (i.e. [0, ~1.0]).
+        S2 values are normalised before prediction.  Predictions are
+        converted back to uint16 DN (× 10000) for storage.
 
         Args:
             s2_tile_path: Path to the S2 GeoTIFF tile (10 bands, 10 m).
-            out_path:     If given, write the result as a GeoTIFF.
-            out_nodata:   Fill value for invalid pixels in the output.
+            out_path:     If given, write the result as a uint16 GeoTIFF.
+            out_nodata:   uint16 fill value for invalid pixels (default 65535).
 
         Returns:
-            ``(n_output_bands, H_s2, W_s2)`` float32 regression-synthetic
-            EMIT cube in reflectance units [0, ~1.0].
+            ``(n_output_bands, H_s2, W_s2)`` uint16 regression-synthetic
+            EMIT cube in DN units (reflectance × 10000).
         """
         DN_SCALE = np.float32(10000.0)
 
@@ -470,7 +474,7 @@ class S2ToEMITRegressor:
             valid &= ~np.all(np.isclose(X, s2_nodata), axis=1)
         valid &= ~np.all(X == 0, axis=1)
 
-        out_flat = np.full((H * W, n_out), out_nodata, dtype=np.float32)
+        out_flat = np.full((H * W, n_out), out_nodata, dtype=np.uint16)
         if valid.any():
             # Normalize to reflectance: DN / 10000 → [0, ~1.0]
             X_valid = X[valid] / DN_SCALE
@@ -483,7 +487,11 @@ class S2ToEMITRegressor:
             else:
                 np.clip(pred, 0.0, None, out=pred)
 
-            out_flat[valid] = pred
+            # Convert reflectance → uint16 DN, clamp to [0, 65534]
+            # (65535 is reserved for nodata)
+            pred_dn = np.rint(pred * DN_SCALE).astype(np.int32)
+            np.clip(pred_dn, 0, int(out_nodata) - 1, out=pred_dn)
+            out_flat[valid] = pred_dn.astype(np.uint16)
 
         result = out_flat.T.reshape(n_out, H, W)
 
@@ -928,18 +936,20 @@ def plot_spectral_match(
         emit_rgb  = np.moveaxis(emit_ds.read(bands_1based).astype(np.float32), 0, -1)
         emit_nodata = emit_ds.nodata
 
-    # ── Nodata → nan ──────────────────────────────────────────────────────
-    if np.nanmax(s2_rgb) > 1.5:
-        s2_rgb /= 10_000.0
-    if s2_nodata is not None:
-        s2_rgb[s2_rgb == s2_nodata / 10_000.0] = np.nan
-
-    if pred_nodata is not None:
-        pred_rgb[pred_rgb == pred_nodata] = np.nan
+    # ── Nodata → nan, then normalize to [0, ~1] for display ─────────────
+    # All three panels may be uint16 DN (scaled by 10000) or float32
+    # reflectance.  Auto-detect and normalize consistently.
+    for rgb, nd in [(s2_rgb, s2_nodata), (pred_rgb, pred_nodata), (emit_rgb, emit_nodata)]:
+        if nd is not None:
+            rgb[rgb == nd] = np.nan
     pred_rgb[~np.isfinite(pred_rgb)] = np.nan
 
-    if emit_nodata is not None:
-        emit_rgb[emit_rgb == emit_nodata] = np.nan
+    if np.nanmax(s2_rgb) > 1.5:
+        s2_rgb /= 10_000.0
+    if np.nanmax(pred_rgb) > 1.5:
+        pred_rgb /= 10_000.0
+    if np.nanmax(emit_rgb) > 1.5:
+        emit_rgb /= 10_000.0
 
     # ── Plot ──────────────────────────────────────────────────────────────
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
