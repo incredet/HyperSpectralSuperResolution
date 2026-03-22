@@ -79,7 +79,7 @@ class PipelineConfig:
     coreg_cliptoextent: bool = False
 
     # ── Tiling ───────────────────────────────────────────────────────────
-    emit_tile_size: int = 100
+    emit_tile_size: int = 120
     tile_scale: int = 6
 
     # ── Spectral fitting ─────────────────────────────────────────────────
