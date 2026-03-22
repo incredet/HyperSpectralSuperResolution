@@ -59,7 +59,7 @@ class PipelineConfig:
     top_k_prefilter: int = 50
 
     # ── Quality filters ──────────────────────────────────────────────────
-    max_s2_cloud_frac: Optional[float] = 0.70
+    max_s2_cloud_frac: Optional[float] = 0.20
     max_emit_cloud_pct: Optional[float] = None
     max_black_frac: float = 0.0
 
