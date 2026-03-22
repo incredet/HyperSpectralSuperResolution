@@ -440,20 +440,28 @@ class S2ToEMITRegressor:
     ) -> np.ndarray:
         """Apply the model to an S2 tile at its native 10 m resolution.
 
+        The model was trained in reflectance space (DN / 10000), so input
+        S2 values are normalised before prediction.  Output is written back
+        in the same reflectance scale as training (i.e. [0, ~1.0]).
+
         Args:
             s2_tile_path: Path to the S2 GeoTIFF tile (10 bands, 10 m).
             out_path:     If given, write the result as a GeoTIFF.
             out_nodata:   Fill value for invalid pixels in the output.
 
         Returns:
-            ``(n_output_bands, H_s2, W_s2)`` float32 regression-synthetic EMIT cube.
+            ``(n_output_bands, H_s2, W_s2)`` float32 regression-synthetic
+            EMIT cube in reflectance units [0, ~1.0].
         """
+        DN_SCALE = np.float32(10000.0)
+
         s2_cube, s2_prof, s2_nodata = _read_raster(s2_tile_path)
         B, H, W = s2_cube.shape
         n_out = self.n_output_bands_
 
-        X = s2_cube.reshape(B, H * W).T       # (N, 10)
+        X = s2_cube.reshape(B, H * W).T       # (N, 10)  — still in DN
 
+        # Build valid mask in DN space (before normalization)
         valid = np.isfinite(X).all(axis=1)
         if s2_nodata is not None:
             valid &= ~np.any(np.isclose(X, s2_nodata), axis=1)
@@ -461,8 +469,9 @@ class S2ToEMITRegressor:
 
         out_flat = np.full((H * W, n_out), out_nodata, dtype=np.float32)
         if valid.any():
-            X_valid = X[valid]
-            pred = self.predict(X_valid)
+            # Normalize to reflectance: DN / 10000 → [0, ~1.0]
+            X_valid = X[valid] / DN_SCALE
+            pred = self.predict(X_valid)        # reflectance space
 
             # Clip to [0, per-band training max] — polynomial overshoot
             # on bright or unusual pixels can produce extreme values.
@@ -556,6 +565,8 @@ def fit_tile(
         ``n_train_pixels``, ``r2_per_band``, ``r2_mean``, ``r2_min``,
         ``wavelengths_nm``, ``n_homo_blocks``, ``n_total_blocks``.
     """
+    DN_SCALE = np.float32(10000.0)
+
     s2_cube,  s2_prof,   s2_nodata   = _read_raster(s2_tile_path)
     emit_b32, emit_prof, emit_nodata = _read_raster(emit_b32_tile_path)
 
@@ -564,13 +575,17 @@ def fit_tile(
 
     band_indices, wavelengths_nm = _read_emit_band_meta(emit_b32_tile_path)
 
-    # Standard nodata mask at 10 m
+    # Standard nodata mask at 10 m (before normalization — nodata is in DN)
     valid = _build_valid_mask(s2_cube, emit_at_s2, s2_nodata, emit_nodata)
 
     # Homogeneity mask: only keep pixels inside spectrally uniform EMIT blocks
     homo = _block_homogeneity_mask(s2_cube, scale, max_cv=max_cv,
                                    s2_nodata=s2_nodata)
     valid &= homo
+
+    # Normalize to reflectance space: DN / 10000 → [0, ~1.0]
+    s2_cube    = s2_cube    / DN_SCALE
+    emit_at_s2 = emit_at_s2 / DN_SCALE
 
     B_s2, H, W = s2_cube.shape
     X_all = s2_cube.reshape(B_s2, H * W).T                # (N, 10)
@@ -625,7 +640,7 @@ def fit_tile(
         _scaler_ = scaler,
         _W_ = ridge.coef_.astype(np.float64),   # (n_out, P)
         _b_ = ridge.intercept_.astype(np.float64),
-        _y_max_ = Y_train.max(axis=0).astype(np.float32),  # per-band training max
+        _y_max_ = Y_train.max(axis=0).astype(np.float32),  # per-band max in reflectance
     )
 
     Y_pred      = regressor.predict(X_train)
@@ -692,6 +707,8 @@ def fit_tiles_batch(
     Returns:
         ``(matcher, stats)`` with an additional ``n_tiles`` key in *stats*.
     """
+    DN_SCALE = np.float32(10000.0)
+
     all_X: list[np.ndarray] = []
     all_Y: list[np.ndarray] = []
     band_indices:  np.ndarray | None = None
@@ -709,12 +726,16 @@ def fit_tiles_batch(
             band_indices, wavelengths_nm = _read_emit_band_meta(emit_path)
             n_s2_bands = s2_cube.shape[0]
 
+        # Nodata / homogeneity masks built in DN space (before normalization)
         valid = _build_valid_mask(s2_cube, emit_at_s2, s2_nodata, emit_nodata)
 
-        # Homogeneity mask: only keep pixels inside spectrally uniform blocks
         homo = _block_homogeneity_mask(s2_cube, scale, max_cv=max_cv,
                                        s2_nodata=s2_nodata)
         valid &= homo
+
+        # Normalize to reflectance space: DN / 10000 → [0, ~1.0]
+        s2_cube    = s2_cube    / DN_SCALE
+        emit_at_s2 = emit_at_s2 / DN_SCALE
 
         B_s2, H, W = s2_cube.shape
         X = s2_cube.reshape(B_s2, H * W).T
