@@ -363,6 +363,7 @@ class S2ToEMITRegressor:
     _scaler_:  object           = field(default=None, repr=False)
     _W_:       Optional[np.ndarray] = field(default=None, repr=False)
     _b_:       Optional[np.ndarray] = field(default=None, repr=False)
+    _y_max_:   Optional[np.ndarray] = field(default=None, repr=False)  # per-band training max
 
     # Legacy — only populated when loading old serialised regressors
     models_:               list = field(default_factory=list, repr=False)
@@ -463,7 +464,12 @@ class S2ToEMITRegressor:
             X_valid = X[valid]
             pred = self.predict(X_valid)
 
-            np.clip(pred, 0.0, None, out=pred)
+            # Clip to [0, per-band training max] — polynomial overshoot
+            # on bright or unusual pixels can produce extreme values.
+            if self._y_max_ is not None:
+                np.clip(pred, 0.0, self._y_max_[np.newaxis, :], out=pred)
+            else:
+                np.clip(pred, 0.0, None, out=pred)
 
             out_flat[valid] = pred
 
@@ -619,6 +625,7 @@ def fit_tile(
         _scaler_ = scaler,
         _W_ = ridge.coef_.astype(np.float64),   # (n_out, P)
         _b_ = ridge.intercept_.astype(np.float64),
+        _y_max_ = Y_train.max(axis=0).astype(np.float32),  # per-band training max
     )
 
     Y_pred      = regressor.predict(X_train)
@@ -750,6 +757,7 @@ def fit_tiles_batch(
         _scaler_             = scaler,
         _W_                  = ridge.coef_.astype(np.float64),
         _b_                  = ridge.intercept_.astype(np.float64),
+        _y_max_              = Y_train.max(axis=0).astype(np.float32),
     )
 
     Y_pred      = regressor.predict(X_train)
