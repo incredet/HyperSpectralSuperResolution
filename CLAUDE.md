@@ -60,7 +60,8 @@ hif-benchmarking/
 ├── main/
 │   ├── tif2mat_wald.py      # Prepare Wald protocol data from GeoTIFF tiles
 │   ├── run_batch.py         # Run MATLAB fusion methods in parallel batches
-│   ├── run_regression_wald.py  # Run Python regression fusion (to be created)
+│   ├── run_regression_wald.py  # Run Python regression fusion in Wald space
+│   ├── select_wald_tiles.py   # R²-filter + stratified subsample for Wald eval
 │   ├── metrics_wald.py      # Compute 7 metrics: PSNR, SSIM, SAM, ERGAS, RMSE, UIQI, SCC
 │   ├── produce_glp.py       # Pure-Python GLP implementation
 │   ├── produce_sfim.py      # Pure-Python SFIM implementation
@@ -84,9 +85,12 @@ hif-benchmarking/
 ### Data Flow — Wald's Protocol Evaluation
 
 ```
-GeoTIFF tiles (on Drive)
+r2_all_tiles.csv (from Color_Matching.ipynb) + aois.csv
   │
-  ▼  tif2mat_wald.py
+  ▼  select_wald_tiles.py (R² >= 0.75, stratified ~40-60 tiles)
+wald_tile_list.csv
+  │
+  ▼  tif2mat_wald.py --tile-list wald_tile_list.csv
 .mat files: GT (120×120×32), HS (20×20×32), MS (120×120×10)
   │
   ├──▶ run_batch.py (MATLAB methods: SFIM, GLP, CNMF, HySure, MAPSMM)
@@ -169,7 +173,7 @@ From `data/eval/EMIT32_WALD_6_ranking.csv` (6 scenes, previous tile size):
 4. **HySure** — avg rank 3.57, PSNR=36.67
 5. **FUSE** — avg rank 4.43, PSNR=36.85
 
-Regression method not yet evaluated in this framework. To be added via `run_regression_wald.py`.
+Regression method: run via `run_regression_wald.py` (Python, no MATLAB needed).
 
 ## Training Status & Key Findings
 
@@ -216,9 +220,22 @@ Regression method not yet evaluated in this framework. To be added via `run_regr
 
 ```bash
 # Wald evaluation pipeline (from hif-benchmarking/ directory)
-python main/tif2mat_wald.py --drive-root /path/to/data --bench-root . --dataset EMIT32_WALD --scale 6
+# Step 0: Select tiles (R² filter + stratified subsample)
+python main/select_wald_tiles.py \
+    --r2-csv /path/to/r2_all_tiles.csv \
+    --aois-csv /path/to/aois.csv \
+    --drive-root /path/to/data \
+    --min-r2 0.75 --tiles-per-category 5 \
+    --output wald_tile_list.csv
+
+# Step 1: Prepare .mat files from selected tiles
+python main/tif2mat_wald.py --tile-list wald_tile_list.csv --bench-root . --dataset EMIT32_WALD --scale 6
+
+# Step 2: Run fusion methods
 python main/run_batch.py --dataset EMIT32_WALD --scale 6 --methods SFIM GLP CNMF HySure MAPSMM
 python main/run_regression_wald.py --dataset EMIT32_WALD --scale 6
+
+# Step 3: Evaluate
 python main/metrics_wald.py --dataset EMIT32_WALD --scale 6
 
 # Pure-Python fusion (no MATLAB needed)
