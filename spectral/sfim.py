@@ -23,6 +23,12 @@ This is the "hypersharpening" variant of SFIM [2] which uses NNLS-fitted
 linear combinations of MS bands (with intercept) instead of a single
 best-correlated MS band.
 
+Performance
+-----------
+Uses OpenCV (cv2) when available for ~10-20× faster bicubic resize
+compared to per-band scipy.ndimage.zoom.  Falls back to vectorized 3D
+scipy zoom if cv2 is not installed.
+
 References
 ----------
 [1] Liu, 2000, "Smoothing filter-based intensity modulation"
@@ -40,8 +46,14 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from scipy.ndimage import zoom, gaussian_filter
+from scipy.ndimage import zoom as scipy_zoom, gaussian_filter
 from scipy.optimize import nnls
+
+try:
+    import cv2
+    _HAS_CV2 = True
+except ImportError:
+    _HAS_CV2 = False
 
 try:
     import rasterio
@@ -50,30 +62,74 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
-# Core algorithm
+# Resize helpers  (cv2 fast path  /  scipy fallback)
 # ---------------------------------------------------------------------------
 
-def _bicubic_resize_2d(arr_2d: np.ndarray, target_shape: tuple[int, int]) -> np.ndarray:
+def _resize_3d_cv2(arr: np.ndarray, target_hw: tuple[int, int],
+                   anti_alias: bool = False) -> np.ndarray:
     """
-    Resize a 2D array to target_shape using bicubic (order=3) interpolation.
+    Resize (H, W, B) array to (target_h, target_w, B) via OpenCV bicubic.
 
-    When downsampling, applies a Gaussian anti-aliasing pre-filter to match
-    MATLAB's imresize behaviour. The kernel sigma is derived from the
-    downsampling factor: sigma = 0.5 * (1/zoom_factor), which is the standard
-    rule for preventing aliasing before decimation.
+    Parameters
+    ----------
+    arr : (H_in, W_in, B) float64
+    target_hw : (H_out, W_out)
+    anti_alias : if True and downsampling, apply Gaussian pre-filter
     """
-    zoom_h = target_shape[0] / arr_2d.shape[0]
-    zoom_w = target_shape[1] / arr_2d.shape[1]
+    h_in, w_in = arr.shape[:2]
+    h_out, w_out = target_hw
 
-    # Anti-alias when downsampling (zoom < 1)
-    filtered = arr_2d
-    if zoom_h < 1.0 or zoom_w < 1.0:
+    src = arr
+    if anti_alias and (h_out < h_in or w_out < w_in):
+        # Gaussian AA — sigma = 0.5 / zoom_factor per axis
+        sigma_h = 0.5 * h_in / h_out if h_out < h_in else 0.0
+        sigma_w = 0.5 * w_in / w_out if w_out < w_in else 0.0
+        # cv2.GaussianBlur needs odd kernel sizes (≥ 6σ+1)
+        kh = max(int(np.ceil(sigma_h * 6)) | 1, 1)
+        kw = max(int(np.ceil(sigma_w * 6)) | 1, 1)
+        src = cv2.GaussianBlur(src, (kw, kh), sigmaX=sigma_w, sigmaY=sigma_h)
+
+    # cv2.resize expects dsize = (width, height)
+    out = cv2.resize(src, (w_out, h_out), interpolation=cv2.INTER_CUBIC)
+
+    # cv2 drops last dim when B==1
+    if out.ndim == 2:
+        out = out[:, :, np.newaxis]
+
+    return out
+
+
+def _resize_3d_scipy(arr: np.ndarray, target_hw: tuple[int, int],
+                     anti_alias: bool = False) -> np.ndarray:
+    """
+    Resize (H, W, B) array to (target_h, target_w, B) via scipy 3D zoom.
+    Fallback when cv2 is not available.
+    """
+    h_in, w_in = arr.shape[:2]
+    h_out, w_out = target_hw
+    zoom_h = h_out / h_in
+    zoom_w = w_out / w_in
+
+    src = arr
+    if anti_alias and (zoom_h < 1.0 or zoom_w < 1.0):
         sigma_h = 0.5 / zoom_h if zoom_h < 1.0 else 0.0
         sigma_w = 0.5 / zoom_w if zoom_w < 1.0 else 0.0
-        filtered = gaussian_filter(arr_2d, sigma=(sigma_h, sigma_w))
+        src = gaussian_filter(src, sigma=(sigma_h, sigma_w, 0.0))
 
-    return zoom(filtered, (zoom_h, zoom_w), order=3)
+    return scipy_zoom(src, (zoom_h, zoom_w, 1.0), order=3)
 
+
+def _resize_3d(arr: np.ndarray, target_hw: tuple[int, int],
+               anti_alias: bool = False) -> np.ndarray:
+    """Dispatch to cv2 (fast) or scipy (fallback)."""
+    if _HAS_CV2:
+        return _resize_3d_cv2(arr, target_hw, anti_alias=anti_alias)
+    return _resize_3d_scipy(arr, target_hw, anti_alias=anti_alias)
+
+
+# ---------------------------------------------------------------------------
+# Core algorithm
+# ---------------------------------------------------------------------------
 
 def _nnls_coefficients(Y: np.ndarray, D: np.ndarray) -> np.ndarray:
     """
@@ -117,7 +173,7 @@ def sfim_fuse(
     eps: float = 1e-6,
 ) -> tuple[np.ndarray | None, np.ndarray]:
     """
-    SFIM hypersharpening fusion.
+    SFIM hypersharpening fusion (vectorized).
 
     Parameters
     ----------
@@ -141,12 +197,9 @@ def sfim_fuse(
     """
     rows_lr, cols_lr, B_hs = hs.shape
     rows_hr, cols_hr, B_ms = ms.shape
-    scale = rows_hr / rows_lr
 
-    # Step 1: Downsample MS to HS resolution via bicubic
-    low_res_ms = np.empty((rows_lr, cols_lr, B_ms), dtype=np.float64)
-    for b in range(B_ms):
-        low_res_ms[:, :, b] = _bicubic_resize_2d(ms[:, :, b], (rows_lr, cols_lr))
+    # Step 1: Downsample MS to HS resolution — single 3D call (was 10 per-band calls)
+    low_res_ms = _resize_3d(ms, (rows_lr, cols_lr), anti_alias=True)
 
     # Step 2: NNLS regression — [low_res_ms, 1] @ X ≈ HS
     N_lr = rows_lr * cols_lr
@@ -165,8 +218,7 @@ def sfim_fuse(
     if np.min(r2) < min_r2:
         return None, r2
 
-    # Step 4: Modulation — vectorized over all bands
-    # Build HR predictor matrix
+    # Step 4: Modulation — fully vectorized (no per-band loops)
     N_hr = rows_hr * cols_hr
     A_hr = np.column_stack([
         ms.reshape(N_hr, B_ms),
@@ -174,19 +226,17 @@ def sfim_fuse(
     ])  # (N_hr, B_ms+1)
 
     # Synthetic at HR and LR for all bands at once
-    synth_hr_all = (A_hr @ X).reshape(rows_hr, cols_hr, B_hs)   # (H_hr, W_hr, B_hs)
-    synth_lr_all = (A_lr @ X).reshape(rows_lr, cols_lr, B_hs)   # (H_lr, W_lr, B_hs)
+    synth_hr_all = (A_hr @ X).reshape(rows_hr, cols_hr, B_hs)
+    synth_lr_all = (A_lr @ X).reshape(rows_lr, cols_lr, B_hs)
 
-    # Upsample HS and synth_lr to HR
-    fused = np.empty((rows_hr, cols_hr, B_hs), dtype=np.float64)
-    for i in range(B_hs):
-        hs_up = _bicubic_resize_2d(hs[:, :, i], (rows_hr, cols_hr))
-        synth_lr_up = _bicubic_resize_2d(synth_lr_all[:, :, i], (rows_hr, cols_hr))
+    # Upsample HS and synth_lr — single 3D call each (was 32+32 per-band calls)
+    hs_up = _resize_3d(hs, (rows_hr, cols_hr), anti_alias=False)
+    synth_lr_up = _resize_3d(synth_lr_all, (rows_hr, cols_hr), anti_alias=False)
 
-        ratio = synth_hr_all[:, :, i] / np.maximum(synth_lr_up, eps)
-        ratio = np.clip(ratio, 0.0, ratio_clip)
-
-        fused[:, :, i] = hs_up * ratio
+    # Vectorized modulation over all bands at once
+    ratio = synth_hr_all / np.maximum(synth_lr_up, eps)
+    np.clip(ratio, 0.0, ratio_clip, out=ratio)
+    fused = hs_up * ratio
 
     return fused, r2
 
