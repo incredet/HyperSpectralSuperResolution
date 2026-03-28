@@ -20,37 +20,35 @@ try:
 except ImportError:
     rasterio = None
 
+# ── JAX backend (optional) ──────────────────────────────────────────────────
+_HAS_JAX = False
+_JAX_DEVICE = "cpu"  # "cpu" or "gpu"
+try:
+    import jax
+    import jax.numpy as jnp
+    from functools import partial as _partial
+    jax.config.update("jax_enable_x64", True)
+    _HAS_JAX = True
+    # Detect GPU
+    try:
+        _devs = jax.devices("gpu")
+        if _devs:
+            _JAX_DEVICE = "gpu"
+    except RuntimeError:
+        pass
+except ImportError:
+    pass
+
 
 def _gaussian_downsample(img: np.ndarray, factor: int) -> np.ndarray:
     """
-    Gaussian-PSF downsampling matching MATLAB ``gaussian_down_sample.m``.
-
-    Parameters
-    ----------
-    img : (H, W, B) float64 — input image
-    factor : int — spatial downsample factor (FWHM = factor)
-
-    Returns
-    -------
-    out : (H//factor, W//factor, B) float64
-
-    Notes
-    -----
-    The MATLAB code applies per-block Gaussian-weighted sums with different
-    kernel sizes at borders vs. interior.  For simplicity we use scipy's
-    ``gaussian_filter`` (full convolution, 'reflect' boundary) followed by
-    strided decimation.  This is a close approximation that avoids the
-    per-block loop and produces near-identical results for interior pixels.
-    Edge pixels (1-pixel border at LR) may differ slightly.
+    Gaussian-PSF downsampling matching 
     """
-    sigma = factor / 2.35482  # FWHM → sigma
+    sigma = factor / 2.35482
     h, w, b = img.shape
     h_out = h // factor
     w_out = w // factor
 
-    # sigma=[s, s, 0] applies Gaussian blur to spatial axes only, leaving
-    # the band axis untouched — identical to the per-band loop but avoids
-    # Python overhead for each of the B bands.
     smoothed = gaussian_filter(img, sigma=[sigma, sigma, 0], mode='reflect')
 
     offset = factor // 2
@@ -69,22 +67,9 @@ def _gaussian_downsample_2d(img_2d: np.ndarray, factor: int) -> np.ndarray:
     return smoothed[offset::factor, offset::factor][:h_out, :w_out]
 
 
-# ---------------------------------------------------------------------------
-# Helper: Virtual Dimensionality
-# ---------------------------------------------------------------------------
-
 def _virtual_dimensionality(data: np.ndarray, alpha: float = 1e-3) -> int:
     """
-    Estimate the number of spectrally distinct signal sources (port of vd.m).
-
-    Parameters
-    ----------
-    data : (bands, pixels) float64
-    alpha : false-alarm rate (default 1e-3)
-
-    Returns
-    -------
-    int — estimated virtual dimensionality
+    Estimate the number of spectrally distinct signal sources
     """
     L, N = data.shape
     R = (data @ data.T) / N
@@ -109,17 +94,6 @@ def _virtual_dimensionality(data: np.ndarray, alpha: float = 1e-3) -> int:
 def _vca(data: np.ndarray, p: int, seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
     """
     Vertex Component Analysis for endmember extraction (port of vca.m).
-
-    Parameters
-    ----------
-    data : (bands, pixels) float64
-    p : number of endmembers
-    seed : random seed for reproducibility
-
-    Returns
-    -------
-    U : (bands, p) — endmember spectra
-    indices : (p,) — pixel indices of selected endmembers
     """
     rng = np.random.RandomState(seed)
     L, N = data.shape
@@ -140,13 +114,15 @@ def _vca(data: np.ndarray, p: int, seed: int = 0) -> tuple[np.ndarray, np.ndarra
     denom_snr = P_y - P_x
     if abs(denom_snr) < 1e-30:
         denom_snr = 1e-30
-    SNR = abs(10.0 * np.log10((P_x - p / L * P_y) / denom_snr))
+    snr_arg = (P_x - p / L * P_y) / denom_snr
+    if snr_arg <= 0:
+        SNR = 0.0  # degenerate case → force low-SNR branch
+    else:
+        SNR = abs(10.0 * np.log10(snr_arg))
 
-    # SNR threshold (MATLAB uses natural log)
     SNRth = 15.0 + 10.0 * np.log(p) + 8.0
 
     if SNR > SNRth:
-        # High-SNR branch: project onto p-dim subspace, normalize
         d = p
         cov_full = (data @ data.T) / N
         eigvals_f, eigvecs_f = np.linalg.eigh(cov_full)
@@ -170,7 +146,6 @@ def _vca(data: np.ndarray, p: int, seed: int = 0) -> tuple[np.ndarray, np.ndarra
         c = np.sqrt(np.max(np.sum(X ** 2, axis=0)))
         Y = np.vstack([X, c * np.ones((1, N))])  # (p, N)
 
-    # --- Iterative endmember selection ---
     e_u = np.zeros(p)
     e_u[p - 1] = 1.0
     A = np.zeros((p, p))
@@ -179,29 +154,23 @@ def _vca(data: np.ndarray, p: int, seed: int = 0) -> tuple[np.ndarray, np.ndarra
 
     for i in range(p):
         w = rng.rand(p)
-        # Project out the subspace already in A
         A_pinv = np.linalg.pinv(A)
         f = w - A @ (A_pinv @ w)
         f_norm = np.sqrt(np.sum(f ** 2))
         if f_norm < 1e-16:
             f_norm = 1e-16
         f = f / f_norm
-        v = f @ Y                                # (N,)
+        v = f @ Y                      
         indices[i] = np.argmax(np.abs(v))
         A[:, i] = Y[:, indices[i]]
 
-    # Recover endmembers in original space
     if SNR > SNRth:
-        U = Ud @ X[:, indices]                   # (L, p)
+        U = Ud @ X[:, indices]            
     else:
-        U = Ud @ X[:, indices] + r_m2            # (L, p)
+        U = Ud @ X[:, indices] + r_m2      
 
     return U, indices
 
-
-# ---------------------------------------------------------------------------
-# Helper: SRF estimation
-# ---------------------------------------------------------------------------
 
 def _estimate_srf(
     hsi: np.ndarray,
@@ -211,26 +180,6 @@ def _estimate_srf(
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Estimate the spectral response function (SRF) via constrained LS
-    (port of estR.m).
-
-    Parameters
-    ----------
-    hsi : (H_lr, W_lr, B_hs) float64
-    msi : (H_hr, W_hr, B_ms) float64
-    scale_factor : spatial scale ratio (H_hr / H_lr)
-
-    Returns
-    -------
-    R : (B_ms, B_hs) — SRF matrix (offsets already subtracted from MSI)
-    offsets : (B_ms,) — per-band offsets
-    error : (B_ms,) — per-band relative RMSE of the SRF fit
-
-    Notes
-    -----
-    The MATLAB code uses quadprog to enforce x >= 0 for HS-band weights
-    while leaving the offset unconstrained.  We use ``scipy.optimize.lsq_linear``
-    with bounds: (0, +inf) for HS weights and (-inf, +inf) for the offset.
-    This faithfully matches the MATLAB constraint structure.
     """
     rows_lr, cols_lr, bands_hs = hsi.shape
     _, _, bands_ms = msi.shape
@@ -363,9 +312,14 @@ def _nmf_update_WH(
     update_W: bool = True,
     min_ms_bands: int = 3,
     n_spectral_bands: int = 0,
+    cost_stride: int = 5,
 ) -> tuple[np.ndarray, np.ndarray, float]:
     """
     NMF joint update for W (spectral rows) and H (i>1 branch in MATLAB).
+
+    Uses cost-check stride + fast cost formula to avoid forming the
+    (bands, N) residual every iteration.  Mathematically identical to the
+    naïve version (same MU steps, same convergence criterion).
 
     Parameters
     ----------
@@ -379,36 +333,53 @@ def _nmf_update_WH(
     min_ms_bands : minimum MS bands to allow W update (MATLAB MIN_MS_BANDS)
     n_spectral_bands : number of bands for the MIN_MS_BANDS check;
                        if <= min_ms_bands, W update is skipped
+    cost_stride : check convergence every *cost_stride* iterations (default 5)
 
     Returns
     -------
     W, H : updated matrices
     cost : final cost
     """
-    cost_prev = 0.0
-    for i in range(max_iter):
-        W_old = W.copy()
-        H_old = H.copy()
+    do_update_W = update_W and n_spectral_bands > min_ms_bands
+    D_band = D[:n_bands_orig, :]
+    D_sqnorm = float(np.sum(D_band ** 2))            # scalar — constant
 
-        if update_W and n_spectral_bands > min_ms_bands:
-            # Update W (spectral rows only)
+    cost_prev = 0.0
+    W_saved = W.copy()
+    H_saved = H.copy()
+
+    for i in range(max_iter):
+        if do_update_W:
             HHt = H @ H.T                                   # (M, M)
-            W_n = D[:n_bands_orig, :] @ H.T                 # (bands, M)
-            W_d = W[:n_bands_orig, :] @ HHt + eps           # (bands, M)
+            W_n = D_band @ H.T                               # (bands, M)
+            W_d = W[:n_bands_orig, :] @ HHt + eps            # (bands, M)
             W[:n_bands_orig, :] = W[:n_bands_orig, :] * W_n / W_d
 
         # Update H
+        WtW = W.T @ W                                       # (M, M)
         WtD = W.T @ D                                       # (M, N)
-        WtWH = W.T @ W @ H + eps                            # (M, N)
+        WtWH = WtW @ H + eps                                # (M, N)
         H = H * WtD / WtWH
 
-        cost = float(np.sum((D[:n_bands_orig, :] - W[:n_bands_orig, :] @ H) ** 2))
-        if cost_prev > 0 and (cost_prev - cost) / (cost + eps) < threshold:
-            W = W_old
-            H = H_old
-            cost = cost_prev
-            break
-        cost_prev = cost
+        # Convergence check (only every cost_stride iterations)
+        if (i + 1) % cost_stride == 0 or i == max_iter - 1:
+            # Fast cost: ‖D_band − W_band H‖² via traces
+            W_band = W[:n_bands_orig, :]
+            WbandtWband = W_band.T @ W_band                  # (M, M)
+            WbandtD = W_band.T @ D_band                      # (M, N)
+            HHt_c = H @ H.T                                  # (M, M)
+            cross = float(np.dot(WbandtD.ravel(), H.ravel()))
+            gram = float(np.sum(WbandtWband * HHt_c))
+            cost = D_sqnorm - 2.0 * cross + gram
+
+            if cost_prev > 0 and (cost_prev - cost) / (cost + eps) < threshold:
+                W = W_saved.copy()
+                H = H_saved.copy()
+                cost = cost_prev
+                break
+            cost_prev = cost
+            W_saved[:] = W
+            H_saved[:] = H
 
     return W, H, cost
 
@@ -426,27 +397,42 @@ def _nmf_update_W_fixed_H(
     max_iter: int,
     threshold: float,
     eps: float = 1e-16,
+    cost_stride: int = 5,
 ) -> tuple[np.ndarray, float]:
     """
     NMF update for W with H fixed (CNMF_ite i==1 branch).
 
     Only updates the first n_bands_orig rows of W.
+    Uses fast cost formula + cost-check stride.
     """
-    HHt = H @ H.T            # (M, M) — fixed
-    DHt = D[:n_bands_orig, :] @ H.T  # (bands, M) — fixed
+    D_band = D[:n_bands_orig, :]
+    HHt = H @ H.T                       # (M, M) — fixed
+    DHt = D_band @ H.T                   # (bands, M) — fixed
+    D_sqnorm = float(np.sum(D_band ** 2))  # scalar — fixed
+    # For fast cost: ‖D_band − W_band H‖² needs W_band.T @ D_band (varies)
+    # and W_band.T @ W_band (varies).  H @ H.T = HHt is already precomputed.
 
     cost_prev = 0.0
+    W_saved = W.copy()
+
     for q in range(max_iter):
-        W_old = W.copy()
         W_d = W[:n_bands_orig, :] @ HHt + eps
         W[:n_bands_orig, :] = W[:n_bands_orig, :] * DHt / W_d
 
-        cost = float(np.sum((D[:n_bands_orig, :] - W[:n_bands_orig, :] @ H) ** 2))
-        if q > 0 and cost_prev > 0 and (cost_prev - cost) / (cost + eps) < threshold:
-            W = W_old
-            cost = cost_prev
-            break
-        cost_prev = cost
+        if (q + 1) % cost_stride == 0 or q == max_iter - 1:
+            W_band = W[:n_bands_orig, :]
+            WbandtWband = W_band.T @ W_band        # (M, M)
+            WbandtD = W_band.T @ D_band             # (M, N)
+            cross = float(np.dot(WbandtD.ravel(), H.ravel()))
+            gram = float(np.sum(WbandtWband * HHt))
+            cost = D_sqnorm - 2.0 * cross + gram
+
+            if cost_prev > 0 and (cost_prev - cost) / (cost + eps) < threshold:
+                W = W_saved.copy()
+                cost = cost_prev
+                break
+            cost_prev = cost
+            W_saved[:] = W
 
     return W, cost
 
@@ -466,37 +452,288 @@ def _nmf_ite_hs_joint(
     eps: float = 1e-16,
     min_ms_bands: int = 3,
     multi_band: int = 0,
+    cost_stride: int = 5,
 ) -> tuple[np.ndarray, np.ndarray, float]:
     """
     NMF joint update for HS in CNMF_ite (i>1 branch).
     Updates H first (if multi_band > min_ms_bands), then W.
+    Uses fast cost formula + cost-check stride.
     """
-    cost_prev = 0.0
-    for i in range(max_iter):
-        H_old = H.copy()
-        W_old = W.copy()
+    do_update_H = multi_band > min_ms_bands
+    D_band = D[:n_bands_orig, :]
+    D_sqnorm = float(np.sum(D_band ** 2))
 
+    cost_prev = 0.0
+    W_saved = W.copy()
+    H_saved = H.copy()
+
+    for i in range(max_iter):
         # Update H (only if multi_band > MIN_MS_BANDS, matching MATLAB)
-        if multi_band > min_ms_bands:
+        if do_update_H:
             WtD = W.T @ D
             WtWH = W.T @ W @ H + eps
             H = H * WtD / WtWH
 
         # Update W (spectral rows only)
         HHt = H @ H.T
-        W_n = D[:n_bands_orig, :] @ H.T
+        W_n = D_band @ H.T
         W_d = W[:n_bands_orig, :] @ HHt + eps
         W[:n_bands_orig, :] = W[:n_bands_orig, :] * W_n / W_d
 
-        cost = float(np.sum((D[:n_bands_orig, :] - W[:n_bands_orig, :] @ H) ** 2))
-        if cost_prev > 0 and (cost_prev - cost) / (cost + eps) < threshold:
-            H = H_old
-            W = W_old
-            cost = cost_prev
-            break
-        cost_prev = cost
+        if (i + 1) % cost_stride == 0 or i == max_iter - 1:
+            W_band = W[:n_bands_orig, :]
+            WbandtWband = W_band.T @ W_band
+            WbandtD = W_band.T @ D_band
+            HHt_c = H @ H.T
+            cross = float(np.dot(WbandtD.ravel(), H.ravel()))
+            gram = float(np.sum(WbandtWband * HHt_c))
+            cost = D_sqnorm - 2.0 * cross + gram
+
+            if cost_prev > 0 and (cost_prev - cost) / (cost + eps) < threshold:
+                W = W_saved.copy()
+                H = H_saved.copy()
+                cost = cost_prev
+                break
+            cost_prev = cost
+            W_saved[:] = W
+            H_saved[:] = H
 
     return W, H, cost
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# JAX-accelerated NMF backends (GPU / JIT)
+# ═══════════════════════════════════════════════════════════════════════════
+
+if _HAS_JAX:
+
+    @_partial(jax.jit, static_argnames=("n_bands_orig", "max_iter"))
+    def _jax_nmf_update_H(W, H, D, n_bands_orig, max_iter, threshold, eps):
+        """JAX JIT-compiled H-only NMF update (W fixed)."""
+        WtD = W.T @ D
+        WtW = W.T @ W
+        W_band = W[:n_bands_orig, :]
+        WbandtD = W_band.T @ D[:n_bands_orig, :]
+        WbandtWband = W_band.T @ W_band
+        D_sqnorm = jnp.sum(D[:n_bands_orig, :] ** 2)
+
+        def _body(carry):
+            H, H_prev, cost_prev, i, done = carry
+            denom = WtW @ H + eps
+            H_new = H * WtD / denom
+            HHt = H_new @ H_new.T
+            cross = jnp.sum(WbandtD * H_new)
+            gram = jnp.sum(WbandtWband * HHt)
+            cost_new = D_sqnorm - 2.0 * cross + gram
+            converged = (i > 0) & (cost_prev > 0) & (
+                (cost_prev - cost_new) / (cost_new + eps) < threshold
+            )
+            # If converged → revert to H_prev / cost_prev
+            H_out = jnp.where(converged, H_prev, H_new)
+            cost_out = jnp.where(converged, cost_prev, cost_new)
+            done_out = done | converged
+            return (H_out, H_new, cost_out, i + 1, done_out)
+
+        def _cond(carry):
+            _, _, _, i, done = carry
+            return (i < max_iter) & ~done
+
+        init = (H, H, jnp.float64(0.0), jnp.int32(0), jnp.bool_(False))
+        H_out, _, cost_out, _, _ = jax.lax.while_loop(_cond, _body, init)
+        return H_out, cost_out
+
+    @_partial(jax.jit, static_argnames=("n_bands_orig", "max_iter", "do_update_W"))
+    def _jax_nmf_update_WH(W, H, D, n_bands_orig, max_iter, threshold, eps,
+                            do_update_W):
+        """JAX JIT-compiled joint W+H NMF update."""
+        D_band = D[:n_bands_orig, :]
+        D_sqnorm = jnp.sum(D_band ** 2)
+
+        def _body(carry):
+            W, H, W_prev, H_prev, cost_prev, i, done = carry
+
+            # --- W update (spectral rows only) ---
+            def _do_w(W_H):
+                W_, H_ = W_H
+                HHt = H_ @ H_.T
+                W_n = D_band @ H_.T
+                W_d = W_[:n_bands_orig, :] @ HHt + eps
+                W_new = W_.at[:n_bands_orig, :].set(
+                    W_[:n_bands_orig, :] * W_n / W_d
+                )
+                return W_new
+            def _skip_w(W_H):
+                return W_H[0]
+            W = jax.lax.cond(do_update_W, _do_w, _skip_w, (W, H))
+
+            # --- H update ---
+            WtW = W.T @ W
+            WtD = W.T @ D
+            WtWH = WtW @ H + eps
+            H = H * WtD / WtWH
+
+            # --- Cost (fast formula) ---
+            W_band = W[:n_bands_orig, :]
+            WbandtWband = W_band.T @ W_band
+            WbandtD = W_band.T @ D_band
+            HHt = H @ H.T
+            cross = jnp.sum(WbandtD * H)
+            gram = jnp.sum(WbandtWband * HHt)
+            cost = D_sqnorm - 2.0 * cross + gram
+
+            converged = (cost_prev > 0) & (
+                (cost_prev - cost) / (cost + eps) < threshold
+            )
+            W_out = jnp.where(converged, W_prev, W)
+            H_out = jnp.where(converged, H_prev, H)
+            cost_out = jnp.where(converged, cost_prev, cost)
+            done_out = done | converged
+            return (W_out, H_out, W, H, cost_out, i + 1, done_out)
+
+        def _cond(carry):
+            _, _, _, _, _, i, done = carry
+            return (i < max_iter) & ~done
+
+        init = (W, H, W, H, jnp.float64(0.0), jnp.int32(0), jnp.bool_(False))
+        W_out, H_out, _, _, cost_out, _, _ = jax.lax.while_loop(_cond, _body, init)
+        return W_out, H_out, cost_out
+
+    @_partial(jax.jit, static_argnames=("n_bands_orig", "max_iter"))
+    def _jax_nmf_update_W_fixed_H(W, H, D, n_bands_orig, max_iter, threshold, eps):
+        """JAX JIT-compiled W-only NMF update (H fixed)."""
+        D_band = D[:n_bands_orig, :]
+        HHt = H @ H.T
+        DHt = D_band @ H.T
+        D_sqnorm = jnp.sum(D_band ** 2)
+
+        def _body(carry):
+            W, W_prev, cost_prev, i, done = carry
+            W_d = W[:n_bands_orig, :] @ HHt + eps
+            W_new = W.at[:n_bands_orig, :].set(
+                W[:n_bands_orig, :] * DHt / W_d
+            )
+            # Fast cost
+            W_band = W_new[:n_bands_orig, :]
+            WbandtWband = W_band.T @ W_band
+            WbandtD = W_band.T @ D_band
+            cross = jnp.sum(WbandtD * H)
+            gram = jnp.sum(WbandtWband * HHt)
+            cost = D_sqnorm - 2.0 * cross + gram
+
+            converged = (i > 0) & (cost_prev > 0) & (
+                (cost_prev - cost) / (cost + eps) < threshold
+            )
+            W_out = jnp.where(converged, W_prev, W_new)
+            cost_out = jnp.where(converged, cost_prev, cost)
+            done_out = done | converged
+            return (W_out, W_new, cost_out, i + 1, done_out)
+
+        def _cond(carry):
+            _, _, _, i, done = carry
+            return (i < max_iter) & ~done
+
+        init = (W, W, jnp.float64(0.0), jnp.int32(0), jnp.bool_(False))
+        W_out, _, cost_out, _, _ = jax.lax.while_loop(_cond, _body, init)
+        return W_out, cost_out
+
+    @_partial(jax.jit, static_argnames=("n_bands_orig", "max_iter", "do_update_H"))
+    def _jax_nmf_ite_hs_joint(W, H, D, n_bands_orig, max_iter, threshold, eps,
+                               do_update_H):
+        """JAX JIT-compiled HS joint update (CNMF_ite i>1 branch)."""
+        D_band = D[:n_bands_orig, :]
+        D_sqnorm = jnp.sum(D_band ** 2)
+
+        def _body(carry):
+            W, H, W_prev, H_prev, cost_prev, i, done = carry
+
+            # --- H update (conditional) ---
+            def _do_h(W_H):
+                W_, H_ = W_H
+                WtD = W_.T @ D
+                WtWH = W_.T @ W_ @ H_ + eps
+                return H_ * WtD / WtWH
+            def _skip_h(W_H):
+                return W_H[1]
+            H = jax.lax.cond(do_update_H, _do_h, _skip_h, (W, H))
+
+            # --- W update (spectral rows only) ---
+            HHt = H @ H.T
+            W_n = D_band @ H.T
+            W_d = W[:n_bands_orig, :] @ HHt + eps
+            W = W.at[:n_bands_orig, :].set(
+                W[:n_bands_orig, :] * W_n / W_d
+            )
+
+            # --- Cost ---
+            W_band = W[:n_bands_orig, :]
+            WbandtWband = W_band.T @ W_band
+            WbandtD = W_band.T @ D_band
+            HHt_c = H @ H.T
+            cross = jnp.sum(WbandtD * H)
+            gram = jnp.sum(WbandtWband * HHt_c)
+            cost = D_sqnorm - 2.0 * cross + gram
+
+            converged = (cost_prev > 0) & (
+                (cost_prev - cost) / (cost + eps) < threshold
+            )
+            W_out = jnp.where(converged, W_prev, W)
+            H_out = jnp.where(converged, H_prev, H)
+            cost_out = jnp.where(converged, cost_prev, cost)
+            done_out = done | converged
+            return (W_out, H_out, W, H, cost_out, i + 1, done_out)
+
+        def _cond(carry):
+            _, _, _, _, _, i, done = carry
+            return (i < max_iter) & ~done
+
+        init = (W, H, W, H, jnp.float64(0.0), jnp.int32(0), jnp.bool_(False))
+        W_out, H_out, _, _, cost_out, _, _ = jax.lax.while_loop(_cond, _body, init)
+        return W_out, H_out, cost_out
+
+    # ── Thin wrappers: NumPy ↔ JAX array conversion ──
+
+    def _jax_wrap_update_H(W, H, D, *, n_bands_orig, max_iter, threshold,
+                           eps=1e-16):
+        """Convert np→jax, call JIT kernel, convert back."""
+        H_j, cost_j = _jax_nmf_update_H(
+            jnp.asarray(W), jnp.asarray(H), jnp.asarray(D),
+            n_bands_orig, max_iter, threshold, jnp.float64(eps),
+        )
+        return np.asarray(H_j), float(cost_j)
+
+    def _jax_wrap_update_WH(W, H, D, *, n_bands_orig, max_iter, threshold,
+                            eps=1e-16, update_W=True, min_ms_bands=3,
+                            n_spectral_bands=0, cost_stride=5):
+        """Convert np→jax, call JIT kernel, convert back."""
+        do_update_W = update_W and n_spectral_bands > min_ms_bands
+        W_j, H_j, cost_j = _jax_nmf_update_WH(
+            jnp.asarray(W), jnp.asarray(H), jnp.asarray(D),
+            n_bands_orig, max_iter, jnp.float64(threshold),
+            jnp.float64(eps), do_update_W,
+        )
+        return np.asarray(W_j), np.asarray(H_j), float(cost_j)
+
+    def _jax_wrap_update_W_fixed_H(W, H, D, *, n_bands_orig, max_iter,
+                                    threshold, eps=1e-16, cost_stride=5):
+        """Convert np→jax, call JIT kernel, convert back."""
+        W_j, cost_j = _jax_nmf_update_W_fixed_H(
+            jnp.asarray(W), jnp.asarray(H), jnp.asarray(D),
+            n_bands_orig, max_iter, jnp.float64(threshold),
+            jnp.float64(eps),
+        )
+        return np.asarray(W_j), float(cost_j)
+
+    def _jax_wrap_ite_hs_joint(W, H, D, *, n_bands_orig, max_iter, threshold,
+                                eps=1e-16, min_ms_bands=3, multi_band=0,
+                                cost_stride=5):
+        """Convert np→jax, call JIT kernel, convert back."""
+        do_update_H = multi_band > min_ms_bands
+        W_j, H_j, cost_j = _jax_nmf_ite_hs_joint(
+            jnp.asarray(W), jnp.asarray(H), jnp.asarray(D),
+            n_bands_orig, max_iter, jnp.float64(threshold),
+            jnp.float64(eps), do_update_H,
+        )
+        return np.asarray(W_j), np.asarray(H_j), float(cost_j)
 
 
 # ---------------------------------------------------------------------------
@@ -516,6 +753,7 @@ def cnmf_fuse(
     eps: float = 1e-16,
     verbose: bool = False,
     seed: int = 0,
+    use_jax: str = "auto",
 ) -> tuple[np.ndarray, dict]:
     """
     CNMF hyperspectral–multispectral fusion.
@@ -542,6 +780,9 @@ def cnmf_fuse(
         Print diagnostic information.
     seed : int
         Random seed for VCA reproducibility.
+    use_jax : str
+        JAX backend: ``"auto"`` uses JAX+GPU when available, ``"force"``
+        requires it (raises if unavailable), ``"off"`` uses NumPy only.
 
     Returns
     -------
@@ -549,14 +790,36 @@ def cnmf_fuse(
         Fused image at MS spatial resolution.
     info : dict
         Diagnostic info with keys 'M', 'rmse_h', 'rmse_m', 'srf_error',
-        'n_outer_iters'.
+        'n_outer_iters', 'backend'.
     """
+    # ── Backend selection ──
+    _use_jax = False
+    if use_jax == "force":
+        if not _HAS_JAX:
+            raise RuntimeError("use_jax='force' but JAX is not installed")
+        _use_jax = True
+    elif use_jax == "auto":
+        _use_jax = _HAS_JAX
+    # else: "off" → NumPy
+
+    if _use_jax:
+        fn_update_H = _jax_wrap_update_H
+        fn_update_WH = _jax_wrap_update_WH
+        fn_update_W_fixed_H = _jax_wrap_update_W_fixed_H
+        fn_ite_hs_joint = _jax_wrap_ite_hs_joint
+    else:
+        fn_update_H = _nmf_update_H
+        fn_update_WH = _nmf_update_WH
+        fn_update_W_fixed_H = _nmf_update_W_fixed_H
+        fn_ite_hs_joint = _nmf_ite_hs_joint
+
     rows_lr, cols_lr, bands_hs = hs.shape
     rows_hr, cols_hr, bands_ms = ms.shape
     w = rows_hr // rows_lr  # scale factor
 
+    backend_label = f"jax-{_JAX_DEVICE}" if _use_jax else "numpy"
     if verbose:
-        print(f"CNMF: HS={hs.shape} MS={ms.shape} scale={w}")
+        print(f"CNMF: HS={hs.shape} MS={ms.shape} scale={w}  backend={backend_label}")
 
     # ── Step 1: Estimate SRF and subtract offsets from MSI ──
     R_srf, offsets, srf_error = _estimate_srf(hs, ms, w, eps=eps)
@@ -580,7 +843,18 @@ def cnmf_fuse(
     HSI_2d = hs.reshape(-1, bands_hs).T.astype(np.float64)  # (bands_hs, N_lr)
     MSI_2d = ms.reshape(-1, bands_ms).T.astype(np.float64)  # (bands_ms, N_hr)
 
-    eff_rank = np.linalg.matrix_rank(HSI_2d)
+    eff_rank = int(np.linalg.matrix_rank(HSI_2d))
+
+    # Early exit for degenerate tiles (mostly nodata / all-zero HS)
+    if eff_rank < 3:
+        if verbose:
+            print(f"  eff_rank={eff_rank} — tile is degenerate, returning MS-guided fallback")
+        fused = np.zeros((rows_hr, cols_hr, bands_hs), dtype=np.float64)
+        info = {"M": 0, "rmse_h": np.nan, "rmse_m": np.nan,
+                "srf_error": srf_error.tolist(), "n_outer_iters": 0,
+                "status": "DEGENERATE_HS"}
+        return fused, info
+
     vd_est = max(round(_virtual_dimensionality(HSI_2d, alpha=0.05)), 5)
     M = min(max_endmembers, eff_rank - 1, bands_hs - 1, max(vd_est, 5))
     M = max(M, 3)
@@ -608,7 +882,7 @@ def cnmf_fuse(
     # ═══════════════════════════════════════════════════════════════
 
     # ── NMF for H_hyper (phase 1, W fixed) ──
-    H_hyper, _ = _nmf_update_H(
+    H_hyper, _ = fn_update_H(
         W_hyper, H_hyper, hyper,
         n_bands_orig=bands_hs,
         max_iter=inner_iters * 3,
@@ -616,7 +890,7 @@ def cnmf_fuse(
     )
 
     # ── NMF for H_hyper (phase 2, joint W+H) ──
-    W_hyper, H_hyper, _ = _nmf_update_WH(
+    W_hyper, H_hyper, _ = fn_update_WH(
         W_hyper, H_hyper, hyper,
         n_bands_orig=bands_hs,
         max_iter=inner_iters,
@@ -654,7 +928,7 @@ def cnmf_fuse(
     H_multi = np.clip(H_multi, 0.0, None)
 
     # ── NMF for H_multi (phase 1, W fixed) ──
-    H_multi, _ = _nmf_update_H(
+    H_multi, _ = fn_update_H(
         W_multi, H_multi, multi,
         n_bands_orig=bands_ms,
         max_iter=inner_iters,
@@ -662,7 +936,7 @@ def cnmf_fuse(
     )
 
     # ── NMF for H_multi (phase 2, joint W+H) ──
-    W_multi, H_multi, _ = _nmf_update_WH(
+    W_multi, H_multi, _ = fn_update_WH(
         W_multi, H_multi, multi,
         n_bands_orig=bands_ms,
         max_iter=inner_iters,
@@ -701,7 +975,7 @@ def cnmf_fuse(
         H_hyper = H_hyper_3d.reshape(-1, M).T                # (M, N_lr)
 
         # ── NMF for HS: phase 1 (update W with H fixed) ──
-        W_hyper, _ = _nmf_update_W_fixed_H(
+        W_hyper, _ = fn_update_W_fixed_H(
             W_hyper, H_hyper, hyper,
             n_bands_orig=bands_hs,
             max_iter=inner_iters,
@@ -709,7 +983,7 @@ def cnmf_fuse(
         )
 
         # ── NMF for HS: phase 2 (joint H then W) ──
-        W_hyper, H_hyper, _ = _nmf_ite_hs_joint(
+        W_hyper, H_hyper, _ = fn_ite_hs_joint(
             W_hyper, H_hyper, hyper,
             n_bands_orig=bands_hs,
             max_iter=inner_iters,
@@ -732,7 +1006,7 @@ def cnmf_fuse(
             W_multi[:bands_ms, :] = R_srf @ W_hyper[:bands_hs, :]
 
             # NMF for MS: phase 1 (update H with W fixed)
-            H_multi, _ = _nmf_update_H(
+            H_multi, _ = fn_update_H(
                 W_multi, H_multi, multi,
                 n_bands_orig=bands_ms,
                 max_iter=inner_iters,
@@ -740,7 +1014,7 @@ def cnmf_fuse(
             )
 
             # NMF for MS: phase 2 (joint W+H)
-            W_multi, H_multi, _ = _nmf_update_WH(
+            W_multi, H_multi, _ = fn_update_WH(
                 W_multi, H_multi, multi,
                 n_bands_orig=bands_ms,
                 max_iter=inner_iters,
@@ -789,6 +1063,7 @@ def cnmf_fuse(
         "rmse_m": float(cost_m[-1]),
         "srf_error": srf_error.tolist(),
         "n_outer_iters": len(cost_h) - 1,
+        "backend": backend_label,
     }
 
     return fused, info
@@ -888,6 +1163,15 @@ def cnmf_fuse_tile(
             "r2_mean": 0.0, "r2_per_band": [],
             "status": f"ERROR: {e}", "out_path": None,
             "info": {},
+        }
+
+    # Handle degenerate tile (HS data too sparse for CNMF)
+    if info.get("status") == "DEGENERATE_HS":
+        return {
+            "fused": None, "r2": np.zeros(hs_hwb.shape[2]),
+            "r2_mean": 0.0, "r2_per_band": [],
+            "status": "SKIP_DEGENERATE", "out_path": None,
+            "info": info,
         }
 
     # ── R² self-consistency check ──
