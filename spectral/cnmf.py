@@ -1,15 +1,8 @@
 from __future__ import annotations
 
-import os as _os
 import warnings
 from pathlib import Path
 from typing import Optional
-
-# Limit BLAS internal threads BEFORE numpy import.  With ThreadPoolExecutor
-# we get parallelism at the Python level (NumPy releases the GIL), so each
-# thread should use a single BLAS thread to avoid oversubscription.
-for _k in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
-    _os.environ.setdefault(_k, "1")
 
 import numpy as np
 from scipy.ndimage import gaussian_filter
@@ -1064,51 +1057,9 @@ def _write_fused_tile(
                 dst.update_tags(i + 1, wavelength=f"{w:.4f}")
 
 
-def _worker_fuse_arrays(args: tuple) -> dict:
-    """
-    Worker: pure-CPU CNMF on in-memory arrays.  No file I/O.
-
-    Parameters
-    ----------
-    args : (work_idx, hs_hwb, ms_hwb, cnmf_kwargs)
-
-    Returns
-    -------
-    dict with work_idx, fused_hwb, r2, info, status, time_s.
-    """
-    import time as _time
-    work_idx, hs_hwb, ms_hwb, cnmf_kwargs = args
-    tic = _time.time()
-    try:
-        fused_hwb, info = cnmf_fuse(hs_hwb, ms_hwb, **cnmf_kwargs)
-    except Exception as e:
-        return {"work_idx": work_idx, "status": f"ERROR: {e}",
-                "fused_hwb": None, "r2": None, "info": {},
-                "time_s": _time.time() - tic}
-
-    if info.get("status") == "DEGENERATE_HS":
-        return {"work_idx": work_idx, "status": "SKIP_DEGENERATE",
-                "fused_hwb": None, "r2": None, "info": info,
-                "time_s": _time.time() - tic}
-
-    # R² self-consistency check
-    rows_lr, cols_lr, bands_hs = hs_hwb.shape
-    w = ms_hwb.shape[0] // rows_lr
-    fused_lr = _gaussian_downsample(fused_hwb, w)
-    r2 = _compute_r2(
-        hs_hwb.reshape(-1, bands_hs),
-        fused_lr.reshape(-1, bands_hs),
-    )
-    return {"work_idx": work_idx, "status": "OK",
-            "fused_hwb": fused_hwb, "r2": r2, "info": info,
-            "time_s": _time.time() - tic}
-
-
-def cnmf_fuse_tiles_parallel(
+def cnmf_fuse_tiles(
     tile_list: list[dict],
     *,
-    n_workers: int = 6,
-    prefetch: int = 16,
     scale_factor: float = 10_000.0,
     nodata_val: int = 65535,
     max_endmembers: int = 20,
@@ -1118,28 +1069,20 @@ def cnmf_fuse_tiles_parallel(
     skip_existing: bool = True,
 ) -> list[dict]:
     """
-    Process CNMF fusion using a streaming producer-consumer pipeline.
+    Process CNMF fusion for a list of tiles sequentially.
 
-    A reader thread loads tiles from Drive sequentially into a bounded
-    buffer (``prefetch`` tiles, ~250 MB).  ``n_workers`` CPU processes
-    run CNMF on in-memory arrays (zero I/O).  The main thread writes
-    fused GeoTIFFs back to Drive as results arrive.  All three stages
-    run concurrently — read time is fully hidden behind compute time.
+    Simple loop: read → CNMF → write → next.  Relies on the NumPy-level
+    optimisations (fast cost formula, cost_stride, no M_pad) for speed.
 
     Parameters
     ----------
     tile_list : list[dict]
         Each dict must have keys: ``hs_path``, ``ms_path``, ``pair_dir``,
         ``tile_name``.  Extra keys are passed through to the output rows.
-    n_workers : int
-        Number of parallel worker processes (default 6).
-    prefetch : int
-        Number of tiles to read ahead (default 16, ~250 MB buffer).
     scale_factor, nodata_val, max_endmembers, inner_iters, outer_iters
         Forwarded to ``cnmf_fuse`` / tile I/O.
     verbose_first : int
-        Run the first N tiles sequentially with verbose=True before
-        launching the pipeline.  Useful for sanity-checking output.
+        Print verbose CNMF diagnostics for the first N tiles.
     skip_existing : bool
         Skip tiles whose output file already exists (default True).
 
@@ -1150,36 +1093,34 @@ def cnmf_fuse_tiles_parallel(
         status, r2_cnmf_mean, time_s, cnmf_M, cnmf_rmse_h, cnmf_rmse_m,
         r2_cnmf_band_*.
     """
-    from concurrent.futures import ThreadPoolExecutor
-    from threading import Thread
-    from queue import Queue
     import time as _time
 
     try:
         from tqdm import tqdm
     except ImportError:
-        def tqdm(it, **kw):
-            return it
+        tqdm = None
 
     cnmf_kwargs = dict(
         max_endmembers=max_endmembers,
         inner_iters=inner_iters,
         outer_iters=outer_iters,
-        verbose=False,
     )
 
-    # ── Filter tiles (skip existing / missing) ──
-    work_items = []
-    results_rows = [None] * len(tile_list)
+    results = []
+    n_existed = 0
+    n_missing = 0
+    n_errors = 0
 
-    for idx, tile in enumerate(tile_list):
+    items = tqdm(tile_list, desc="CNMF fusion") if tqdm else tile_list
+
+    for i, tile in enumerate(items):
         hs_path = Path(tile["hs_path"])
         ms_path = Path(tile["ms_path"])
         pair_dir = Path(tile["pair_dir"])
         tile_name = tile["tile_name"]
         out_path = pair_dir / "CNMF" / f"{tile_name}_cnmf.tif"
 
-        base_row = {
+        row = {
             "tile_name": tile_name,
             "aoi_slug": tile.get("aoi_slug", ""),
             "pair_id": tile.get("pair_id", ""),
@@ -1188,175 +1129,59 @@ def cnmf_fuse_tiles_parallel(
         }
 
         if skip_existing and out_path.exists():
-            base_row["status"] = "EXISTED"
-            results_rows[idx] = base_row
+            row["status"] = "EXISTED"
+            n_existed += 1
+            results.append(row)
             continue
+
         if not hs_path.exists() or not ms_path.exists():
-            base_row["status"] = "MISSING_FILES"
-            results_rows[idx] = base_row
+            row["status"] = "MISSING_FILES"
+            n_missing += 1
+            results.append(row)
             continue
 
-        work_items.append((idx, str(hs_path), str(ms_path), str(out_path), base_row))
-
-    n_existed = sum(1 for r in results_rows if r and r.get("status") == "EXISTED")
-    n_missing = sum(1 for r in results_rows if r and r.get("status") == "MISSING_FILES")
-    n_to_process = len(work_items)
-
-    print(f"CNMF pipeline: {len(tile_list)} tiles total, "
-          f"{n_existed} existed, {n_missing} missing, "
-          f"{n_to_process} to process with {n_workers} workers "
-          f"(prefetch={prefetch})")
-
-    if n_to_process == 0:
-        return [r for r in results_rows if r is not None]
-
-    # ── Optional: run first few sequentially with verbose ──
-    sequential_items = work_items[:verbose_first]
-    pipeline_items = work_items[verbose_first:]
-
-    for idx, hs_p, ms_p, out_p, base_row in sequential_items:
-        print(f"  [verbose] {base_row['tile_name']}")
         tic = _time.time()
         try:
             hs_hwb, ms_hwb, write_meta = _read_tile_arrays(
-                hs_p, ms_p, scale_factor, nodata_val)
-            fused_hwb, info = cnmf_fuse(hs_hwb, ms_hwb, verbose=True,
-                                         **cnmf_kwargs)
+                str(hs_path), str(ms_path), scale_factor, nodata_val)
+
+            verbose = (i < verbose_first)
+            fused_hwb, info = cnmf_fuse(hs_hwb, ms_hwb,
+                                         verbose=verbose, **cnmf_kwargs)
+
             if info.get("status") == "DEGENERATE_HS":
-                base_row["status"] = "SKIP_DEGENERATE"
-                base_row["time_s"] = _time.time() - tic
-                results_rows[idx] = base_row
+                row["status"] = "SKIP_DEGENERATE"
+                row["time_s"] = _time.time() - tic
+                row["cnmf_M"] = info.get("M")
+                results.append(row)
                 continue
+
+            # R² self-consistency check
             w = ms_hwb.shape[0] // hs_hwb.shape[0]
             fused_lr = _gaussian_downsample(fused_hwb, w)
             r2 = _compute_r2(
                 hs_hwb.reshape(-1, hs_hwb.shape[2]),
                 fused_lr.reshape(-1, hs_hwb.shape[2]),
             )
-            _write_fused_tile(fused_hwb, out_p, write_meta,
+
+            _write_fused_tile(fused_hwb, str(out_path), write_meta,
                               scale_factor, nodata_val)
+
             elapsed = _time.time() - tic
-            _fill_result_row(base_row, "OK", r2, info, elapsed, out_p)
+            _fill_result_row(row, "OK", r2, info, elapsed, str(out_path))
+
         except Exception as e:
-            base_row["status"] = f"ERROR: {e}"
-            base_row["time_s"] = _time.time() - tic
-        results_rows[idx] = base_row
+            row["status"] = f"ERROR: {e}"
+            row["time_s"] = _time.time() - tic
+            n_errors += 1
 
-    if not pipeline_items:
-        return [r for r in results_rows if r is not None]
+        results.append(row)
 
-    # ═══════════════════════════════════════════════════════════════════
-    #  Streaming pipeline: reader thread → worker pool → main-thread writer
-    # ═══════════════════════════════════════════════════════════════════
+    n_ok = sum(1 for r in results if r.get("status") == "OK")
+    print(f"\nDone: {n_ok} OK, {n_existed} existed, "
+          f"{n_missing} missing, {n_errors} errors")
 
-    _SENTINEL = "DONE"      # marks end of reader stream
-    _READ_ERROR = "READ_ERR" # marks a failed read (error item on queue)
-    read_queue = Queue(maxsize=prefetch)
-    n_read_errors = 0
-    n_write_errors = 0
-    reader_error = [None]  # mutable container for fatal reader exceptions
-
-    # ── Reader thread: sequential Drive reads → bounded queue ──
-    def _reader():
-        try:
-            for wi, (idx, hs_p, ms_p, out_p, base_row) in enumerate(pipeline_items):
-                try:
-                    hs_hwb, ms_hwb, write_meta = _read_tile_arrays(
-                        hs_p, ms_p, scale_factor, nodata_val)
-                    read_queue.put((wi, idx, out_p, base_row,
-                                    hs_hwb, ms_hwb, write_meta))
-                except Exception as e:
-                    # Put error marker on queue so main thread handles it
-                    read_queue.put((_READ_ERROR, idx, base_row, str(e)))
-        except Exception as e:
-            reader_error[0] = e
-        finally:
-            read_queue.put(_SENTINEL)
-
-    reader_thread = Thread(target=_reader, daemon=True)
-    reader_thread.start()
-
-    # ── Main loop: drain queue → submit to pool → write results ──
-    pbar = tqdm(total=len(pipeline_items), desc="CNMF fusion")
-    pending = {}  # future → (idx, out_path, write_meta, base_row)
-
-    with ThreadPoolExecutor(max_workers=n_workers) as executor:
-        reader_done = False
-
-        while not reader_done or pending:
-            # Fill pool from queue (non-blocking when pool is full)
-            while not reader_done and len(pending) < n_workers + prefetch:
-                try:
-                    item = read_queue.get(timeout=0.05)
-                except Exception:
-                    break
-                if item is _SENTINEL:
-                    reader_done = True
-                    break
-                # Handle read-error markers (all state in main thread)
-                if isinstance(item, tuple) and len(item) == 4 and item[0] is _READ_ERROR:
-                    _, idx, base_row, err_msg = item
-                    base_row["status"] = f"ERROR_READ: {err_msg}"
-                    results_rows[idx] = base_row
-                    n_read_errors += 1
-                    pbar.update(1)
-                    continue
-                wi, idx, out_p, base_row, hs_hwb, ms_hwb, write_meta = item
-                fut = executor.submit(
-                    _worker_fuse_arrays,
-                    (wi, hs_hwb, ms_hwb, cnmf_kwargs),
-                )
-                pending[fut] = (idx, out_p, write_meta, base_row)
-
-            # Collect completed futures
-            done_futs = [f for f in pending if f.done()]
-            if not done_futs and pending:
-                # Brief sleep to avoid busy-spinning
-                _time.sleep(0.02)
-                continue
-
-            for fut in done_futs:
-                idx, out_p, write_meta, base_row = pending.pop(fut)
-                try:
-                    res = fut.result()
-                except Exception as e:
-                    base_row["status"] = f"ERROR: {e}"
-                    results_rows[idx] = base_row
-                    pbar.update(1)
-                    continue
-
-                if res["status"] == "OK" and res["fused_hwb"] is not None:
-                    try:
-                        _write_fused_tile(res["fused_hwb"], out_p,
-                                          write_meta, scale_factor, nodata_val)
-                        _fill_result_row(base_row, "OK", res["r2"],
-                                         res["info"], res["time_s"], out_p)
-                    except Exception as e:
-                        base_row["status"] = f"ERROR_WRITE: {e}"
-                        base_row["time_s"] = res["time_s"]
-                        n_write_errors += 1
-                else:
-                    base_row["status"] = res["status"]
-                    base_row["time_s"] = res["time_s"]
-                    if res.get("info"):
-                        base_row["cnmf_M"] = res["info"].get("M")
-
-                results_rows[idx] = base_row
-                pbar.update(1)
-
-    reader_thread.join()
-    pbar.close()
-
-    # Report fatal reader errors (e.g. unexpected exception outside per-tile try)
-    if reader_error[0] is not None:
-        print(f"WARNING: reader thread had a fatal error: {reader_error[0]}")
-
-    n_final_ok = sum(1 for r in results_rows
-                     if r and r.get("status") == "OK")
-    print(f"\nDone: {n_final_ok} OK, {n_read_errors} read errors, "
-          f"{n_write_errors} write errors")
-
-    return [r for r in results_rows if r is not None]
+    return results
 
 
 def _fill_result_row(base_row, status, r2, info, elapsed, out_path):
