@@ -966,52 +966,142 @@ def cnmf_fuse_tile(
 
 
 # ---------------------------------------------------------------------------
-# Parallel tile processing
+# Parallel tile processing — streaming producer / consumer pipeline
 # ---------------------------------------------------------------------------
+#
+# Drive FUSE performs best with single-threaded sequential I/O.  Running
+# multiple processes that each read/write to Drive causes severe contention
+# (~10 s/tile vs ~1 s sequential).
+#
+# Architecture:
+#   Reader thread ──→ [bounded queue] ──→ N worker processes ──→ Writer thread
+#
+# - Reader thread reads HS+MS GeoTIFFs from Drive sequentially into a
+#   bounded queue (``prefetch`` slots, ~250 MB at 16 tiles).
+# - N CPU worker processes pull arrays from the queue, run cnmf_fuse
+#   (pure compute, zero I/O), and return results via futures.
+# - The main thread writes fused GeoTIFFs back to Drive sequentially as
+#   results arrive.
+#
+# Reading (~0.06 s/tile) is ~20× faster than compute (~1-2 s/tile), so
+# the reader easily stays ahead.  Memory stays bounded at ~prefetch tiles
+# in the queue + ~n_workers tiles being processed.
 
-def _worker_fuse_tile(args: tuple) -> dict:
+
+def _read_tile_arrays(
+    hs_path: str,
+    ms_path: str,
+    scale_factor: float = 10_000.0,
+    nodata_val: int = 65535,
+) -> tuple[np.ndarray, np.ndarray, dict]:
     """
-    Worker function for parallel CNMF.  Must be a top-level function so it
-    can be pickled by multiprocessing.
-
-    Parameters
-    ----------
-    args : tuple
-        (hs_path, ms_path, out_path, cnmf_kwargs)
+    Read a tile pair from GeoTIFF and return reflectance arrays + write metadata.
 
     Returns
     -------
-    dict with lightweight result (no pixel arrays — too large to serialize).
+    hs_hwb : (H_lr, W_lr, B_hs) float32 reflectance
+    ms_hwb : (H_hr, W_hr, B_ms) float32 reflectance
+    write_meta : dict with 'ms_profile' and 'wavelengths_nm' for writing output
+    """
+    with rasterio.open(hs_path) as ds:
+        hs_raw = ds.read().astype(np.float32)
+        wl_list = []
+        for b in range(1, ds.count + 1):
+            bt = ds.tags(b)
+            ww = bt.get("wavelength") or bt.get("WAVELENGTH")
+            if ww is not None:
+                wl_list.append(float(ww))
+        wavelengths_nm = wl_list if len(wl_list) == ds.count else None
+
+    with rasterio.open(ms_path) as ds:
+        ms_raw = ds.read().astype(np.float32)
+        ms_profile = ds.profile.copy()
+
+    hs_raw[hs_raw == nodata_val] = 0.0
+    ms_raw[ms_raw == 0] = 0.0
+
+    hs_hwb = np.transpose(np.clip(hs_raw / scale_factor, 0.0, None), (1, 2, 0))
+    ms_hwb = np.transpose(np.clip(ms_raw / scale_factor, 0.0, None), (1, 2, 0))
+
+    write_meta = {"ms_profile": ms_profile, "wavelengths_nm": wavelengths_nm}
+    return hs_hwb, ms_hwb, write_meta
+
+
+def _write_fused_tile(
+    fused_hwb: np.ndarray,
+    out_path: str,
+    write_meta: dict,
+    scale_factor: float = 10_000.0,
+    nodata_val: int = 65535,
+) -> None:
+    """Write fused result to GeoTIFF on Drive."""
+    fused_bhw = np.transpose(fused_hwb, (2, 0, 1))
+    fused_dn = np.clip(fused_bhw * scale_factor, 0, 65534).astype(np.uint16)
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    profile = write_meta["ms_profile"].copy()
+    profile.update(
+        count=fused_dn.shape[0], dtype="uint16", nodata=nodata_val,
+        driver="GTiff", compress="DEFLATE", predictor=2, tiled=True,
+        BIGTIFF="IF_SAFER",
+    )
+    profile.pop("interleave", None)
+
+    with rasterio.open(out_path, "w", **profile) as dst:
+        dst.write(fused_dn)
+        wl = write_meta.get("wavelengths_nm")
+        if wl:
+            for i, w in enumerate(wl):
+                dst.update_tags(i + 1, wavelength=f"{w:.4f}")
+
+
+def _worker_fuse_arrays(args: tuple) -> dict:
+    """
+    Worker: pure-CPU CNMF on in-memory arrays.  No file I/O.
+
+    Parameters
+    ----------
+    args : (work_idx, hs_hwb, ms_hwb, cnmf_kwargs)
+
+    Returns
+    -------
+    dict with work_idx, fused_hwb, r2, info, status, time_s.
     """
     import time as _time
-    hs_path, ms_path, out_path, cnmf_kwargs = args
+    work_idx, hs_hwb, ms_hwb, cnmf_kwargs = args
     tic = _time.time()
     try:
-        result = cnmf_fuse_tile(hs_path, ms_path, out_path, **cnmf_kwargs)
+        fused_hwb, info = cnmf_fuse(hs_hwb, ms_hwb, **cnmf_kwargs)
     except Exception as e:
-        return {
-            "status": f"ERROR: {e}",
-            "r2_mean": None,
-            "r2_per_band": [],
-            "time_s": _time.time() - tic,
-            "info": {},
-            "out_path": None,
-        }
-    elapsed = _time.time() - tic
-    return {
-        "status": result["status"],
-        "r2_mean": result["r2_mean"],
-        "r2_per_band": result["r2_per_band"],
-        "time_s": elapsed,
-        "info": result.get("info", {}),
-        "out_path": result.get("out_path"),
-    }
+        return {"work_idx": work_idx, "status": f"ERROR: {e}",
+                "fused_hwb": None, "r2": None, "info": {},
+                "time_s": _time.time() - tic}
+
+    if info.get("status") == "DEGENERATE_HS":
+        return {"work_idx": work_idx, "status": "SKIP_DEGENERATE",
+                "fused_hwb": None, "r2": None, "info": info,
+                "time_s": _time.time() - tic}
+
+    # R² self-consistency check
+    rows_lr, cols_lr, bands_hs = hs_hwb.shape
+    w = ms_hwb.shape[0] // rows_lr
+    fused_lr = _gaussian_downsample(fused_hwb, w)
+    r2 = _compute_r2(
+        hs_hwb.reshape(-1, bands_hs),
+        fused_lr.reshape(-1, bands_hs),
+    )
+    return {"work_idx": work_idx, "status": "OK",
+            "fused_hwb": fused_hwb, "r2": r2, "info": info,
+            "time_s": _time.time() - tic}
 
 
 def cnmf_fuse_tiles_parallel(
     tile_list: list[dict],
     *,
-    n_workers: int = 8,
+    n_workers: int = 6,
+    prefetch: int = 16,
     scale_factor: float = 10_000.0,
     nodata_val: int = 65535,
     max_endmembers: int = 20,
@@ -1021,10 +1111,13 @@ def cnmf_fuse_tiles_parallel(
     skip_existing: bool = True,
 ) -> list[dict]:
     """
-    Process CNMF fusion for many tiles in parallel using multiprocessing.
+    Process CNMF fusion using a streaming producer-consumer pipeline.
 
-    Each tile is independent — no shared state.  Uses ProcessPoolExecutor
-    to distribute tiles across ``n_workers`` CPU processes.
+    A reader thread loads tiles from Drive sequentially into a bounded
+    buffer (``prefetch`` tiles, ~250 MB).  ``n_workers`` CPU processes
+    run CNMF on in-memory arrays (zero I/O).  The main thread writes
+    fused GeoTIFFs back to Drive as results arrive.  All three stages
+    run concurrently — read time is fully hidden behind compute time.
 
     Parameters
     ----------
@@ -1032,12 +1125,14 @@ def cnmf_fuse_tiles_parallel(
         Each dict must have keys: ``hs_path``, ``ms_path``, ``pair_dir``,
         ``tile_name``.  Extra keys are passed through to the output rows.
     n_workers : int
-        Number of parallel worker processes (default 8).
+        Number of parallel worker processes (default 6).
+    prefetch : int
+        Number of tiles to read ahead (default 16, ~250 MB buffer).
     scale_factor, nodata_val, max_endmembers, inner_iters, outer_iters
-        Forwarded to ``cnmf_fuse_tile``.
+        Forwarded to ``cnmf_fuse`` / tile I/O.
     verbose_first : int
         Run the first N tiles sequentially with verbose=True before
-        launching parallel workers.  Useful for sanity checking.
+        launching the pipeline.  Useful for sanity-checking output.
     skip_existing : bool
         Skip tiles whose output file already exists (default True).
 
@@ -1049,6 +1144,9 @@ def cnmf_fuse_tiles_parallel(
         r2_cnmf_band_*.
     """
     from concurrent.futures import ProcessPoolExecutor, as_completed
+    from threading import Thread
+    from queue import Queue
+    import time as _time
 
     try:
         from tqdm import tqdm
@@ -1057,16 +1155,14 @@ def cnmf_fuse_tiles_parallel(
             return it
 
     cnmf_kwargs = dict(
-        scale_factor=scale_factor,
-        nodata_val=nodata_val,
         max_endmembers=max_endmembers,
         inner_iters=inner_iters,
         outer_iters=outer_iters,
         verbose=False,
     )
 
-    # ── Build work items (skip existing / missing) ──
-    work_items = []   # (index, hs_path, ms_path, out_path)
+    # ── Filter tiles (skip existing / missing) ──
+    work_items = []
     results_rows = [None] * len(tile_list)
 
     for idx, tile in enumerate(tile_list):
@@ -1088,7 +1184,6 @@ def cnmf_fuse_tiles_parallel(
             base_row["status"] = "EXISTED"
             results_rows[idx] = base_row
             continue
-
         if not hs_path.exists() or not ms_path.exists():
             base_row["status"] = "MISSING_FILES"
             results_rows[idx] = base_row
@@ -1100,90 +1195,156 @@ def cnmf_fuse_tiles_parallel(
     n_missing = sum(1 for r in results_rows if r and r.get("status") == "MISSING_FILES")
     n_to_process = len(work_items)
 
-    print(f"CNMF parallel: {len(tile_list)} tiles total, "
+    print(f"CNMF pipeline: {len(tile_list)} tiles total, "
           f"{n_existed} existed, {n_missing} missing, "
-          f"{n_to_process} to process with {n_workers} workers")
+          f"{n_to_process} to process with {n_workers} workers "
+          f"(prefetch={prefetch})")
 
     if n_to_process == 0:
         return [r for r in results_rows if r is not None]
 
-    # ── Optional: run first few sequentially with verbose for sanity check ──
+    # ── Optional: run first few sequentially with verbose ──
     sequential_items = work_items[:verbose_first]
-    parallel_items = work_items[verbose_first:]
-
-    import time as _time
+    pipeline_items = work_items[verbose_first:]
 
     for idx, hs_p, ms_p, out_p, base_row in sequential_items:
         print(f"  [verbose] {base_row['tile_name']}")
-        kw = {**cnmf_kwargs, "verbose": True}
         tic = _time.time()
         try:
-            result = cnmf_fuse_tile(hs_p, ms_p, out_p, **kw)
+            hs_hwb, ms_hwb, write_meta = _read_tile_arrays(
+                hs_p, ms_p, scale_factor, nodata_val)
+            fused_hwb, info = cnmf_fuse(hs_hwb, ms_hwb, verbose=True,
+                                         **cnmf_kwargs)
+            if info.get("status") == "DEGENERATE_HS":
+                base_row["status"] = "SKIP_DEGENERATE"
+                base_row["time_s"] = _time.time() - tic
+                results_rows[idx] = base_row
+                continue
+            w = ms_hwb.shape[0] // hs_hwb.shape[0]
+            fused_lr = _gaussian_downsample(fused_hwb, w)
+            r2 = _compute_r2(
+                hs_hwb.reshape(-1, hs_hwb.shape[2]),
+                fused_lr.reshape(-1, hs_hwb.shape[2]),
+            )
+            _write_fused_tile(fused_hwb, out_p, write_meta,
+                              scale_factor, nodata_val)
+            elapsed = _time.time() - tic
+            _fill_result_row(base_row, "OK", r2, info, elapsed, out_p)
         except Exception as e:
             base_row["status"] = f"ERROR: {e}"
-            results_rows[idx] = base_row
-            continue
-        elapsed = _time.time() - tic
-        _merge_result(base_row, result, elapsed)
+            base_row["time_s"] = _time.time() - tic
         results_rows[idx] = base_row
 
-    # ── Parallel execution ──
-    if parallel_items:
-        # Build args list for workers
-        args_list = [
-            (hs_p, ms_p, out_p, cnmf_kwargs)
-            for _, hs_p, ms_p, out_p, _ in parallel_items
-        ]
+    if not pipeline_items:
+        return [r for r in results_rows if r is not None]
 
-        with ProcessPoolExecutor(max_workers=n_workers) as executor:
-            futures = {
-                executor.submit(_worker_fuse_tile, args): i
-                for i, args in enumerate(args_list)
-            }
+    # ═══════════════════════════════════════════════════════════════════
+    #  Streaming pipeline: reader thread → worker pool → main-thread writer
+    # ═══════════════════════════════════════════════════════════════════
 
-            with tqdm(total=len(futures), desc="CNMF fusion") as pbar:
-                for future in as_completed(futures):
-                    fi = futures[future]
-                    idx, _, _, _, base_row = parallel_items[fi]
-                    try:
-                        worker_result = future.result()
-                    except Exception as e:
-                        base_row["status"] = f"ERROR: {e}"
-                        results_rows[idx] = base_row
-                        pbar.update(1)
-                        continue
+    _SENTINEL = None  # marks end of reader stream
+    read_queue = Queue(maxsize=prefetch)
+    n_read_errors = 0
+    n_write_errors = 0
 
-                    _merge_worker_result(base_row, worker_result)
+    # ── Reader thread: sequential Drive reads → bounded queue ──
+    def _reader():
+        nonlocal n_read_errors
+        for wi, (idx, hs_p, ms_p, out_p, base_row) in enumerate(pipeline_items):
+            try:
+                hs_hwb, ms_hwb, write_meta = _read_tile_arrays(
+                    hs_p, ms_p, scale_factor, nodata_val)
+                read_queue.put((wi, idx, out_p, base_row,
+                                hs_hwb, ms_hwb, write_meta))
+            except Exception as e:
+                base_row["status"] = f"ERROR_READ: {e}"
+                results_rows[idx] = base_row
+                n_read_errors += 1
+        read_queue.put(_SENTINEL)
+
+    reader_thread = Thread(target=_reader, daemon=True)
+    reader_thread.start()
+
+    # ── Main loop: drain queue → submit to pool → write results ──
+    pbar = tqdm(total=len(pipeline_items), desc="CNMF fusion")
+    pending = {}  # future → (idx, out_path, write_meta, base_row)
+
+    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        reader_done = False
+
+        while not reader_done or pending:
+            # Fill pool from queue (non-blocking when pool is full)
+            while not reader_done and len(pending) < n_workers + prefetch:
+                try:
+                    item = read_queue.get(timeout=0.05)
+                except Exception:
+                    break
+                if item is _SENTINEL:
+                    reader_done = True
+                    break
+                wi, idx, out_p, base_row, hs_hwb, ms_hwb, write_meta = item
+                fut = executor.submit(
+                    _worker_fuse_arrays,
+                    (wi, hs_hwb, ms_hwb, cnmf_kwargs),
+                )
+                pending[fut] = (idx, out_p, write_meta, base_row)
+
+            # Collect completed futures
+            done_futs = [f for f in pending if f.done()]
+            if not done_futs and pending:
+                # Brief sleep to avoid busy-spinning
+                _time.sleep(0.02)
+                continue
+
+            for fut in done_futs:
+                idx, out_p, write_meta, base_row = pending.pop(fut)
+                try:
+                    res = fut.result()
+                except Exception as e:
+                    base_row["status"] = f"ERROR: {e}"
                     results_rows[idx] = base_row
                     pbar.update(1)
+                    continue
 
-    # Filter out None entries (shouldn't happen, but be safe)
+                if res["status"] == "OK" and res["fused_hwb"] is not None:
+                    try:
+                        _write_fused_tile(res["fused_hwb"], out_p,
+                                          write_meta, scale_factor, nodata_val)
+                        _fill_result_row(base_row, "OK", res["r2"],
+                                         res["info"], res["time_s"], out_p)
+                    except Exception as e:
+                        base_row["status"] = f"ERROR_WRITE: {e}"
+                        base_row["time_s"] = res["time_s"]
+                        n_write_errors += 1
+                else:
+                    base_row["status"] = res["status"]
+                    base_row["time_s"] = res["time_s"]
+                    if res.get("info"):
+                        base_row["cnmf_M"] = res["info"].get("M")
+
+                results_rows[idx] = base_row
+                pbar.update(1)
+
+    reader_thread.join()
+    pbar.close()
+
+    n_final_ok = sum(1 for r in results_rows
+                     if r and r.get("status") == "OK")
+    print(f"\nDone: {n_final_ok} OK, {n_read_errors} read errors, "
+          f"{n_write_errors} write errors")
+
     return [r for r in results_rows if r is not None]
 
 
-def _merge_result(base_row: dict, result: dict, elapsed: float) -> None:
-    """Merge cnmf_fuse_tile result into a base_row dict (in-place)."""
-    base_row["status"] = result["status"]
-    base_row["r2_cnmf_mean"] = result["r2_mean"]
+def _fill_result_row(base_row, status, r2, info, elapsed, out_path):
+    """Populate a result row dict in-place."""
+    base_row["status"] = status
+    base_row["r2_cnmf_mean"] = float(np.mean(r2)) if r2 is not None else None
     base_row["time_s"] = elapsed
-    base_row["out_path"] = result.get("out_path")
-    info = result.get("info", {})
+    base_row["out_path"] = str(out_path) if out_path else None
     base_row["cnmf_M"] = info.get("M")
     base_row["cnmf_rmse_h"] = info.get("rmse_h")
     base_row["cnmf_rmse_m"] = info.get("rmse_m")
-    for bi, v in enumerate(result.get("r2_per_band", [])):
-        base_row[f"r2_cnmf_band_{bi:02d}"] = v
-
-
-def _merge_worker_result(base_row: dict, worker_result: dict) -> None:
-    """Merge worker result dict into a base_row dict (in-place)."""
-    base_row["status"] = worker_result["status"]
-    base_row["r2_cnmf_mean"] = worker_result["r2_mean"]
-    base_row["time_s"] = worker_result["time_s"]
-    base_row["out_path"] = worker_result.get("out_path")
-    info = worker_result.get("info", {})
-    base_row["cnmf_M"] = info.get("M")
-    base_row["cnmf_rmse_h"] = info.get("rmse_h")
-    base_row["cnmf_rmse_m"] = info.get("rmse_m")
-    for bi, v in enumerate(worker_result.get("r2_per_band", [])):
-        base_row[f"r2_cnmf_band_{bi:02d}"] = v
+    if r2 is not None:
+        for bi, v in enumerate(r2.tolist()):
+            base_row[f"r2_cnmf_band_{bi:02d}"] = v
