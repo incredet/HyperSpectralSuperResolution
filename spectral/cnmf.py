@@ -1092,14 +1092,21 @@ def _process_tile(hs_path, ms_path, out_path, row,
 
 
 def _process_tile_mp(args):
-    """Multiprocessing wrapper — unpacks tuple for Pool.imap."""
-    return _process_tile(*args)
+    """Multiprocessing wrapper — unpacks tuple for Pool.imap.
+    args = (hs_path, ms_path, out_path, row, scale_factor, nodata_val,
+            cnmf_kwargs, blas_threads)
+    """
+    from threadpoolctl import threadpool_limits
+    *tile_args, blas_threads = args
+    with threadpool_limits(limits=blas_threads):
+        return _process_tile(*tile_args)
 
 
 def cnmf_fuse_tiles(
     tile_list: list[dict],
     *,
     n_workers: int = 1,
+    blas_threads: int = 2,
     scale_factor: float = 10_000.0,
     nodata_val: int = 65535,
     max_endmembers: int = 20,
@@ -1111,9 +1118,11 @@ def cnmf_fuse_tiles(
     """
     Process CNMF fusion for a list of tiles.
 
-    n_workers=1 → sequential.  n_workers>1 → multiprocessing Pool.
-    Each worker reads its own tile, runs CNMF, writes the result.
-    Only file paths and a small result dict cross process boundaries.
+    n_workers=1  → sequential (uses all available BLAS threads).
+    n_workers>1  → multiprocessing Pool; each worker uses ``blas_threads``
+                   BLAS threads so total = n_workers × blas_threads ≤ cpu_count.
+                   Rule of thumb: n_workers × blas_threads ≈ cpu_count.
+                   E.g. on 12 cores: n_workers=6, blas_threads=2.
     """
     import time as _time
     try:
@@ -1167,7 +1176,8 @@ def cnmf_fuse_tiles(
         results[idx] = _process_tile(hs_p, ms_p, out_p, row,
                                       scale_factor, nodata_val, verbose_kw)
 
-    remaining = [(hs_p, ms_p, out_p, row, scale_factor, nodata_val, cnmf_kwargs)
+    remaining = [(hs_p, ms_p, out_p, row, scale_factor, nodata_val,
+                  cnmf_kwargs, blas_threads)
                  for idx, hs_p, ms_p, out_p, row in work[verbose_first:]]
     if not remaining:
         return [r for r in results if r is not None]
@@ -1179,7 +1189,7 @@ def cnmf_fuse_tiles(
 
     if n_workers <= 1:
         for args in remaining:
-            row = _process_tile(*args)
+            row = _process_tile(*args[:-1])  # drop blas_threads, unused sequentially
             results[name_to_idx[row["tile_name"]]] = row
             if pbar: pbar.update(1)
     else:
