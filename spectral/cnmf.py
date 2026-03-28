@@ -802,19 +802,29 @@ def cnmf_fuse(
         print(f"  eff_rank={eff_rank} vd={vd_est} → M={M}")
 
     # ── Step 3: Initialize W_hyper via VCA ──
-    W_hyper, _ = _vca(HSI_2d, M, seed=seed)  # (bands_hs, M)
+    W_vca, _ = _vca(HSI_2d, M, seed=seed)  # (bands_hs, M)
 
-    # Initialize H_hyper: uniform
+    # Pad to max_endmembers so JAX JIT sees constant shapes across tiles.
+    # Zero-padded endmembers are inert: MU rule is H *= (WtD)/(WtWH+eps),
+    # and 0*x/y = 0, so padding rows/cols stay zero throughout.
+    M_pad = max_endmembers
     N_lr = rows_lr * cols_lr
     N_hr = rows_hr * cols_hr
-    H_hyper = np.ones((M, N_lr), dtype=np.float32) / M
+
+    W_hyper = np.zeros((bands_hs, M_pad), dtype=np.float32)
+    W_hyper[:, :M] = W_vca.astype(np.float32)
+
+    H_hyper = np.zeros((M_pad, N_lr), dtype=np.float32)
+    H_hyper[:M, :] = 1.0 / M
 
     # Sum-to-one constraint parameter
-    delta = 2.0 * (np.mean(MSI_2d) / 0.7455) ** 0.5 / bands_ms ** 3
+    delta = np.float32(2.0 * (np.mean(MSI_2d) / 0.7455) ** 0.5 / bands_ms ** 3)
 
-    # Append sum-to-one row
-    W_hyper = np.vstack([W_hyper, delta * np.ones((1, M))])        # (bands_hs+1, M)
-    hyper = np.vstack([HSI_2d, delta * np.ones((1, N_lr))])        # (bands_hs+1, N_lr)
+    # Append sum-to-one row (only real endmembers get delta; padding stays 0)
+    delta_row = np.zeros((1, M_pad), dtype=np.float32)
+    delta_row[0, :M] = delta
+    W_hyper = np.vstack([W_hyper, delta_row])                      # (bands_hs+1, M_pad)
+    hyper = np.vstack([HSI_2d, delta * np.ones((1, N_lr), dtype=np.float32)])  # (bands_hs+1, N_lr)
 
     # ═══════════════════════════════════════════════════════════════
     #  CNMF_init:  NMF for H_hyper (W fixed), then NMF for H_multi
@@ -848,13 +858,15 @@ def cnmf_fuse(
         print(f"  CNMF init: RMSE_h={rmse_h:.6f}")
 
     # ── Initialize W_multi from SRF ──
-    W_multi = R_srf @ W_hyper[:bands_hs, :]                # (bands_ms, M)
-    W_multi = np.vstack([W_multi, delta * np.ones((1, M))]) # (bands_ms+1, M)
-    multi = np.vstack([MSI_2d, delta * np.ones((1, N_hr))]) # (bands_ms+1, N_hr)
+    W_multi_real = R_srf @ W_hyper[:bands_hs, :]            # (bands_ms, M_pad) — padding cols are zero
+    delta_row_ms = np.zeros((1, M_pad), dtype=np.float32)
+    delta_row_ms[0, :M] = delta
+    W_multi = np.vstack([W_multi_real, delta_row_ms])        # (bands_ms+1, M_pad)
+    multi = np.vstack([MSI_2d, delta * np.ones((1, N_hr), dtype=np.float32)])  # (bands_ms+1, N_hr)
 
     # ── Initialize H_multi by interpolation ──
-    H_multi = np.ones((M, N_hr), dtype=np.float32) / M
-    for i in range(M):
+    H_multi = np.zeros((M_pad, N_hr), dtype=np.float32)
+    for i in range(M):  # only interpolate real endmembers; padding stays 0
         h_lr = H_hyper[i, :].reshape(rows_lr, cols_lr)
         if _HAS_CV2:
             h_hr = cv2.resize(h_lr, (cols_hr, rows_hr),
@@ -909,9 +921,9 @@ def cnmf_fuse(
             print(f"  Outer iteration {i_out + 1}/{outer_iters}")
 
         # ── Gaussian-downsample H_multi → H_hyper ──
-        H_multi_3d = H_multi.T.reshape(rows_hr, cols_hr, M)  # (H_hr, W_hr, M)
-        H_hyper_3d = _gaussian_downsample(H_multi_3d, w)     # (H_lr, W_lr, M)
-        H_hyper = H_hyper_3d.reshape(-1, M).T                # (M, N_lr)
+        H_multi_3d = H_multi.T.reshape(rows_hr, cols_hr, M_pad)  # (H_hr, W_hr, M_pad)
+        H_hyper_3d = _gaussian_downsample(H_multi_3d, w)         # (H_lr, W_lr, M_pad)
+        H_hyper = H_hyper_3d.reshape(-1, M_pad).T                # (M_pad, N_lr)
 
         # ── NMF for HS: phase 1 (update W with H fixed) ──
         W_hyper, _ = fn_update_W_fixed_H(
