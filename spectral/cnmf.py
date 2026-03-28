@@ -20,26 +20,6 @@ try:
 except ImportError:
     rasterio = None
 
-# ── JAX backend (optional) ──────────────────────────────────────────────────
-_HAS_JAX = False
-_JAX_DEVICE = "cpu"  # "cpu" or "gpu"
-try:
-    import jax
-    import jax.numpy as jnp
-    from functools import partial as _partial
-    # fp32 on GPU — A100 has 16× more fp32 than fp64 throughput.
-    # NMF on reflectance [0,1] needs ~4 decimal digits; fp32 gives 7.
-    # We cast float64→float32 on entry, float32→float64 on exit.
-    _HAS_JAX = True
-    # Detect GPU
-    try:
-        _devs = jax.devices("gpu")
-        if _devs:
-            _JAX_DEVICE = "gpu"
-    except RuntimeError:
-        pass
-except ImportError:
-    pass
 
 
 def _gaussian_downsample(img: np.ndarray, factor: int) -> np.ndarray:
@@ -503,177 +483,6 @@ def _nmf_ite_hs_joint(
     return W, H, cost
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# JAX-accelerated NMF backends (GPU / JIT)
-# ═══════════════════════════════════════════════════════════════════════════
-
-if _HAS_JAX:
-
-    # ── fori_loop kernels: minimal carry, maximum GPU throughput ──
-    #
-    # No convergence check inside the loop — on GPU, running all iterations
-    # of just the MU step is faster than carrying prev-arrays + jnp.where
-    # copies for early-exit logic.  Cost is computed once after the loop.
-
-    @_partial(jax.jit, static_argnames=("n_bands_orig", "max_iter"))
-    def _jax_nmf_update_H(W, H, D, n_bands_orig, max_iter, eps):
-        """JAX fori_loop H-only NMF update (W fixed)."""
-        WtD = W.T @ D          # (M, N) — constant
-        WtW = W.T @ W          # (M, M) — constant
-
-        def _body(_, H):
-            return H * WtD / (WtW @ H + eps)
-
-        H = jax.lax.fori_loop(0, max_iter, _body, H)
-
-        # Cost once at end (fast formula)
-        W_band = W[:n_bands_orig, :]
-        D_band = D[:n_bands_orig, :]
-        HHt = H @ H.T
-        cost = (jnp.sum(D_band ** 2)
-                - 2.0 * jnp.sum((W_band.T @ D_band) * H)
-                + jnp.sum((W_band.T @ W_band) * HHt))
-        return H, cost
-
-    @_partial(jax.jit, static_argnames=("n_bands_orig", "max_iter",
-                                         "do_update_W"))
-    def _jax_nmf_update_WH(W, H, D, n_bands_orig, max_iter, eps,
-                            do_update_W):
-        """JAX fori_loop joint W+H NMF update."""
-        D_band = D[:n_bands_orig, :]
-
-        def _body_with_W(_, WH):
-            W, H = WH
-            # W update (spectral rows only)
-            HHt = H @ H.T
-            W_n = D_band @ H.T
-            W_d = W[:n_bands_orig, :] @ HHt + eps
-            W = W.at[:n_bands_orig, :].set(
-                W[:n_bands_orig, :] * W_n / W_d)
-            # H update
-            WtW = W.T @ W
-            WtD = W.T @ D
-            H = H * WtD / (WtW @ H + eps)
-            return (W, H)
-
-        def _body_no_W(_, WH):
-            W, H = WH
-            WtW = W.T @ W
-            WtD = W.T @ D
-            H = H * WtD / (WtW @ H + eps)
-            return (W, H)
-
-        body_fn = _body_with_W if do_update_W else _body_no_W
-        W, H = jax.lax.fori_loop(0, max_iter, body_fn, (W, H))
-
-        # Cost once at end
-        W_band = W[:n_bands_orig, :]
-        HHt = H @ H.T
-        cost = (jnp.sum(D_band ** 2)
-                - 2.0 * jnp.sum((W_band.T @ D_band) * H)
-                + jnp.sum((W_band.T @ W_band) * HHt))
-        return W, H, cost
-
-    @_partial(jax.jit, static_argnames=("n_bands_orig", "max_iter"))
-    def _jax_nmf_update_W_fixed_H(W, H, D, n_bands_orig, max_iter, eps):
-        """JAX fori_loop W-only NMF update (H fixed)."""
-        D_band = D[:n_bands_orig, :]
-        HHt = H @ H.T          # constant
-        DHt = D_band @ H.T     # constant
-
-        def _body(_, W):
-            W_d = W[:n_bands_orig, :] @ HHt + eps
-            return W.at[:n_bands_orig, :].set(
-                W[:n_bands_orig, :] * DHt / W_d)
-
-        W = jax.lax.fori_loop(0, max_iter, _body, W)
-
-        # Cost once at end
-        W_band = W[:n_bands_orig, :]
-        cost = (jnp.sum(D_band ** 2)
-                - 2.0 * jnp.sum((W_band.T @ D_band) * H)
-                + jnp.sum((W_band.T @ W_band) * HHt))
-        return W, cost
-
-    @_partial(jax.jit, static_argnames=("n_bands_orig", "max_iter",
-                                         "do_update_H"))
-    def _jax_nmf_ite_hs_joint(W, H, D, n_bands_orig, max_iter, eps,
-                               do_update_H):
-        """JAX fori_loop HS joint update (CNMF_ite i>1 branch)."""
-        D_band = D[:n_bands_orig, :]
-
-        def _body_with_H(_, WH):
-            W, H = WH
-            # H update
-            WtD = W.T @ D
-            WtWH = W.T @ W @ H + eps
-            H = H * WtD / WtWH
-            # W update (spectral rows only)
-            HHt = H @ H.T
-            W_n = D_band @ H.T
-            W_d = W[:n_bands_orig, :] @ HHt + eps
-            W = W.at[:n_bands_orig, :].set(
-                W[:n_bands_orig, :] * W_n / W_d)
-            return (W, H)
-
-        def _body_no_H(_, WH):
-            W, H = WH
-            HHt = H @ H.T
-            W_n = D_band @ H.T
-            W_d = W[:n_bands_orig, :] @ HHt + eps
-            W = W.at[:n_bands_orig, :].set(
-                W[:n_bands_orig, :] * W_n / W_d)
-            return (W, H)
-
-        body_fn = _body_with_H if do_update_H else _body_no_H
-        W, H = jax.lax.fori_loop(0, max_iter, body_fn, (W, H))
-
-        # Cost once at end
-        W_band = W[:n_bands_orig, :]
-        HHt = H @ H.T
-        cost = (jnp.sum(D_band ** 2)
-                - 2.0 * jnp.sum((W_band.T @ D_band) * H)
-                + jnp.sum((W_band.T @ W_band) * HHt))
-        return W, H, cost
-
-    # ── Thin wrappers: NumPy ↔ JAX array transfer ──
-    #
-    # Pipeline is now fully float32 — no dtype casts needed.
-
-    _eps32 = jnp.float32(1e-7)   # fp32-safe eps (1e-16 underflows)
-
-    def _jax_wrap_update_H(W, H, D, *, n_bands_orig, max_iter, threshold,
-                           eps=1e-7):
-        H_j, cost_j = _jax_nmf_update_H(
-            jnp.asarray(W), jnp.asarray(H), jnp.asarray(D),
-            n_bands_orig, max_iter, _eps32)
-        return np.asarray(H_j), float(cost_j)
-
-    def _jax_wrap_update_WH(W, H, D, *, n_bands_orig, max_iter, threshold,
-                            eps=1e-7, update_W=True, min_ms_bands=3,
-                            n_spectral_bands=0, cost_stride=5):
-        do_update_W = update_W and n_spectral_bands > min_ms_bands
-        W_j, H_j, cost_j = _jax_nmf_update_WH(
-            jnp.asarray(W), jnp.asarray(H), jnp.asarray(D),
-            n_bands_orig, max_iter, _eps32, do_update_W)
-        return np.asarray(W_j), np.asarray(H_j), float(cost_j)
-
-    def _jax_wrap_update_W_fixed_H(W, H, D, *, n_bands_orig, max_iter,
-                                    threshold, eps=1e-7, cost_stride=5):
-        W_j, cost_j = _jax_nmf_update_W_fixed_H(
-            jnp.asarray(W), jnp.asarray(H), jnp.asarray(D),
-            n_bands_orig, max_iter, _eps32)
-        return np.asarray(W_j), float(cost_j)
-
-    def _jax_wrap_ite_hs_joint(W, H, D, *, n_bands_orig, max_iter, threshold,
-                                eps=1e-7, min_ms_bands=3, multi_band=0,
-                                cost_stride=5):
-        do_update_H = multi_band > min_ms_bands
-        W_j, H_j, cost_j = _jax_nmf_ite_hs_joint(
-            jnp.asarray(W), jnp.asarray(H), jnp.asarray(D),
-            n_bands_orig, max_iter, _eps32, do_update_H)
-        return np.asarray(W_j), np.asarray(H_j), float(cost_j)
-
 
 # ---------------------------------------------------------------------------
 # Core:  cnmf_fuse
@@ -692,16 +501,15 @@ def cnmf_fuse(
     eps: float = 1e-7,
     verbose: bool = False,
     seed: int = 0,
-    use_jax: str = "auto",
 ) -> tuple[np.ndarray, dict]:
     """
     CNMF hyperspectral–multispectral fusion.
 
     Parameters
     ----------
-    hs : (H_lr, W_lr, B_hs) float64
+    hs : (H_lr, W_lr, B_hs) float32
         Low-resolution hyperspectral image.
-    ms : (H_hr, W_hr, B_ms) float64
+    ms : (H_hr, W_hr, B_ms) float32
         High-resolution multispectral image.
     max_endmembers : int
         Maximum number of endmembers (default 20).
@@ -719,46 +527,21 @@ def cnmf_fuse(
         Print diagnostic information.
     seed : int
         Random seed for VCA reproducibility.
-    use_jax : str
-        JAX backend: ``"auto"`` uses JAX+GPU when available, ``"force"``
-        requires it (raises if unavailable), ``"off"`` uses NumPy only.
 
     Returns
     -------
-    fused : (H_hr, W_hr, B_hs) float64
+    fused : (H_hr, W_hr, B_hs) float32
         Fused image at MS spatial resolution.
     info : dict
         Diagnostic info with keys 'M', 'rmse_h', 'rmse_m', 'srf_error',
-        'n_outer_iters', 'backend'.
+        'n_outer_iters'.
     """
-    # ── Backend selection ──
-    _use_jax = False
-    if use_jax == "force":
-        if not _HAS_JAX:
-            raise RuntimeError("use_jax='force' but JAX is not installed")
-        _use_jax = True
-    elif use_jax == "auto":
-        _use_jax = _HAS_JAX
-    # else: "off" → NumPy
-
-    if _use_jax:
-        fn_update_H = _jax_wrap_update_H
-        fn_update_WH = _jax_wrap_update_WH
-        fn_update_W_fixed_H = _jax_wrap_update_W_fixed_H
-        fn_ite_hs_joint = _jax_wrap_ite_hs_joint
-    else:
-        fn_update_H = _nmf_update_H
-        fn_update_WH = _nmf_update_WH
-        fn_update_W_fixed_H = _nmf_update_W_fixed_H
-        fn_ite_hs_joint = _nmf_ite_hs_joint
-
     rows_lr, cols_lr, bands_hs = hs.shape
     rows_hr, cols_hr, bands_ms = ms.shape
     w = rows_hr // rows_lr  # scale factor
 
-    backend_label = f"jax-{_JAX_DEVICE}" if _use_jax else "numpy"
     if verbose:
-        print(f"CNMF: HS={hs.shape} MS={ms.shape} scale={w}  backend={backend_label}")
+        print(f"CNMF: HS={hs.shape} MS={ms.shape} scale={w}")
 
     # ── Step 1: Estimate SRF and subtract offsets from MSI ──
     R_srf, offsets, srf_error = _estimate_srf(hs, ms, w, eps=eps)
@@ -804,26 +587,19 @@ def cnmf_fuse(
     # ── Step 3: Initialize W_hyper via VCA ──
     W_vca, _ = _vca(HSI_2d, M, seed=seed)  # (bands_hs, M)
 
-    # Pad to max_endmembers so JAX JIT sees constant shapes across tiles.
-    # Zero-padded endmembers are inert: MU rule is H *= (WtD)/(WtWH+eps),
-    # and 0*x/y = 0, so padding rows/cols stay zero throughout.
-    M_pad = max_endmembers
     N_lr = rows_lr * cols_lr
     N_hr = rows_hr * cols_hr
 
-    W_hyper = np.zeros((bands_hs, M_pad), dtype=np.float32)
-    W_hyper[:, :M] = W_vca.astype(np.float32)
+    W_hyper = W_vca.astype(np.float32)                              # (bands_hs, M)
 
-    H_hyper = np.zeros((M_pad, N_lr), dtype=np.float32)
-    H_hyper[:M, :] = 1.0 / M
+    H_hyper = np.full((M, N_lr), 1.0 / M, dtype=np.float32)        # (M, N_lr)
 
     # Sum-to-one constraint parameter
     delta = np.float32(2.0 * (np.mean(MSI_2d) / 0.7455) ** 0.5 / bands_ms ** 3)
 
-    # Append sum-to-one row (only real endmembers get delta; padding stays 0)
-    delta_row = np.zeros((1, M_pad), dtype=np.float32)
-    delta_row[0, :M] = delta
-    W_hyper = np.vstack([W_hyper, delta_row])                      # (bands_hs+1, M_pad)
+    # Append sum-to-one row
+    delta_row = np.full((1, M), delta, dtype=np.float32)
+    W_hyper = np.vstack([W_hyper, delta_row])                       # (bands_hs+1, M)
     hyper = np.vstack([HSI_2d, delta * np.ones((1, N_lr), dtype=np.float32)])  # (bands_hs+1, N_lr)
 
     # ═══════════════════════════════════════════════════════════════
@@ -831,15 +607,15 @@ def cnmf_fuse(
     # ═══════════════════════════════════════════════════════════════
 
     # ── NMF for H_hyper (phase 1, W fixed) ──
-    H_hyper, _ = fn_update_H(
+    H_hyper, _ = _nmf_update_H(
         W_hyper, H_hyper, hyper,
         n_bands_orig=bands_hs,
-        max_iter=inner_iters * 3,
+        max_iter=inner_iters,
         threshold=th_h, eps=eps,
     )
 
     # ── NMF for H_hyper (phase 2, joint W+H) ──
-    W_hyper, H_hyper, _ = fn_update_WH(
+    W_hyper, H_hyper, _ = _nmf_update_WH(
         W_hyper, H_hyper, hyper,
         n_bands_orig=bands_hs,
         max_iter=inner_iters,
@@ -858,15 +634,14 @@ def cnmf_fuse(
         print(f"  CNMF init: RMSE_h={rmse_h:.6f}")
 
     # ── Initialize W_multi from SRF ──
-    W_multi_real = R_srf @ W_hyper[:bands_hs, :]            # (bands_ms, M_pad) — padding cols are zero
-    delta_row_ms = np.zeros((1, M_pad), dtype=np.float32)
-    delta_row_ms[0, :M] = delta
-    W_multi = np.vstack([W_multi_real, delta_row_ms])        # (bands_ms+1, M_pad)
+    W_multi_real = R_srf @ W_hyper[:bands_hs, :]            # (bands_ms, M)
+    delta_row_ms = np.full((1, M), delta, dtype=np.float32)
+    W_multi = np.vstack([W_multi_real, delta_row_ms])        # (bands_ms+1, M)
     multi = np.vstack([MSI_2d, delta * np.ones((1, N_hr), dtype=np.float32)])  # (bands_ms+1, N_hr)
 
     # ── Initialize H_multi by interpolation ──
-    H_multi = np.zeros((M_pad, N_hr), dtype=np.float32)
-    for i in range(M):  # only interpolate real endmembers; padding stays 0
+    H_multi = np.zeros((M, N_hr), dtype=np.float32)
+    for i in range(M):
         h_lr = H_hyper[i, :].reshape(rows_lr, cols_lr)
         if _HAS_CV2:
             h_hr = cv2.resize(h_lr, (cols_hr, rows_hr),
@@ -879,7 +654,7 @@ def cnmf_fuse(
     H_multi = np.clip(H_multi, 0.0, None)
 
     # ── NMF for H_multi (phase 1, W fixed) ──
-    H_multi, _ = fn_update_H(
+    H_multi, _ = _nmf_update_H(
         W_multi, H_multi, multi,
         n_bands_orig=bands_ms,
         max_iter=inner_iters,
@@ -887,7 +662,7 @@ def cnmf_fuse(
     )
 
     # ── NMF for H_multi (phase 2, joint W+H) ──
-    W_multi, H_multi, _ = fn_update_WH(
+    W_multi, H_multi, _ = _nmf_update_WH(
         W_multi, H_multi, multi,
         n_bands_orig=bands_ms,
         max_iter=inner_iters,
@@ -921,12 +696,12 @@ def cnmf_fuse(
             print(f"  Outer iteration {i_out + 1}/{outer_iters}")
 
         # ── Gaussian-downsample H_multi → H_hyper ──
-        H_multi_3d = H_multi.T.reshape(rows_hr, cols_hr, M_pad)  # (H_hr, W_hr, M_pad)
-        H_hyper_3d = _gaussian_downsample(H_multi_3d, w)         # (H_lr, W_lr, M_pad)
-        H_hyper = H_hyper_3d.reshape(-1, M_pad).T                # (M_pad, N_lr)
+        H_multi_3d = H_multi.T.reshape(rows_hr, cols_hr, M)  # (H_hr, W_hr, M)
+        H_hyper_3d = _gaussian_downsample(H_multi_3d, w)    # (H_lr, W_lr, M)
+        H_hyper = H_hyper_3d.reshape(-1, M).T               # (M, N_lr)
 
         # ── NMF for HS: phase 1 (update W with H fixed) ──
-        W_hyper, _ = fn_update_W_fixed_H(
+        W_hyper, _ = _nmf_update_W_fixed_H(
             W_hyper, H_hyper, hyper,
             n_bands_orig=bands_hs,
             max_iter=inner_iters,
@@ -934,7 +709,7 @@ def cnmf_fuse(
         )
 
         # ── NMF for HS: phase 2 (joint H then W) ──
-        W_hyper, H_hyper, _ = fn_ite_hs_joint(
+        W_hyper, H_hyper, _ = _nmf_ite_hs_joint(
             W_hyper, H_hyper, hyper,
             n_bands_orig=bands_hs,
             max_iter=inner_iters,
@@ -957,7 +732,7 @@ def cnmf_fuse(
             W_multi[:bands_ms, :] = R_srf @ W_hyper[:bands_hs, :]
 
             # NMF for MS: phase 1 (update H with W fixed)
-            H_multi, _ = fn_update_H(
+            H_multi, _ = _nmf_update_H(
                 W_multi, H_multi, multi,
                 n_bands_orig=bands_ms,
                 max_iter=inner_iters,
@@ -965,7 +740,7 @@ def cnmf_fuse(
             )
 
             # NMF for MS: phase 2 (joint W+H)
-            W_multi, H_multi, _ = fn_update_WH(
+            W_multi, H_multi, _ = _nmf_update_WH(
                 W_multi, H_multi, multi,
                 n_bands_orig=bands_ms,
                 max_iter=inner_iters,
@@ -1014,7 +789,6 @@ def cnmf_fuse(
         "rmse_m": float(cost_m[-1]),
         "srf_error": srf_error.tolist(),
         "n_outer_iters": len(cost_h) - 1,
-        "backend": backend_label,
     }
 
     return fused, info
@@ -1189,3 +963,227 @@ def cnmf_fuse_tile(
         "out_path": out_str,
         "info": info,
     }
+
+
+# ---------------------------------------------------------------------------
+# Parallel tile processing
+# ---------------------------------------------------------------------------
+
+def _worker_fuse_tile(args: tuple) -> dict:
+    """
+    Worker function for parallel CNMF.  Must be a top-level function so it
+    can be pickled by multiprocessing.
+
+    Parameters
+    ----------
+    args : tuple
+        (hs_path, ms_path, out_path, cnmf_kwargs)
+
+    Returns
+    -------
+    dict with lightweight result (no pixel arrays — too large to serialize).
+    """
+    import time as _time
+    hs_path, ms_path, out_path, cnmf_kwargs = args
+    tic = _time.time()
+    try:
+        result = cnmf_fuse_tile(hs_path, ms_path, out_path, **cnmf_kwargs)
+    except Exception as e:
+        return {
+            "status": f"ERROR: {e}",
+            "r2_mean": None,
+            "r2_per_band": [],
+            "time_s": _time.time() - tic,
+            "info": {},
+            "out_path": None,
+        }
+    elapsed = _time.time() - tic
+    return {
+        "status": result["status"],
+        "r2_mean": result["r2_mean"],
+        "r2_per_band": result["r2_per_band"],
+        "time_s": elapsed,
+        "info": result.get("info", {}),
+        "out_path": result.get("out_path"),
+    }
+
+
+def cnmf_fuse_tiles_parallel(
+    tile_list: list[dict],
+    *,
+    n_workers: int = 8,
+    scale_factor: float = 10_000.0,
+    nodata_val: int = 65535,
+    max_endmembers: int = 20,
+    inner_iters: int = 200,
+    outer_iters: int = 1,
+    verbose_first: int = 0,
+    skip_existing: bool = True,
+) -> list[dict]:
+    """
+    Process CNMF fusion for many tiles in parallel using multiprocessing.
+
+    Each tile is independent — no shared state.  Uses ProcessPoolExecutor
+    to distribute tiles across ``n_workers`` CPU processes.
+
+    Parameters
+    ----------
+    tile_list : list[dict]
+        Each dict must have keys: ``hs_path``, ``ms_path``, ``pair_dir``,
+        ``tile_name``.  Extra keys are passed through to the output rows.
+    n_workers : int
+        Number of parallel worker processes (default 8).
+    scale_factor, nodata_val, max_endmembers, inner_iters, outer_iters
+        Forwarded to ``cnmf_fuse_tile``.
+    verbose_first : int
+        Run the first N tiles sequentially with verbose=True before
+        launching parallel workers.  Useful for sanity checking.
+    skip_existing : bool
+        Skip tiles whose output file already exists (default True).
+
+    Returns
+    -------
+    list[dict]
+        One row per tile with keys: tile_name, aoi_slug, pair_id, tile_idx,
+        status, r2_cnmf_mean, time_s, cnmf_M, cnmf_rmse_h, cnmf_rmse_m,
+        r2_cnmf_band_*.
+    """
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        def tqdm(it, **kw):
+            return it
+
+    cnmf_kwargs = dict(
+        scale_factor=scale_factor,
+        nodata_val=nodata_val,
+        max_endmembers=max_endmembers,
+        inner_iters=inner_iters,
+        outer_iters=outer_iters,
+        verbose=False,
+    )
+
+    # ── Build work items (skip existing / missing) ──
+    work_items = []   # (index, hs_path, ms_path, out_path)
+    results_rows = [None] * len(tile_list)
+
+    for idx, tile in enumerate(tile_list):
+        hs_path = Path(tile["hs_path"])
+        ms_path = Path(tile["ms_path"])
+        pair_dir = Path(tile["pair_dir"])
+        tile_name = tile["tile_name"]
+        out_path = pair_dir / "CNMF" / f"{tile_name}_cnmf.tif"
+
+        base_row = {
+            "tile_name": tile_name,
+            "aoi_slug": tile.get("aoi_slug", ""),
+            "pair_id": tile.get("pair_id", ""),
+            "tile_idx": tile.get("tile_idx", -1),
+            "r2_regression": tile.get("r2_regression"),
+        }
+
+        if skip_existing and out_path.exists():
+            base_row["status"] = "EXISTED"
+            results_rows[idx] = base_row
+            continue
+
+        if not hs_path.exists() or not ms_path.exists():
+            base_row["status"] = "MISSING_FILES"
+            results_rows[idx] = base_row
+            continue
+
+        work_items.append((idx, str(hs_path), str(ms_path), str(out_path), base_row))
+
+    n_existed = sum(1 for r in results_rows if r and r.get("status") == "EXISTED")
+    n_missing = sum(1 for r in results_rows if r and r.get("status") == "MISSING_FILES")
+    n_to_process = len(work_items)
+
+    print(f"CNMF parallel: {len(tile_list)} tiles total, "
+          f"{n_existed} existed, {n_missing} missing, "
+          f"{n_to_process} to process with {n_workers} workers")
+
+    if n_to_process == 0:
+        return [r for r in results_rows if r is not None]
+
+    # ── Optional: run first few sequentially with verbose for sanity check ──
+    sequential_items = work_items[:verbose_first]
+    parallel_items = work_items[verbose_first:]
+
+    import time as _time
+
+    for idx, hs_p, ms_p, out_p, base_row in sequential_items:
+        print(f"  [verbose] {base_row['tile_name']}")
+        kw = {**cnmf_kwargs, "verbose": True}
+        tic = _time.time()
+        try:
+            result = cnmf_fuse_tile(hs_p, ms_p, out_p, **kw)
+        except Exception as e:
+            base_row["status"] = f"ERROR: {e}"
+            results_rows[idx] = base_row
+            continue
+        elapsed = _time.time() - tic
+        _merge_result(base_row, result, elapsed)
+        results_rows[idx] = base_row
+
+    # ── Parallel execution ──
+    if parallel_items:
+        # Build args list for workers
+        args_list = [
+            (hs_p, ms_p, out_p, cnmf_kwargs)
+            for _, hs_p, ms_p, out_p, _ in parallel_items
+        ]
+
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            futures = {
+                executor.submit(_worker_fuse_tile, args): i
+                for i, args in enumerate(args_list)
+            }
+
+            with tqdm(total=len(futures), desc="CNMF fusion") as pbar:
+                for future in as_completed(futures):
+                    fi = futures[future]
+                    idx, _, _, _, base_row = parallel_items[fi]
+                    try:
+                        worker_result = future.result()
+                    except Exception as e:
+                        base_row["status"] = f"ERROR: {e}"
+                        results_rows[idx] = base_row
+                        pbar.update(1)
+                        continue
+
+                    _merge_worker_result(base_row, worker_result)
+                    results_rows[idx] = base_row
+                    pbar.update(1)
+
+    # Filter out None entries (shouldn't happen, but be safe)
+    return [r for r in results_rows if r is not None]
+
+
+def _merge_result(base_row: dict, result: dict, elapsed: float) -> None:
+    """Merge cnmf_fuse_tile result into a base_row dict (in-place)."""
+    base_row["status"] = result["status"]
+    base_row["r2_cnmf_mean"] = result["r2_mean"]
+    base_row["time_s"] = elapsed
+    base_row["out_path"] = result.get("out_path")
+    info = result.get("info", {})
+    base_row["cnmf_M"] = info.get("M")
+    base_row["cnmf_rmse_h"] = info.get("rmse_h")
+    base_row["cnmf_rmse_m"] = info.get("rmse_m")
+    for bi, v in enumerate(result.get("r2_per_band", [])):
+        base_row[f"r2_cnmf_band_{bi:02d}"] = v
+
+
+def _merge_worker_result(base_row: dict, worker_result: dict) -> None:
+    """Merge worker result dict into a base_row dict (in-place)."""
+    base_row["status"] = worker_result["status"]
+    base_row["r2_cnmf_mean"] = worker_result["r2_mean"]
+    base_row["time_s"] = worker_result["time_s"]
+    base_row["out_path"] = worker_result.get("out_path")
+    info = worker_result.get("info", {})
+    base_row["cnmf_M"] = info.get("M")
+    base_row["cnmf_rmse_h"] = info.get("rmse_h")
+    base_row["cnmf_rmse_m"] = info.get("rmse_m")
+    for bi, v in enumerate(worker_result.get("r2_per_band", [])):
+        base_row[f"r2_cnmf_band_{bi:02d}"] = v
