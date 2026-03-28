@@ -507,188 +507,132 @@ def _nmf_ite_hs_joint(
 
 if _HAS_JAX:
 
+    # ── fori_loop kernels: minimal carry, maximum GPU throughput ──
+    #
+    # No convergence check inside the loop — on GPU, running all iterations
+    # of just the MU step is faster than carrying prev-arrays + jnp.where
+    # copies for early-exit logic.  Cost is computed once after the loop.
+
     @_partial(jax.jit, static_argnames=("n_bands_orig", "max_iter"))
-    def _jax_nmf_update_H(W, H, D, n_bands_orig, max_iter, threshold, eps):
-        """JAX JIT-compiled H-only NMF update (W fixed)."""
-        WtD = W.T @ D
-        WtW = W.T @ W
+    def _jax_nmf_update_H(W, H, D, n_bands_orig, max_iter, eps):
+        """JAX fori_loop H-only NMF update (W fixed)."""
+        WtD = W.T @ D          # (M, N) — constant
+        WtW = W.T @ W          # (M, M) — constant
+
+        def _body(_, H):
+            return H * WtD / (WtW @ H + eps)
+
+        H = jax.lax.fori_loop(0, max_iter, _body, H)
+
+        # Cost once at end (fast formula)
         W_band = W[:n_bands_orig, :]
-        WbandtD = W_band.T @ D[:n_bands_orig, :]
-        WbandtWband = W_band.T @ W_band
-        D_sqnorm = jnp.sum(D[:n_bands_orig, :] ** 2)
-
-        def _body(carry):
-            H, H_prev, cost_prev, i, done = carry
-            denom = WtW @ H + eps
-            H_new = H * WtD / denom
-            HHt = H_new @ H_new.T
-            cross = jnp.sum(WbandtD * H_new)
-            gram = jnp.sum(WbandtWband * HHt)
-            cost_new = D_sqnorm - 2.0 * cross + gram
-            converged = (i > 0) & (cost_prev > 0) & (
-                (cost_prev - cost_new) / (cost_new + eps) < threshold
-            )
-            # If converged → revert to H_prev / cost_prev
-            H_out = jnp.where(converged, H_prev, H_new)
-            cost_out = jnp.where(converged, cost_prev, cost_new)
-            done_out = done | converged
-            return (H_out, H_new, cost_out, i + 1, done_out)
-
-        def _cond(carry):
-            _, _, _, i, done = carry
-            return (i < max_iter) & ~done
-
-        init = (H, H, jnp.float64(0.0), jnp.int32(0), jnp.bool_(False))
-        H_out, _, cost_out, _, _ = jax.lax.while_loop(_cond, _body, init)
-        return H_out, cost_out
-
-    @_partial(jax.jit, static_argnames=("n_bands_orig", "max_iter", "do_update_W"))
-    def _jax_nmf_update_WH(W, H, D, n_bands_orig, max_iter, threshold, eps,
-                            do_update_W):
-        """JAX JIT-compiled joint W+H NMF update."""
-        D_band = D[:n_bands_orig, :]
-        D_sqnorm = jnp.sum(D_band ** 2)
-
-        def _body(carry):
-            W, H, W_prev, H_prev, cost_prev, i, done = carry
-
-            # --- W update (spectral rows only) ---
-            def _do_w(W_H):
-                W_, H_ = W_H
-                HHt = H_ @ H_.T
-                W_n = D_band @ H_.T
-                W_d = W_[:n_bands_orig, :] @ HHt + eps
-                W_new = W_.at[:n_bands_orig, :].set(
-                    W_[:n_bands_orig, :] * W_n / W_d
-                )
-                return W_new
-            def _skip_w(W_H):
-                return W_H[0]
-            W = jax.lax.cond(do_update_W, _do_w, _skip_w, (W, H))
-
-            # --- H update ---
-            WtW = W.T @ W
-            WtD = W.T @ D
-            WtWH = WtW @ H + eps
-            H = H * WtD / WtWH
-
-            # --- Cost (fast formula) ---
-            W_band = W[:n_bands_orig, :]
-            WbandtWband = W_band.T @ W_band
-            WbandtD = W_band.T @ D_band
-            HHt = H @ H.T
-            cross = jnp.sum(WbandtD * H)
-            gram = jnp.sum(WbandtWband * HHt)
-            cost = D_sqnorm - 2.0 * cross + gram
-
-            converged = (cost_prev > 0) & (
-                (cost_prev - cost) / (cost + eps) < threshold
-            )
-            W_out = jnp.where(converged, W_prev, W)
-            H_out = jnp.where(converged, H_prev, H)
-            cost_out = jnp.where(converged, cost_prev, cost)
-            done_out = done | converged
-            return (W_out, H_out, W, H, cost_out, i + 1, done_out)
-
-        def _cond(carry):
-            _, _, _, _, _, i, done = carry
-            return (i < max_iter) & ~done
-
-        init = (W, H, W, H, jnp.float64(0.0), jnp.int32(0), jnp.bool_(False))
-        W_out, H_out, _, _, cost_out, _, _ = jax.lax.while_loop(_cond, _body, init)
-        return W_out, H_out, cost_out
-
-    @_partial(jax.jit, static_argnames=("n_bands_orig", "max_iter"))
-    def _jax_nmf_update_W_fixed_H(W, H, D, n_bands_orig, max_iter, threshold, eps):
-        """JAX JIT-compiled W-only NMF update (H fixed)."""
         D_band = D[:n_bands_orig, :]
         HHt = H @ H.T
-        DHt = D_band @ H.T
-        D_sqnorm = jnp.sum(D_band ** 2)
+        cost = (jnp.sum(D_band ** 2)
+                - 2.0 * jnp.sum((W_band.T @ D_band) * H)
+                + jnp.sum((W_band.T @ W_band) * HHt))
+        return H, cost
 
-        def _body(carry):
-            W, W_prev, cost_prev, i, done = carry
-            W_d = W[:n_bands_orig, :] @ HHt + eps
-            W_new = W.at[:n_bands_orig, :].set(
-                W[:n_bands_orig, :] * DHt / W_d
-            )
-            # Fast cost
-            W_band = W_new[:n_bands_orig, :]
-            WbandtWband = W_band.T @ W_band
-            WbandtD = W_band.T @ D_band
-            cross = jnp.sum(WbandtD * H)
-            gram = jnp.sum(WbandtWband * HHt)
-            cost = D_sqnorm - 2.0 * cross + gram
-
-            converged = (i > 0) & (cost_prev > 0) & (
-                (cost_prev - cost) / (cost + eps) < threshold
-            )
-            W_out = jnp.where(converged, W_prev, W_new)
-            cost_out = jnp.where(converged, cost_prev, cost)
-            done_out = done | converged
-            return (W_out, W_new, cost_out, i + 1, done_out)
-
-        def _cond(carry):
-            _, _, _, i, done = carry
-            return (i < max_iter) & ~done
-
-        init = (W, W, jnp.float64(0.0), jnp.int32(0), jnp.bool_(False))
-        W_out, _, cost_out, _, _ = jax.lax.while_loop(_cond, _body, init)
-        return W_out, cost_out
-
-    @_partial(jax.jit, static_argnames=("n_bands_orig", "max_iter", "do_update_H"))
-    def _jax_nmf_ite_hs_joint(W, H, D, n_bands_orig, max_iter, threshold, eps,
-                               do_update_H):
-        """JAX JIT-compiled HS joint update (CNMF_ite i>1 branch)."""
+    @_partial(jax.jit, static_argnames=("n_bands_orig", "max_iter",
+                                         "do_update_W"))
+    def _jax_nmf_update_WH(W, H, D, n_bands_orig, max_iter, eps,
+                            do_update_W):
+        """JAX fori_loop joint W+H NMF update."""
         D_band = D[:n_bands_orig, :]
-        D_sqnorm = jnp.sum(D_band ** 2)
 
-        def _body(carry):
-            W, H, W_prev, H_prev, cost_prev, i, done = carry
-
-            # --- H update (conditional) ---
-            def _do_h(W_H):
-                W_, H_ = W_H
-                WtD = W_.T @ D
-                WtWH = W_.T @ W_ @ H_ + eps
-                return H_ * WtD / WtWH
-            def _skip_h(W_H):
-                return W_H[1]
-            H = jax.lax.cond(do_update_H, _do_h, _skip_h, (W, H))
-
-            # --- W update (spectral rows only) ---
+        def _body_with_W(_, WH):
+            W, H = WH
+            # W update (spectral rows only)
             HHt = H @ H.T
             W_n = D_band @ H.T
             W_d = W[:n_bands_orig, :] @ HHt + eps
             W = W.at[:n_bands_orig, :].set(
-                W[:n_bands_orig, :] * W_n / W_d
-            )
+                W[:n_bands_orig, :] * W_n / W_d)
+            # H update
+            WtW = W.T @ W
+            WtD = W.T @ D
+            H = H * WtD / (WtW @ H + eps)
+            return (W, H)
 
-            # --- Cost ---
-            W_band = W[:n_bands_orig, :]
-            WbandtWband = W_band.T @ W_band
-            WbandtD = W_band.T @ D_band
-            HHt_c = H @ H.T
-            cross = jnp.sum(WbandtD * H)
-            gram = jnp.sum(WbandtWband * HHt_c)
-            cost = D_sqnorm - 2.0 * cross + gram
+        def _body_no_W(_, WH):
+            W, H = WH
+            WtW = W.T @ W
+            WtD = W.T @ D
+            H = H * WtD / (WtW @ H + eps)
+            return (W, H)
 
-            converged = (cost_prev > 0) & (
-                (cost_prev - cost) / (cost + eps) < threshold
-            )
-            W_out = jnp.where(converged, W_prev, W)
-            H_out = jnp.where(converged, H_prev, H)
-            cost_out = jnp.where(converged, cost_prev, cost)
-            done_out = done | converged
-            return (W_out, H_out, W, H, cost_out, i + 1, done_out)
+        body_fn = _body_with_W if do_update_W else _body_no_W
+        W, H = jax.lax.fori_loop(0, max_iter, body_fn, (W, H))
 
-        def _cond(carry):
-            _, _, _, _, _, i, done = carry
-            return (i < max_iter) & ~done
+        # Cost once at end
+        W_band = W[:n_bands_orig, :]
+        HHt = H @ H.T
+        cost = (jnp.sum(D_band ** 2)
+                - 2.0 * jnp.sum((W_band.T @ D_band) * H)
+                + jnp.sum((W_band.T @ W_band) * HHt))
+        return W, H, cost
 
-        init = (W, H, W, H, jnp.float64(0.0), jnp.int32(0), jnp.bool_(False))
-        W_out, H_out, _, _, cost_out, _, _ = jax.lax.while_loop(_cond, _body, init)
-        return W_out, H_out, cost_out
+    @_partial(jax.jit, static_argnames=("n_bands_orig", "max_iter"))
+    def _jax_nmf_update_W_fixed_H(W, H, D, n_bands_orig, max_iter, eps):
+        """JAX fori_loop W-only NMF update (H fixed)."""
+        D_band = D[:n_bands_orig, :]
+        HHt = H @ H.T          # constant
+        DHt = D_band @ H.T     # constant
+
+        def _body(_, W):
+            W_d = W[:n_bands_orig, :] @ HHt + eps
+            return W.at[:n_bands_orig, :].set(
+                W[:n_bands_orig, :] * DHt / W_d)
+
+        W = jax.lax.fori_loop(0, max_iter, _body, W)
+
+        # Cost once at end
+        W_band = W[:n_bands_orig, :]
+        cost = (jnp.sum(D_band ** 2)
+                - 2.0 * jnp.sum((W_band.T @ D_band) * H)
+                + jnp.sum((W_band.T @ W_band) * HHt))
+        return W, cost
+
+    @_partial(jax.jit, static_argnames=("n_bands_orig", "max_iter",
+                                         "do_update_H"))
+    def _jax_nmf_ite_hs_joint(W, H, D, n_bands_orig, max_iter, eps,
+                               do_update_H):
+        """JAX fori_loop HS joint update (CNMF_ite i>1 branch)."""
+        D_band = D[:n_bands_orig, :]
+
+        def _body_with_H(_, WH):
+            W, H = WH
+            # H update
+            WtD = W.T @ D
+            WtWH = W.T @ W @ H + eps
+            H = H * WtD / WtWH
+            # W update (spectral rows only)
+            HHt = H @ H.T
+            W_n = D_band @ H.T
+            W_d = W[:n_bands_orig, :] @ HHt + eps
+            W = W.at[:n_bands_orig, :].set(
+                W[:n_bands_orig, :] * W_n / W_d)
+            return (W, H)
+
+        def _body_no_H(_, WH):
+            W, H = WH
+            HHt = H @ H.T
+            W_n = D_band @ H.T
+            W_d = W[:n_bands_orig, :] @ HHt + eps
+            W = W.at[:n_bands_orig, :].set(
+                W[:n_bands_orig, :] * W_n / W_d)
+            return (W, H)
+
+        body_fn = _body_with_H if do_update_H else _body_no_H
+        W, H = jax.lax.fori_loop(0, max_iter, body_fn, (W, H))
+
+        # Cost once at end
+        W_band = W[:n_bands_orig, :]
+        HHt = H @ H.T
+        cost = (jnp.sum(D_band ** 2)
+                - 2.0 * jnp.sum((W_band.T @ D_band) * H)
+                + jnp.sum((W_band.T @ W_band) * HHt))
+        return W, H, cost
 
     # ── Thin wrappers: NumPy ↔ JAX array conversion ──
 
@@ -697,7 +641,7 @@ if _HAS_JAX:
         """Convert np→jax, call JIT kernel, convert back."""
         H_j, cost_j = _jax_nmf_update_H(
             jnp.asarray(W), jnp.asarray(H), jnp.asarray(D),
-            n_bands_orig, max_iter, threshold, jnp.float64(eps),
+            n_bands_orig, max_iter, jnp.float64(eps),
         )
         return np.asarray(H_j), float(cost_j)
 
@@ -708,8 +652,7 @@ if _HAS_JAX:
         do_update_W = update_W and n_spectral_bands > min_ms_bands
         W_j, H_j, cost_j = _jax_nmf_update_WH(
             jnp.asarray(W), jnp.asarray(H), jnp.asarray(D),
-            n_bands_orig, max_iter, jnp.float64(threshold),
-            jnp.float64(eps), do_update_W,
+            n_bands_orig, max_iter, jnp.float64(eps), do_update_W,
         )
         return np.asarray(W_j), np.asarray(H_j), float(cost_j)
 
@@ -718,8 +661,7 @@ if _HAS_JAX:
         """Convert np→jax, call JIT kernel, convert back."""
         W_j, cost_j = _jax_nmf_update_W_fixed_H(
             jnp.asarray(W), jnp.asarray(H), jnp.asarray(D),
-            n_bands_orig, max_iter, jnp.float64(threshold),
-            jnp.float64(eps),
+            n_bands_orig, max_iter, jnp.float64(eps),
         )
         return np.asarray(W_j), float(cost_j)
 
@@ -730,8 +672,7 @@ if _HAS_JAX:
         do_update_H = multi_band > min_ms_bands
         W_j, H_j, cost_j = _jax_nmf_ite_hs_joint(
             jnp.asarray(W), jnp.asarray(H), jnp.asarray(D),
-            n_bands_orig, max_iter, jnp.float64(threshold),
-            jnp.float64(eps), do_update_H,
+            n_bands_orig, max_iter, jnp.float64(eps), do_update_H,
         )
         return np.asarray(W_j), np.asarray(H_j), float(cost_j)
 
