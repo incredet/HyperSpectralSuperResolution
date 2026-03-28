@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import os as _os
 import warnings
 from pathlib import Path
 from typing import Optional
+
+# Limit BLAS internal threads BEFORE numpy import.  With ThreadPoolExecutor
+# we get parallelism at the Python level (NumPy releases the GIL), so each
+# thread should use a single BLAS thread to avoid oversubscription.
+for _k in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+    _os.environ.setdefault(_k, "1")
 
 import numpy as np
 from scipy.ndimage import gaussian_filter
@@ -1143,7 +1150,7 @@ def cnmf_fuse_tiles_parallel(
         status, r2_cnmf_mean, time_s, cnmf_M, cnmf_rmse_h, cnmf_rmse_m,
         r2_cnmf_band_*.
     """
-    from concurrent.futures import ProcessPoolExecutor, as_completed
+    from concurrent.futures import ThreadPoolExecutor
     from threading import Thread
     from queue import Queue
     import time as _time
@@ -1242,25 +1249,29 @@ def cnmf_fuse_tiles_parallel(
     #  Streaming pipeline: reader thread → worker pool → main-thread writer
     # ═══════════════════════════════════════════════════════════════════
 
-    _SENTINEL = None  # marks end of reader stream
+    _SENTINEL = "DONE"      # marks end of reader stream
+    _READ_ERROR = "READ_ERR" # marks a failed read (error item on queue)
     read_queue = Queue(maxsize=prefetch)
     n_read_errors = 0
     n_write_errors = 0
+    reader_error = [None]  # mutable container for fatal reader exceptions
 
     # ── Reader thread: sequential Drive reads → bounded queue ──
     def _reader():
-        nonlocal n_read_errors
-        for wi, (idx, hs_p, ms_p, out_p, base_row) in enumerate(pipeline_items):
-            try:
-                hs_hwb, ms_hwb, write_meta = _read_tile_arrays(
-                    hs_p, ms_p, scale_factor, nodata_val)
-                read_queue.put((wi, idx, out_p, base_row,
-                                hs_hwb, ms_hwb, write_meta))
-            except Exception as e:
-                base_row["status"] = f"ERROR_READ: {e}"
-                results_rows[idx] = base_row
-                n_read_errors += 1
-        read_queue.put(_SENTINEL)
+        try:
+            for wi, (idx, hs_p, ms_p, out_p, base_row) in enumerate(pipeline_items):
+                try:
+                    hs_hwb, ms_hwb, write_meta = _read_tile_arrays(
+                        hs_p, ms_p, scale_factor, nodata_val)
+                    read_queue.put((wi, idx, out_p, base_row,
+                                    hs_hwb, ms_hwb, write_meta))
+                except Exception as e:
+                    # Put error marker on queue so main thread handles it
+                    read_queue.put((_READ_ERROR, idx, base_row, str(e)))
+        except Exception as e:
+            reader_error[0] = e
+        finally:
+            read_queue.put(_SENTINEL)
 
     reader_thread = Thread(target=_reader, daemon=True)
     reader_thread.start()
@@ -1269,7 +1280,7 @@ def cnmf_fuse_tiles_parallel(
     pbar = tqdm(total=len(pipeline_items), desc="CNMF fusion")
     pending = {}  # future → (idx, out_path, write_meta, base_row)
 
-    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
         reader_done = False
 
         while not reader_done or pending:
@@ -1282,6 +1293,14 @@ def cnmf_fuse_tiles_parallel(
                 if item is _SENTINEL:
                     reader_done = True
                     break
+                # Handle read-error markers (all state in main thread)
+                if isinstance(item, tuple) and len(item) == 4 and item[0] is _READ_ERROR:
+                    _, idx, base_row, err_msg = item
+                    base_row["status"] = f"ERROR_READ: {err_msg}"
+                    results_rows[idx] = base_row
+                    n_read_errors += 1
+                    pbar.update(1)
+                    continue
                 wi, idx, out_p, base_row, hs_hwb, ms_hwb, write_meta = item
                 fut = executor.submit(
                     _worker_fuse_arrays,
@@ -1327,6 +1346,10 @@ def cnmf_fuse_tiles_parallel(
 
     reader_thread.join()
     pbar.close()
+
+    # Report fatal reader errors (e.g. unexpected exception outside per-tile try)
+    if reader_error[0] is not None:
+        print(f"WARNING: reader thread had a fatal error: {reader_error[0]}")
 
     n_final_ok = sum(1 for r in results_rows
                      if r and r.get("status") == "OK")
