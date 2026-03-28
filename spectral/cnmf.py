@@ -27,7 +27,9 @@ try:
     import jax
     import jax.numpy as jnp
     from functools import partial as _partial
-    jax.config.update("jax_enable_x64", True)
+    # fp32 on GPU — A100 has 16× more fp32 than fp64 throughput.
+    # NMF on reflectance [0,1] needs ~4 decimal digits; fp32 gives 7.
+    # We cast float64→float32 on entry, float32→float64 on exit.
     _HAS_JAX = True
     # Detect GPU
     try:
@@ -176,7 +178,7 @@ def _estimate_srf(
     hsi: np.ndarray,
     msi: np.ndarray,
     scale_factor: int,
-    eps: float = 1e-16,
+    eps: float = 1e-7,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Estimate the spectral response function (SRF) via constrained LS
@@ -217,10 +219,10 @@ def _estimate_srf(
             error[k] = 0.0
 
     # Extract offsets (last column) and truncate R
-    offsets = R_full[:, -1]
-    R = R_full[:, :-1]  # (B_ms, B_hs)
+    offsets = R_full[:, -1].astype(np.float32)
+    R = R_full[:, :-1].astype(np.float32)  # (B_ms, B_hs)
 
-    return R, offsets, error
+    return R, offsets, error.astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +237,7 @@ def _nmf_update_H(
     n_bands_orig: int,
     max_iter: int,
     threshold: float,
-    eps: float = 1e-16,
+    eps: float = 1e-7,
 ) -> tuple[np.ndarray, float]:
     """
     NMF update for H with W fixed (init phase, i==1 branch in MATLAB).
@@ -308,7 +310,7 @@ def _nmf_update_WH(
     n_bands_orig: int,
     max_iter: int,
     threshold: float,
-    eps: float = 1e-16,
+    eps: float = 1e-7,
     update_W: bool = True,
     min_ms_bands: int = 3,
     n_spectral_bands: int = 0,
@@ -396,7 +398,7 @@ def _nmf_update_W_fixed_H(
     n_bands_orig: int,
     max_iter: int,
     threshold: float,
-    eps: float = 1e-16,
+    eps: float = 1e-7,
     cost_stride: int = 5,
 ) -> tuple[np.ndarray, float]:
     """
@@ -449,7 +451,7 @@ def _nmf_ite_hs_joint(
     n_bands_orig: int,
     max_iter: int,
     threshold: float,
-    eps: float = 1e-16,
+    eps: float = 1e-7,
     min_ms_bands: int = 3,
     multi_band: int = 0,
     cost_stride: int = 5,
@@ -634,46 +636,42 @@ if _HAS_JAX:
                 + jnp.sum((W_band.T @ W_band) * HHt))
         return W, H, cost
 
-    # ── Thin wrappers: NumPy ↔ JAX array conversion ──
+    # ── Thin wrappers: NumPy ↔ JAX array transfer ──
+    #
+    # Pipeline is now fully float32 — no dtype casts needed.
+
+    _eps32 = jnp.float32(1e-7)   # fp32-safe eps (1e-16 underflows)
 
     def _jax_wrap_update_H(W, H, D, *, n_bands_orig, max_iter, threshold,
-                           eps=1e-16):
-        """Convert np→jax, call JIT kernel, convert back."""
+                           eps=1e-7):
         H_j, cost_j = _jax_nmf_update_H(
             jnp.asarray(W), jnp.asarray(H), jnp.asarray(D),
-            n_bands_orig, max_iter, jnp.float64(eps),
-        )
+            n_bands_orig, max_iter, _eps32)
         return np.asarray(H_j), float(cost_j)
 
     def _jax_wrap_update_WH(W, H, D, *, n_bands_orig, max_iter, threshold,
-                            eps=1e-16, update_W=True, min_ms_bands=3,
+                            eps=1e-7, update_W=True, min_ms_bands=3,
                             n_spectral_bands=0, cost_stride=5):
-        """Convert np→jax, call JIT kernel, convert back."""
         do_update_W = update_W and n_spectral_bands > min_ms_bands
         W_j, H_j, cost_j = _jax_nmf_update_WH(
             jnp.asarray(W), jnp.asarray(H), jnp.asarray(D),
-            n_bands_orig, max_iter, jnp.float64(eps), do_update_W,
-        )
+            n_bands_orig, max_iter, _eps32, do_update_W)
         return np.asarray(W_j), np.asarray(H_j), float(cost_j)
 
     def _jax_wrap_update_W_fixed_H(W, H, D, *, n_bands_orig, max_iter,
-                                    threshold, eps=1e-16, cost_stride=5):
-        """Convert np→jax, call JIT kernel, convert back."""
+                                    threshold, eps=1e-7, cost_stride=5):
         W_j, cost_j = _jax_nmf_update_W_fixed_H(
             jnp.asarray(W), jnp.asarray(H), jnp.asarray(D),
-            n_bands_orig, max_iter, jnp.float64(eps),
-        )
+            n_bands_orig, max_iter, _eps32)
         return np.asarray(W_j), float(cost_j)
 
     def _jax_wrap_ite_hs_joint(W, H, D, *, n_bands_orig, max_iter, threshold,
-                                eps=1e-16, min_ms_bands=3, multi_band=0,
+                                eps=1e-7, min_ms_bands=3, multi_band=0,
                                 cost_stride=5):
-        """Convert np→jax, call JIT kernel, convert back."""
         do_update_H = multi_band > min_ms_bands
         W_j, H_j, cost_j = _jax_nmf_ite_hs_joint(
             jnp.asarray(W), jnp.asarray(H), jnp.asarray(D),
-            n_bands_orig, max_iter, jnp.float64(eps), do_update_H,
-        )
+            n_bands_orig, max_iter, _eps32, do_update_H)
         return np.asarray(W_j), np.asarray(H_j), float(cost_j)
 
 
@@ -688,10 +686,10 @@ def cnmf_fuse(
     max_endmembers: int = 20,
     inner_iters: int = 200,
     outer_iters: int = 1,
-    th_h: float = 1e-8,
-    th_m: float = 1e-8,
+    th_h: float = 1e-5,
+    th_m: float = 1e-5,
     th_outer: float = 1e-2,
-    eps: float = 1e-16,
+    eps: float = 1e-7,
     verbose: bool = False,
     seed: int = 0,
     use_jax: str = "auto",
@@ -781,8 +779,8 @@ def cnmf_fuse(
     ms = np.clip(ms, 0.0, None)
 
     # Reshape to 2D: (bands, pixels)
-    HSI_2d = hs.reshape(-1, bands_hs).T.astype(np.float64)  # (bands_hs, N_lr)
-    MSI_2d = ms.reshape(-1, bands_ms).T.astype(np.float64)  # (bands_ms, N_hr)
+    HSI_2d = hs.reshape(-1, bands_hs).T.astype(np.float32)  # (bands_hs, N_lr)
+    MSI_2d = ms.reshape(-1, bands_ms).T.astype(np.float32)  # (bands_ms, N_hr)
 
     eff_rank = int(np.linalg.matrix_rank(HSI_2d))
 
@@ -790,7 +788,7 @@ def cnmf_fuse(
     if eff_rank < 3:
         if verbose:
             print(f"  eff_rank={eff_rank} — tile is degenerate, returning MS-guided fallback")
-        fused = np.zeros((rows_hr, cols_hr, bands_hs), dtype=np.float64)
+        fused = np.zeros((rows_hr, cols_hr, bands_hs), dtype=np.float32)
         info = {"M": 0, "rmse_h": np.nan, "rmse_m": np.nan,
                 "srf_error": srf_error.tolist(), "n_outer_iters": 0,
                 "status": "DEGENERATE_HS"}
@@ -809,7 +807,7 @@ def cnmf_fuse(
     # Initialize H_hyper: uniform
     N_lr = rows_lr * cols_lr
     N_hr = rows_hr * cols_hr
-    H_hyper = np.ones((M, N_lr), dtype=np.float64) / M
+    H_hyper = np.ones((M, N_lr), dtype=np.float32) / M
 
     # Sum-to-one constraint parameter
     delta = 2.0 * (np.mean(MSI_2d) / 0.7455) ** 0.5 / bands_ms ** 3
@@ -855,7 +853,7 @@ def cnmf_fuse(
     multi = np.vstack([MSI_2d, delta * np.ones((1, N_hr))]) # (bands_ms+1, N_hr)
 
     # ── Initialize H_multi by interpolation ──
-    H_multi = np.ones((M, N_hr), dtype=np.float64) / M
+    H_multi = np.ones((M, N_hr), dtype=np.float32) / M
     for i in range(M):
         h_lr = H_hyper[i, :].reshape(rows_lr, cols_lr)
         if _HAS_CV2:
@@ -1027,7 +1025,7 @@ def _compute_r2(actual: np.ndarray, predicted: np.ndarray) -> np.ndarray:
     """Per-column R² between actual and predicted. Shape: (B,)."""
     ss_res = np.sum((actual - predicted) ** 2, axis=0)
     ss_tot = np.sum((actual - actual.mean(axis=0, keepdims=True)) ** 2, axis=0)
-    r2 = np.ones(actual.shape[1], dtype=np.float64)
+    r2 = np.ones(actual.shape[1], dtype=np.float32)
     nonconstant = ss_tot > 0
     r2[nonconstant] = 1.0 - ss_res[nonconstant] / ss_tot[nonconstant]
     return r2
@@ -1073,11 +1071,11 @@ def cnmf_fuse_tile(
 
     # Read tiles
     with rasterio.open(hs_path) as ds:
-        hs_raw = ds.read().astype(np.float64)  # (B_hs, H_lr, W_lr)
+        hs_raw = ds.read().astype(np.float32)  # (B_hs, H_lr, W_lr)
         hs_profile = ds.profile.copy()
 
     with rasterio.open(ms_path) as ds:
-        ms_raw = ds.read().astype(np.float64)  # (B_ms, H_hr, W_hr)
+        ms_raw = ds.read().astype(np.float32)  # (B_ms, H_hr, W_hr)
         ms_profile = ds.profile.copy()
 
     # Mask nodata, convert to reflectance
