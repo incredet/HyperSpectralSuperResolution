@@ -218,6 +218,7 @@ def _nmf_update_H(
     max_iter: int,
     threshold: float,
     eps: float = 1e-7,
+    cost_stride: int = 5,
 ) -> tuple[np.ndarray, float]:
     """
     NMF update for H with W fixed (init phase, i==1 branch in MATLAB).
@@ -225,12 +226,12 @@ def _nmf_update_H(
     W includes the sum-to-one row.  Cost is computed on the first
     ``n_bands_orig`` rows only (excluding the constraint row).
 
-    Uses the algebraic identity (matching MATLAB CNMF_init.m fast path):
+    Uses the algebraic identity:
 
         ‖D − WH‖² = ‖D‖² − 2·sum(WᵀD ⊙ H) + sum(WᵀW ⊙ HHᵀ)
 
-    This avoids materialising the (bands, N_pixels) residual matrix each
-    iteration — critical for the MS path where N = 518 400.
+    Cost + convergence check runs every ``cost_stride`` iterations to
+    reduce overhead on the MS path (H is M × 360 000).
 
     Parameters
     ----------
@@ -241,6 +242,7 @@ def _nmf_update_H(
     max_iter : maximum iterations
     threshold : convergence threshold on relative cost change
     eps : small constant to avoid division by zero
+    cost_stride : check convergence every N iterations (default 5)
 
     Returns
     -------
@@ -258,22 +260,25 @@ def _nmf_update_H(
     D_sqnorm = float(np.sum(D[:n_bands_orig, :] ** 2))  # scalar — once
 
     cost_prev = 0.0
+    H_saved = H.copy()
+
     for q in range(max_iter):
-        H_old = H.copy()
         denom = WtW @ H + eps
         H = H * WtD / denom
 
-        # Fast cost: avoids (bands, N) residual allocation
-        HHt = H @ H.T                                          # (M, M)
-        cross = float(np.dot(WbandtD.ravel(), H.ravel()))       # scalar
-        gram = float(np.sum(WbandtWband * HHt))                 # scalar
-        cost = D_sqnorm - 2.0 * cross + gram
+        # Convergence check only every cost_stride iterations
+        if (q + 1) % cost_stride == 0 or q == max_iter - 1:
+            HHt = H @ H.T                                          # (M, M)
+            cross = float(np.dot(WbandtD.ravel(), H.ravel()))       # scalar
+            gram = float(np.sum(WbandtWband * HHt))                 # scalar
+            cost = D_sqnorm - 2.0 * cross + gram
 
-        if q > 0 and cost_prev > 0 and (cost_prev - cost) / (cost + eps) < threshold:
-            H = H_old
-            cost = cost_prev
-            break
-        cost_prev = cost
+            if cost_prev > 0 and (cost_prev - cost) / (cost + eps) < threshold:
+                H = H_saved.copy()
+                cost = cost_prev
+                break
+            cost_prev = cost
+            H_saved[:] = H
 
     return H, cost
 
@@ -1057,131 +1062,139 @@ def _write_fused_tile(
                 dst.update_tags(i + 1, wavelength=f"{w:.4f}")
 
 
+def _process_tile(hs_path, ms_path, out_path, row,
+                   scale_factor, nodata_val, cnmf_kwargs):
+    """Read one tile → run CNMF → write result.  Populates *row* in-place."""
+    import time as _t
+    tic = _t.time()
+    try:
+        hs_hwb, ms_hwb, wmeta = _read_tile_arrays(
+            hs_path, ms_path, scale_factor, nodata_val)
+        fused_hwb, info = cnmf_fuse(hs_hwb, ms_hwb, **cnmf_kwargs)
+
+        if info.get("status") == "DEGENERATE_HS":
+            row["status"] = "SKIP_DEGENERATE"
+            row["time_s"] = _t.time() - tic
+            row["cnmf_M"] = info.get("M")
+            return row
+
+        w = ms_hwb.shape[0] // hs_hwb.shape[0]
+        fused_lr = _gaussian_downsample(fused_hwb, w)
+        r2 = _compute_r2(
+            hs_hwb.reshape(-1, hs_hwb.shape[2]),
+            fused_lr.reshape(-1, hs_hwb.shape[2]))
+        _write_fused_tile(fused_hwb, out_path, wmeta, scale_factor, nodata_val)
+        _fill_result_row(row, "OK", r2, info, _t.time() - tic, out_path)
+    except Exception as e:
+        row["status"] = f"ERROR: {e}"
+        row["time_s"] = _t.time() - tic
+    return row
+
+
+def _process_tile_mp(args):
+    """Multiprocessing wrapper — unpacks tuple for Pool.imap."""
+    return _process_tile(*args)
+
+
 def cnmf_fuse_tiles(
     tile_list: list[dict],
     *,
+    n_workers: int = 1,
     scale_factor: float = 10_000.0,
     nodata_val: int = 65535,
     max_endmembers: int = 20,
     inner_iters: int = 200,
     outer_iters: int = 1,
-    verbose_first: int = 0,
+    verbose_first: int = 2,
     skip_existing: bool = True,
 ) -> list[dict]:
     """
-    Process CNMF fusion for a list of tiles sequentially.
+    Process CNMF fusion for a list of tiles.
 
-    Simple loop: read → CNMF → write → next.  Relies on the NumPy-level
-    optimisations (fast cost formula, cost_stride, no M_pad) for speed.
-
-    Parameters
-    ----------
-    tile_list : list[dict]
-        Each dict must have keys: ``hs_path``, ``ms_path``, ``pair_dir``,
-        ``tile_name``.  Extra keys are passed through to the output rows.
-    scale_factor, nodata_val, max_endmembers, inner_iters, outer_iters
-        Forwarded to ``cnmf_fuse`` / tile I/O.
-    verbose_first : int
-        Print verbose CNMF diagnostics for the first N tiles.
-    skip_existing : bool
-        Skip tiles whose output file already exists (default True).
-
-    Returns
-    -------
-    list[dict]
-        One row per tile with keys: tile_name, aoi_slug, pair_id, tile_idx,
-        status, r2_cnmf_mean, time_s, cnmf_M, cnmf_rmse_h, cnmf_rmse_m,
-        r2_cnmf_band_*.
+    n_workers=1 → sequential.  n_workers>1 → multiprocessing Pool.
+    Each worker reads its own tile, runs CNMF, writes the result.
+    Only file paths and a small result dict cross process boundaries.
     """
     import time as _time
-
     try:
         from tqdm import tqdm
     except ImportError:
         tqdm = None
 
-    cnmf_kwargs = dict(
-        max_endmembers=max_endmembers,
-        inner_iters=inner_iters,
-        outer_iters=outer_iters,
-    )
+    cnmf_kwargs = dict(max_endmembers=max_endmembers,
+                       inner_iters=inner_iters,
+                       outer_iters=outer_iters, verbose=False)
 
-    results = []
-    n_existed = 0
-    n_missing = 0
-    n_errors = 0
+    # ── Build work list, skip existing / missing ──
+    work = []
+    results = [None] * len(tile_list)
 
-    items = tqdm(tile_list, desc="CNMF fusion") if tqdm else tile_list
-
-    for i, tile in enumerate(items):
+    for i, tile in enumerate(tile_list):
         hs_path = Path(tile["hs_path"])
         ms_path = Path(tile["ms_path"])
         pair_dir = Path(tile["pair_dir"])
         tile_name = tile["tile_name"]
         out_path = pair_dir / "CNMF" / f"{tile_name}_cnmf.tif"
 
-        row = {
-            "tile_name": tile_name,
-            "aoi_slug": tile.get("aoi_slug", ""),
-            "pair_id": tile.get("pair_id", ""),
-            "tile_idx": tile.get("tile_idx", -1),
-            "r2_regression": tile.get("r2_regression"),
-        }
+        row = {"tile_name": tile_name,
+               "aoi_slug": tile.get("aoi_slug", ""),
+               "pair_id": tile.get("pair_id", ""),
+               "tile_idx": tile.get("tile_idx", -1),
+               "r2_regression": tile.get("r2_regression")}
 
         if skip_existing and out_path.exists():
             row["status"] = "EXISTED"
-            n_existed += 1
-            results.append(row)
+            results[i] = row
             continue
-
         if not hs_path.exists() or not ms_path.exists():
             row["status"] = "MISSING_FILES"
-            n_missing += 1
-            results.append(row)
+            results[i] = row
             continue
 
-        tic = _time.time()
-        try:
-            hs_hwb, ms_hwb, write_meta = _read_tile_arrays(
-                str(hs_path), str(ms_path), scale_factor, nodata_val)
+        work.append((i, str(hs_path), str(ms_path), str(out_path), row))
 
-            verbose = (i < verbose_first)
-            fused_hwb, info = cnmf_fuse(hs_hwb, ms_hwb,
-                                         verbose=verbose, **cnmf_kwargs)
+    n_skip = len(tile_list) - len(work)
+    print(f"CNMF: {len(tile_list)} tiles, {n_skip} skipped, "
+          f"{len(work)} to process (n_workers={n_workers})")
+    if not work:
+        return [r for r in results if r is not None]
 
-            if info.get("status") == "DEGENERATE_HS":
-                row["status"] = "SKIP_DEGENERATE"
-                row["time_s"] = _time.time() - tic
-                row["cnmf_M"] = info.get("M")
-                results.append(row)
-                continue
+    # ── Verbose warm-up (first N tiles, sequential with verbose=True) ──
+    verbose_kw = {**cnmf_kwargs, "verbose": True}
+    for j in range(min(verbose_first, len(work))):
+        idx, hs_p, ms_p, out_p, row = work[j]
+        print(f"  [verbose] {row['tile_name']}")
+        results[idx] = _process_tile(hs_p, ms_p, out_p, row,
+                                      scale_factor, nodata_val, verbose_kw)
 
-            # R² self-consistency check
-            w = ms_hwb.shape[0] // hs_hwb.shape[0]
-            fused_lr = _gaussian_downsample(fused_hwb, w)
-            r2 = _compute_r2(
-                hs_hwb.reshape(-1, hs_hwb.shape[2]),
-                fused_lr.reshape(-1, hs_hwb.shape[2]),
-            )
+    remaining = [(hs_p, ms_p, out_p, row, scale_factor, nodata_val, cnmf_kwargs)
+                 for idx, hs_p, ms_p, out_p, row in work[verbose_first:]]
+    if not remaining:
+        return [r for r in results if r is not None]
 
-            _write_fused_tile(fused_hwb, str(out_path), write_meta,
-                              scale_factor, nodata_val)
+    # ── Process tiles ──
+    pbar = tqdm(total=len(remaining), desc="CNMF fusion") if tqdm else None
+    name_to_idx = {row["tile_name"]: idx
+                   for idx, _, _, _, row in work[verbose_first:]}
 
-            elapsed = _time.time() - tic
-            _fill_result_row(row, "OK", r2, info, elapsed, str(out_path))
+    if n_workers <= 1:
+        for args in remaining:
+            row = _process_tile(*args)
+            results[name_to_idx[row["tile_name"]]] = row
+            if pbar: pbar.update(1)
+    else:
+        from multiprocessing import Pool
+        with Pool(n_workers) as pool:
+            for row in pool.imap_unordered(_process_tile_mp, remaining):
+                results[name_to_idx[row["tile_name"]]] = row
+                if pbar: pbar.update(1)
 
-        except Exception as e:
-            row["status"] = f"ERROR: {e}"
-            row["time_s"] = _time.time() - tic
-            n_errors += 1
+    if pbar: pbar.close()
 
-        results.append(row)
-
-    n_ok = sum(1 for r in results if r.get("status") == "OK")
-    print(f"\nDone: {n_ok} OK, {n_existed} existed, "
-          f"{n_missing} missing, {n_errors} errors")
-
-    return results
+    n_ok = sum(1 for r in results if r and r.get("status") == "OK")
+    n_err = sum(1 for r in results if r and r.get("status", "").startswith("ERROR"))
+    print(f"\nDone: {n_ok} OK, {n_err} errors")
+    return [r for r in results if r is not None]
 
 
 def _fill_result_row(base_row, status, r2, info, elapsed, out_path):
