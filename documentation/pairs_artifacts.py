@@ -61,21 +61,26 @@ def load_pairs_sorted(
 
 
 
-def fmt(v: float):
+def _fmt(v: float):
     s = f"{v:.6f}".rstrip("0")
     if s.endswith("."):
         s += "0"
     return s
 
 
+def aoi_slug(lat: float, lon: float) -> str:
+    """Build a filesystem-safe AOI folder name from coordinates."""
+    return f"aoi_lat{_fmt(lat)}_lon{_fmt(lon)}"
+
+
 @dataclass(frozen=True)
 class AoiPaths:
 
     slug: str
-    root: Path                   
-    config_json: Path          
-    pairs_csv: Path             
-    registry_jsonl: Path       
+    root: Path
+    config_json: Path
+    pairs_csv: Path
+    registry_jsonl: Path
 
     @classmethod
     def build(
@@ -84,7 +89,7 @@ class AoiPaths:
         lat: float,
         lon: float,
     ) -> "AoiPaths":
-        slug = f"aoi_lat{_fmt(lat)}_lon{_fmt(lon)}"
+        slug = aoi_slug(lat, lon)
         root = ensure_dir(Path(drive_root) / slug)
         return cls(
             slug=slug,
