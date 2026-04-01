@@ -137,6 +137,41 @@ def plot_r2_per_band(
     return out_path
 
 
+def plot_side_by_side_rgb(
+    s2_path: str | Path,
+    emit_path: str | Path,
+    out_path: str | Path,
+    *,
+    wl_nm: np.ndarray | None = None,
+    title: str = "",
+    gamma: float = 1 / 2.2,
+) -> Path:
+    """Save a side-by-side S2 / EMIT true-colour comparison."""
+    from viz.plots import plot_s2_truecolor_from_stack, show_emit_rgb_from_envi
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    plot_s2_truecolor_from_stack(str(s2_path), ax=ax1)
+
+    emit_p = Path(emit_path)
+    show_emit_rgb_from_envi(
+        str(emit_p.parent),
+        pattern=str(emit_p.name),
+        wavelengths_nm=wl_nm,
+        ax=ax2,
+        gamma=gamma,
+    )
+
+    if title:
+        fig.suptitle(title, fontsize=12, y=1.02)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
 def plot_realignment_summary(
     tile_records: list,
     out_path: str | Path,
