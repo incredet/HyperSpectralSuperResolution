@@ -12,7 +12,7 @@ from typing import Any, Optional
 class PipelineConfig:
     aoi_lat: float
     aoi_lon: float
-    search_buffer_m: float
+    aoi_buffer_m: float
     s2_api: str
     s2_collection: str
 

@@ -9,7 +9,7 @@ s2_api:        "https://earth-search.aws.element84.com/v1"
 s2_collection: "sentinel-2-l2a"
 
 # Buffer around AOI centre point (metres) — defines the search bounding box
-search_buffer_m: 5000
+aoi_buffer_m: 5000
 
 # Temporal bounds for EMIT/S2 search (ISO 8601, e.g. "2023-01-01").
 # Pin these for reproducibility — otherwise newly-ingested granules change results.
