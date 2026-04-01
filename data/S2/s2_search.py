@@ -18,6 +18,8 @@ from rasterio.warp import reproject
 from rasterio.enums import Resampling
 
 import requests
+
+from data.download_utils import retry as _retry_download
 from tqdm import tqdm
 
 
@@ -49,16 +51,6 @@ try:
 except Exception:
     APIError = Exception
 
-def _time_chunks(dt_min, dt_max, chunk_days=14):
-    cur = dt_min
-    while cur < dt_max:
-        nxt = min(dt_max, cur + timedelta(days=chunk_days))
-        yield cur, nxt
-        cur = nxt
-
-def _stac_time_range(dt0, dt1):
-    return f"{dt0.isoformat().replace('+00:00','Z')}/{dt1.isoformat().replace('+00:00','Z')}"
-
 def _stac_search_items_with_retries(client, *, collections, datetime_range, intersects=None, bbox=None, limit=200, retries=4):
     last_err = None
     for a in range(retries):
@@ -79,7 +71,9 @@ def _stac_search_items_with_retries(client, *, collections, datetime_range, inte
     raise last_err
 
 
-CLOUD_CLASSES = {8, 9, 10, 11}
+SCL_CLOUD_SCENE = frozenset({8, 9, 10})
+SCL_CLOUD_TILE  = frozenset({8, 9})
+CLOUD_CLASSES   = SCL_CLOUD_SCENE  # legacy alias
 
 
 def reproject_geom(geom_wgs84, dst_crs):
@@ -87,7 +81,6 @@ def reproject_geom(geom_wgs84, dst_crs):
     return transform(tfm, geom_wgs84)
 
 def count_cloud_pixels(scl_href: str, roi_geom_wgs84):
-    """Return (#cloud_pixels, #total_valid_pixels) within ROI from an SCL raster (URL or local)."""
     vsi_href = scl_href
     if scl_href.startswith("http://") or scl_href.startswith("https://"):
         vsi_href = f"/vsicurl/{scl_href}"
@@ -105,7 +98,7 @@ def count_cloud_pixels(scl_href: str, roi_geom_wgs84):
             scl = data[0]
             valid = scl != 0
             total = int(valid.sum())
-            clouds = int(np.isin(scl[valid], list(CLOUD_CLASSES)).sum())  # <-- only valid pixels
+            clouds = int(np.isin(scl[valid], list(CLOUD_CLASSES)).sum())
             return clouds, total
         
 
@@ -169,12 +162,6 @@ def _s2_dedupe_key(item) -> str:
             return str(p[k])
     return str(getattr(item, "id", None) or "unknown")
 
-def _safe_float(x, default=999.0) -> float:
-    try:
-        return float(x)
-    except Exception:
-        return float(default)
-
 def _find_scl_href(item) -> Optional[str]:
     assets = getattr(item, "assets", {}) or {}
     for k in ("scl", "SCL", "scl_20m", "SCL_20m"):
@@ -220,8 +207,11 @@ def build_s2_index(
     client = Client.open(s2_api)
 
     items_all = []
-    for c0, c1 in _time_chunks(dt_min_utc, dt_max_utc, chunk_days=chunk_days):
-        time_range = _stac_time_range(c0, c1)
+    cur = dt_min_utc
+    while cur < dt_max_utc:
+        nxt = min(dt_max_utc, cur + timedelta(days=chunk_days))
+        c0, c1 = cur, nxt
+        time_range = f"{c0.isoformat().replace('+00:00','Z')}/{c1.isoformat().replace('+00:00','Z')}"
 
         # Try intersects first (more precise)…
         if prefer_intersects:
@@ -249,6 +239,7 @@ def build_s2_index(
             limit=limit,
         )
         items_all.extend(items)
+        cur = nxt
 
     by_key = {}
     for it in items_all:
@@ -268,7 +259,11 @@ def build_s2_index(
         geom_it = shape(it.geometry)
         dt = _to_utc(it.datetime)
         props = it.properties or {}
-        meta_cc = _safe_float(props.get("eo:cloud_cover", 999.0), default=999.0)
+        meta_cc_val = props.get("eo:cloud_cover", 999.0)
+        try:
+            meta_cc = float(meta_cc_val)
+        except Exception:
+            meta_cc = 999.0
         sun_vec = _get_s2_sun_vec(props)
         scl_href = _find_scl_href(it)
         k = _s2_dedupe_key(it)
@@ -285,15 +280,13 @@ def find_best_s2_for_emit_item(
     *,
     s2_index: S2Index,
     days: float = 3.0,
-    sun_deg_max: Optional[float] = 5.0,  
-    max_tod_diff_h: float = 1.5,       
-    tile_m: float = 60000.0,              
+    sun_deg_max: Optional[float] = 5.0,
+    max_tod_diff_h: float = 1.5,
+    tile_m: float = 60000.0,
     top_k_prefilter: int = 50,
-    meta_cc_max: Optional[float] = None,  
-    scl_cloud_max: Optional[float] = None, 
+    meta_cc_max: Optional[float] = None,
+    scl_cloud_max: Optional[float] = None,
 ):
-    """for each EMIT candidate, we find the best Sentinel-2 candidate"""
-    
     umm = emit_item.get("umm") or {}
     emit_dt = emit_item_datetime_utc(emit_item)
     if emit_dt is None:
@@ -309,7 +302,6 @@ def find_best_s2_for_emit_item(
 
     res = s2_index.tree.query(emit_geom)
     possible_idxs = [int(i) for i in res]
-
 
     emit_lst = local_solar_time_hours(emit_dt, anchor_lon)
 
@@ -329,10 +321,8 @@ def find_best_s2_for_emit_item(
         if not om["can_fit_tile"]:
             continue
 
-        # Sun similarity if possible; else TOD
         sun_delta = None
         tod_d = None
-
         emit_sun_vec = emit_sun_vec_from_umm(umm)
 
         if emit_sun_vec is not None and r.sun_vec is not None:
@@ -384,7 +374,7 @@ def find_best_s2_for_emit_item(
         if r.scl_href is None:
             continue
         try:
-            clouds, total = count_cloud_pixels(r.scl_href, c["overlap_geom_wgs84"])  # <-- your function
+            clouds, total = count_cloud_pixels(r.scl_href, c["overlap_geom_wgs84"])
         except Exception:
             continue
 
@@ -473,8 +463,8 @@ def find_best_s2_for_emit_item(
     return best["item"], best["scl_cloud"], dbg
 
 
-def download_asset(href, out_path):
-    r = requests.get(href, stream=True)
+def _download_asset_once(href, out_path):
+    r = requests.get(href, stream=True, timeout=120)
     r.raise_for_status()
     total = int(r.headers.get("content-length", 0))
     with open(out_path, "wb") as f, \
@@ -486,52 +476,25 @@ def download_asset(href, out_path):
     return str(out_path)
 
 
-def _href_suffix(href: str) -> str:
-    base = href.split("?", 1)[0]
-    suf = Path(base).suffix.lower()
-    return suf if suf else ".tif"
+def download_asset(href, out_path):
+    return _retry_download(
+        _download_asset_once, href, out_path,
+        retryable=(ConnectionError, TimeoutError, OSError,
+                   requests.exceptions.RequestException),
+    )
+
 
 def _download_band(item, key: str, out_dir: Path, stem: str) -> Path:
     href = item.assets[key].href
-    ext = _href_suffix(href)
+    base = href.split("?", 1)[0]
+    suf = Path(base).suffix.lower()
+    ext = suf if suf else ".tif"
     out = out_dir / f"{stem}{ext}"
     if not out.exists():
         download_asset(href, out)
     return out
 
-def _inpaint_bad_pixels(
-    stack: np.ndarray,
-    bad_mask: np.ndarray,
-    physical_max: int = 20000,
-) -> np.ndarray:
-    """Replace bad pixels with the mean of their valid 3×3 neighbors.
-
-    Inpainting is **per-band**: a pixel flagged in *bad_mask* is only
-    overwritten in bands where its value is actually anomalous.  A band
-    value is considered anomalous if it is zero (nodata) or exceeds
-    *physical_max*.  Threshold 20 000 DN (≈ reflectance 1.9 with BOA
-    offset) is above anything physical but catches defective detector
-    pixels.  Bands with normal values are kept, since a pixel can be
-    saturated in visible bands but fine in NIR/SWIR.
-
-    Single-pass 3×3 mean filter — sufficient for the isolated single-pixel
-    defects typical of S2 detector failures.
-
-    Parameters
-    ----------
-    stack : ndarray, shape (C, H, W)
-        Multi-band image (uint16).
-    bad_mask : ndarray, shape (H, W), dtype bool
-        True where pixels are suspected defective (from SCL or
-        radiometric detection).
-    physical_max : int
-        Maximum physically plausible DN value.  Band values above this
-        in flagged pixels are inpainted (default 15 000).
-
-    Returns
-    -------
-    stack : ndarray (modified in-place)
-    """
+def _inpaint_bad_pixels(stack: np.ndarray, bad_mask: np.ndarray, physical_max: int = 20000) -> np.ndarray:
     if not bad_mask.any():
         return stack
 
@@ -543,8 +506,6 @@ def _inpaint_bad_pixels(
 
     for b in range(stack.shape[0]):
         band = stack[b].astype(np.float64)
-
-        # Per-band bad: only inpaint where this band is actually anomalous
         band_bad = bad_mask & ((band == 0) | (band > physical_max))
         if not band_bad.any():
             continue
@@ -566,12 +527,9 @@ def _inpaint_bad_pixels(
     return stack
 
 
-def download_s2_spectral_stack(item, s2_dir: Path) -> Path:
-    """
-    For STAC items with assets named like:
-      blue, green, red, nir, rededge1/2/3, swir16, swir22, nir08 (optional)
-    Create a single 10-band GeoTIFF on the 10m grid.
-    """
+def download_s2_spectral_stack(
+    item, s2_dir: Path, *, return_scl: bool = False,
+) -> Path | tuple[Path, Path | None]:
     s2_dir = Path(s2_dir)
     s2_dir.mkdir(parents=True, exist_ok=True)
 
@@ -596,7 +554,6 @@ def download_s2_spectral_stack(item, s2_dir: Path) -> Path:
     if "nir08" in assets:
         nir08_path = _download_band(item, "nir08", s2_dir, f"{item.id}_nir08")
 
-    # SCL (Scene Classification Layer) — 20 m, used to mask defective pixels
     scl_path = None
     scl_href = _find_scl_href(item)
     if scl_href is not None:
@@ -607,6 +564,8 @@ def download_s2_spectral_stack(item, s2_dir: Path) -> Path:
 
     out_stack = s2_dir / f"{item.id}_S2_10band_10m.tif"
     if out_stack.exists():
+        if return_scl:
+            return out_stack, scl_path
         return out_stack
 
     with rasterio.open(paths["blue"]) as ref:
@@ -649,8 +608,6 @@ def download_s2_spectral_stack(item, s2_dir: Path) -> Path:
     ]
     if include_nir08:
         band_order.append(("B8A_nir08", nir08_path, Resampling.bilinear))
-    else:
-        pass
 
     band_order += [
         ("B11_swir16", paths["swir16"], Resampling.bilinear),
@@ -662,15 +619,6 @@ def download_s2_spectral_stack(item, s2_dir: Path) -> Path:
 
     stack = np.stack([warp_to_ref(p, rs) for (_, p, rs) in band_order], axis=0)
 
-    # ── Inpaint defective / saturated pixels ─────────────────────────────
-    # Detection methods (combined with OR):
-    #   1. SCL class 1 (saturated / defective) — isolated bad detector pixels
-    #      Note: SCL class 0 is NOT included — it marks pixels outside the
-    #      S2 tile footprint, which are legitimate nodata (not defective).
-    #   2. Radiometric saturation: any band at uint16 max (65535)
-    #   3. Anomalously high: any band exceeding physical ceiling (15000 DN)
-    #   4. Per-band dropout: any band is 0 while others have data — catches
-    #      single-detector failures (e.g. blue=0 but NIR=629)
     bad_mask = np.zeros((H, W), dtype=bool)
 
     if scl_path is not None:
@@ -691,10 +639,6 @@ def download_s2_spectral_stack(item, s2_dir: Path) -> Path:
     else:
         print("WARNING: SCL not available — using radiometric detection only.")
 
-    # Radiometric detection: saturation + anomalously high values.
-    # Threshold 20000 DN (≈ reflectance 1.9 with BOA offset) is well above
-    # anything physical (fresh snow peaks ~12000 DN) but catches defective
-    # detector pixels that typically sit at 20000–57000+.
     PHYSICAL_MAX = 20000
     if np.issubdtype(stack.dtype, np.unsignedinteger):
         saturated = np.any(stack == np.iinfo(stack.dtype).max, axis=0)
@@ -725,24 +669,12 @@ def download_s2_spectral_stack(item, s2_dir: Path) -> Path:
         for i, (name, _, _) in enumerate(band_order, start=1):
             dst.set_band_description(i, name)
 
+    if return_scl:
+        return out_stack, scl_path
     return out_stack
 
 
-# ---------------------------------------------------------------------------
-# Fetch helper: reconstruct a pystac Item from a stored S2 item ID
-# ---------------------------------------------------------------------------
-
 def fetch_s2_item_by_id(s2_id: str, *, stac_api: str, collection: str):
-    """Fetch a PySTAC Item by its ID from a STAC API.
-
-    Args:
-        s2_id: Sentinel-2 item ID (e.g. ``S2B_12SVE_20230621_0_L2A``).
-        stac_api: Base URL of the STAC API.
-        collection: Collection name (e.g. ``sentinel-2-l2a``).
-
-    Returns:
-        A :class:`pystac.Item` ready for asset access.
-    """
     import requests
     from pystac import Item
 

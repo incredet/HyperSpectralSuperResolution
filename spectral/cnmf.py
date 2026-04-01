@@ -1049,10 +1049,12 @@ def _write_fused_tile(
     profile = write_meta["ms_profile"].copy()
     profile.update(
         count=fused_dn.shape[0], dtype="uint16", nodata=nodata_val,
-        driver="GTiff", compress="DEFLATE", predictor=2, tiled=True,
-        BIGTIFF="IF_SAFER",
+        driver="GTiff", compress="DEFLATE", predictor=2,
     )
-    profile.pop("interleave", None)
+    # Strip any tags that are invalid for 32-band output or break MemoryFile reads
+    for key in ("interleave", "photometric", "tiled", "blockxsize", "blockysize",
+                "BIGTIFF"):
+        profile.pop(key, None)
 
     with rasterio.open(out_path, "w", **profile) as dst:
         dst.write(fused_dn)

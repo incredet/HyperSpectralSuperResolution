@@ -15,6 +15,7 @@ from rasterio.warp import transform_bounds
 
 import pandas as pd
 import numpy as np
+import warnings
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -26,46 +27,16 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-# ---------------------------------------------------------------------------
-# Run identity & registry — reproducible pair selection
-# ---------------------------------------------------------------------------
-
-def _make_run_uid(pair_id: str) -> str:
-    """Generate a unique run identifier: ``{pair_id}__{compact_timestamp}``.
-
-    Human-readable, unique per processing attempt.  Two runs of the
-    same pair seconds apart get different UIDs.
-    """
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    return f"{pair_id}__{ts}"
-
 
 def load_pairs_sorted(
     pairs_dir: str | Path,
     *,
     sort_by: str = "expected_clear_km2",
 ) -> list[dict]:
-    """Load all valid pairs from JSONL batch files, sorted deterministically.
-
-    Pairs are sorted by *sort_by* (descending), then by ``emit_dt``
-    (ascending), then by ``s2_id`` (ascending) as tiebreaker.  This
-    guarantees the same ordering regardless of the filesystem glob order
-    or the CMR response order.
-
-    Args:
-        pairs_dir:  Directory containing ``pairs_batch_*.jsonl`` files.
-        sort_by:    Primary sort key (descending).  One of:
-                    ``"expected_clear_km2"`` (default — largest cloud-free
-                    overlap first) or ``"overlap_km2"``.
-
-    Returns:
-        List of pair dicts, each with keys ``emit_granuleur``,
-        ``emit_dt``, ``s2_id``, ``s2_cloud_frac``, ``debug``, etc.
-    """
     import glob as _glob
 
     pairs_dir = Path(pairs_dir)
-    pairs: list[dict] = []
+    pairs = []
 
     for fn in sorted(_glob.glob(str(pairs_dir / "pairs_batch_*.jsonl"))):
         with open(fn) as f:
@@ -89,55 +60,22 @@ def load_pairs_sorted(
     return pairs
 
 
-# ---------------------------------------------------------------------------
-# AOI identity & folder structure
-# ---------------------------------------------------------------------------
 
-def aoi_slug(lat: float, lon: float) -> str:
-    """Build a filesystem-safe AOI folder name from coordinates.
-
-    Examples::
-
-        >>> aoi_slug(32.75, -114.96)
-        'aoi_lat32.75_lon-114.96'
-        >>> aoi_slug(36.1069, -112.1129)
-        'aoi_lat36.1069_lon-112.1129'
-
-    The format is deterministic — same coordinates always produce the same
-    slug, so re-running the notebook finds the existing AOI folder.
-    """
-    # Strip trailing zeros but keep at least one decimal place
-    def _fmt(v: float) -> str:
-        s = f"{v:.6f}".rstrip("0")
-        if s.endswith("."):
-            s += "0"
-        return s
-    return f"aoi_lat{_fmt(lat)}_lon{_fmt(lon)}"
+def fmt(v: float):
+    s = f"{v:.6f}".rstrip("0")
+    if s.endswith("."):
+        s += "0"
+    return s
 
 
 @dataclass(frozen=True)
 class AoiPaths:
-    """Folder layout for one AOI under a shared DRIVE_ROOT.
-
-    ::
-
-        {drive_root}/
-        ├── {aoi_slug}/
-        │   ├── aoi_config.json       ← PipelineConfig for this AOI
-        │   ├── pairs.csv             ← all available pairs, ranked
-        │   ├── pair_registry.jsonl   ← processing history
-        │   ├── {pair_id_1}/          ← per-pair folder (RunPaths)
-        │   ├── {pair_id_2}/
-        │   └── ...
-        ├── {another_aoi_slug}/
-        └── ...
-    """
 
     slug: str
-    root: Path                   # drive_root / slug
-    config_json: Path            # aoi_config.json
-    pairs_csv: Path              # pairs.csv
-    registry_jsonl: Path         # pair_registry.jsonl
+    root: Path                   
+    config_json: Path          
+    pairs_csv: Path             
+    registry_jsonl: Path       
 
     @classmethod
     def build(
@@ -146,12 +84,7 @@ class AoiPaths:
         lat: float,
         lon: float,
     ) -> "AoiPaths":
-        """Create (or locate) the AOI folder for the given coordinates.
-
-        Directories are created on disk.  If the folder already exists
-        (same coordinates, same drive_root), the same paths are returned.
-        """
-        slug = aoi_slug(lat, lon)
+        slug = f"aoi_lat{_fmt(lat)}_lon{_fmt(lon)}"
         root = ensure_dir(Path(drive_root) / slug)
         return cls(
             slug=slug,
@@ -168,26 +101,10 @@ def write_aoi_pairs_csv(
     *,
     config_dict: Optional[dict] = None,
 ) -> Path:
-    """Write a ranked ``pairs.csv`` for one AOI and optionally save config.
-
-    The CSV contains one row per valid pair, sorted by the deterministic
-    ranking from :func:`load_pairs_sorted`.  Columns include a sequential
-    ``rank`` (0-based) that the user can pass to :func:`pick_pair_by_rank`
-    to select any pair — not just ``pairs[0]``.
-
-    Args:
-        aoi:          AOI paths (from :func:`AoiPaths.build`).
-        pairs:        Already-sorted list of pair dicts (from
-                      :func:`load_pairs_sorted`).
-        config_dict:  If provided, saved to ``aoi_config.json``.
-
-    Returns:
-        Path to the written ``pairs.csv``.
-    """
     if config_dict is not None:
         write_json(aoi.config_json, config_dict)
 
-    rows: list[dict] = []
+    rows = []
     for rank, p in enumerate(pairs):
         dbg = p.get("debug") or {}
         picked = dbg.get("picked") or {}
@@ -211,12 +128,6 @@ def write_aoi_pairs_csv(
 
 
 def load_aoi_pairs_csv(aoi: AoiPaths) -> pd.DataFrame:
-    """Load the ranked pairs CSV for one AOI.
-
-    Returns:
-        DataFrame with columns ``rank``, ``emit_granuleur``, ``s2_id``, etc.
-        Rows are in rank order (best pair first).
-    """
     if not aoi.pairs_csv.exists():
         raise FileNotFoundError(
             f"No pairs.csv found for AOI {aoi.slug}. "
@@ -229,18 +140,6 @@ def pick_pair_by_rank(
     pairs: list[dict],
     rank: int,
 ) -> dict:
-    """Select a pair by its deterministic rank index.
-
-    Args:
-        pairs:  Sorted list from :func:`load_pairs_sorted`.
-        rank:   0-based index into the sorted list.
-
-    Returns:
-        The pair dict at the given rank.
-
-    Raises:
-        IndexError: If rank is out of range.
-    """
     if rank < 0 or rank >= len(pairs):
         raise IndexError(
             f"Pair rank {rank} out of range [0, {len(pairs) - 1}]. "
@@ -249,38 +148,16 @@ def pick_pair_by_rank(
     return pairs[rank]
 
 
-# ---------------------------------------------------------------------------
-# AOI catalogue — master CSV of all AOIs with descriptions
-# ---------------------------------------------------------------------------
 
 _AOIS_CATALOGUE_FILENAME = "aois.csv"
 _AOIS_CATALOGUE_COLUMNS = ["name", "lat", "lon", "description", "land_cover"]
 
 
-def load_aois_catalogue(
-    drive_root: str | Path,
-) -> pd.DataFrame:
-    """Load the master AOI catalogue from ``DRIVE_ROOT/aois.csv``.
-
-    The catalogue lists every AOI that has been (or will be) processed,
-    with human-readable names, descriptions, and land-cover labels.
-
-    Columns: ``name``, ``lat``, ``lon``, ``description``, ``land_cover``.
-
-    Args:
-        drive_root:  Top-level Drive folder containing ``aois.csv``.
-
-    Returns:
-        DataFrame sorted by ``name``.
-
-    Raises:
-        FileNotFoundError: if ``aois.csv`` does not exist.
-    """
+def load_aois_catalogue(drive_root):
     csv_path = Path(drive_root) / _AOIS_CATALOGUE_FILENAME
     if not csv_path.exists():
         raise FileNotFoundError(
-            f"No AOI catalogue found at {csv_path}. "
-            f"Create one with save_aois_catalogue() or place a CSV there manually."
+            f"No AOI catalogue found at {csv_path}"
         )
     df = pd.read_csv(csv_path)
     for col in _AOIS_CATALOGUE_COLUMNS:
@@ -296,18 +173,6 @@ def save_aois_catalogue(
     drive_root: str | Path,
     aois: list[dict] | pd.DataFrame,
 ) -> Path:
-    """Write (or overwrite) the master AOI catalogue.
-
-    Each entry must have keys/columns: ``name``, ``lat``, ``lon``,
-    ``description``, ``land_cover``.
-
-    Args:
-        drive_root:  Top-level Drive folder.
-        aois:        List of dicts or DataFrame with the required columns.
-
-    Returns:
-        Path to the written ``aois.csv``.
-    """
     df = pd.DataFrame(aois) if not isinstance(aois, pd.DataFrame) else aois.copy()
     for col in _AOIS_CATALOGUE_COLUMNS:
         if col not in df.columns:
@@ -326,19 +191,6 @@ def get_aoi_by_name(
     drive_root: str | Path,
     name: str,
 ) -> dict:
-    """Look up a single AOI from the catalogue by name.
-
-    Args:
-        drive_root:  Top-level Drive folder containing ``aois.csv``.
-        name:        The ``name`` field to look up (case-sensitive).
-
-    Returns:
-        Dict with keys ``name``, ``lat``, ``lon``, ``description``,
-        ``land_cover``.
-
-    Raises:
-        KeyError: if no AOI with that name exists.
-    """
     df = load_aois_catalogue(drive_root)
     matches = df.loc[df["name"] == name]
     if matches.empty:
@@ -353,22 +205,6 @@ def get_aoi_by_index(
     drive_root: str | Path,
     index: int,
 ) -> dict:
-    """Look up a single AOI from the catalogue by row index.
-
-    The catalogue is sorted by ``name``, so index 0 is the
-    alphabetically-first AOI.
-
-    Args:
-        drive_root:  Top-level Drive folder containing ``aois.csv``.
-        index:       0-based row index into the sorted catalogue.
-
-    Returns:
-        Dict with keys ``name``, ``lat``, ``lon``, ``description``,
-        ``land_cover``.
-
-    Raises:
-        IndexError: if index is out of range.
-    """
     df = load_aois_catalogue(drive_root)
     if index < 0 or index >= len(df):
         raise IndexError(
@@ -378,62 +214,75 @@ def get_aoi_by_index(
     return df.iloc[index].to_dict()
 
 
-# ---------------------------------------------------------------------------
-# Pipeline defaults — shared config stored on Drive
-# ---------------------------------------------------------------------------
+
+_PIPELINE_CONFIG_FILENAME = "pipeline_config.yaml"
 
 _PIPELINE_DEFAULTS_FILENAME = "pipeline_defaults.json"
 
 
-def load_pipeline_defaults(drive_root: str | Path) -> dict:
-    """Load ``DRIVE_ROOT/pipeline_defaults.json``.
+def load_pipeline_config(drive_root: str | Path) -> dict:
+    import yaml
 
-    Returns the dict as-is; callers unpack what they need.
+    root = Path(drive_root)
+    path = root / _PIPELINE_CONFIG_FILENAME
 
-    Raises:
-        FileNotFoundError: if the file does not exist.
-    """
-    path = Path(drive_root) / _PIPELINE_DEFAULTS_FILENAME
     if not path.exists():
+        # Helpful migration message if old JSON is still around
+        legacy = root / _PIPELINE_DEFAULTS_FILENAME
+        hint = ""
+        if legacy.exists():
+            hint = (
+                f"  Found legacy {_PIPELINE_DEFAULTS_FILENAME} — "
+                f"migrate it to {_PIPELINE_CONFIG_FILENAME}."
+            )
         raise FileNotFoundError(
-            f"No pipeline defaults at {path}. "
-            f"Create one with save_pipeline_defaults() or place a JSON there."
+            f"No pipeline config at {path}.{hint}\n"
+            f"Seed it from the repo's pipeline_config.yaml."
         )
-    return json.loads(path.read_text())
+
+    with open(path) as f:
+        return yaml.safe_load(f) or {}
 
 
-def save_pipeline_defaults(
+def save_pipeline_config(
     drive_root: str | Path,
-    defaults: dict,
+    config_dict: dict,
 ) -> Path:
-    """Write (or overwrite) ``DRIVE_ROOT/pipeline_defaults.json``.
+    import yaml
 
-    Returns:
-        Path to the written file.
-    """
-    path = Path(drive_root) / _PIPELINE_DEFAULTS_FILENAME
+    path = Path(drive_root) / _PIPELINE_CONFIG_FILENAME
     ensure_dir(path.parent)
-    write_json(path, defaults)
+    with open(path, "w") as f:
+        yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)
     return path
 
 
-# ---------------------------------------------------------------------------
-# Pair registry — root-level append-only ledger of all processed pairs
-# ---------------------------------------------------------------------------
 
-_REGISTRY_FILENAME = "pair_registry.jsonl"
+def load_pipeline_defaults(drive_root):
+    warnings.warn(
+        "load_pipeline_defaults() is deprecated — use load_pipeline_config()",
+        DeprecationWarning, stacklevel=2,
+    )
+    return load_pipeline_config(drive_root)
+
+
+def save_pipeline_defaults(drive_root, defaults):
+    warnings.warn(
+        "save_pipeline_defaults() is deprecated — use save_pipeline_config()",
+        DeprecationWarning, stacklevel=2,
+    )
+    return save_pipeline_config(drive_root, defaults)
+
+
+
+REGISTRY_FILENAME = "pair_registry.jsonl"
 
 
 def load_pair_registry(drive_root: str | Path | "AoiPaths") -> list[dict]:
-    """Read the pair registry (all entries, chronological order).
-
-    *drive_root* can be a plain path (the folder containing the registry)
-    or an :class:`AoiPaths` instance (uses ``aoi.registry_jsonl``).
-    """
     if isinstance(drive_root, AoiPaths):
         path = drive_root.registry_jsonl
     else:
-        path = Path(drive_root) / _REGISTRY_FILENAME
+        path = Path(drive_root) / REGISTRY_FILENAME
     if not path.exists():
         return []
     entries = []
@@ -453,20 +302,6 @@ def registry_has_pair(
     config_fingerprint: Optional[str] = None,
     status: str = "completed",
 ) -> Optional[dict]:
-    """Check if a pair has already been processed (and optionally completed).
-
-    Args:
-        drive_root:          Directory containing the registry, or
-                             :class:`AoiPaths` instance.
-        emit_granuleur:      EMIT granule UR to look for.
-        s2_id:               Sentinel-2 item ID to look for.
-        config_fingerprint:  If set, also require matching config hash.
-        status:              Required status (default ``"completed"``).
-                             Pass ``None`` to match any status.
-
-    Returns:
-        The matching registry entry dict, or ``None`` if not found.
-    """
     for entry in load_pair_registry(drive_root):
         if entry.get("emit_granuleur") != emit_granuleur:
             continue
@@ -489,33 +324,17 @@ def register_pair(
     config_fingerprint: str = "",
     status: str = "started",
 ) -> dict:
-    """Append a pair entry to the AOI-level registry.
-
-    Call once with ``status="started"`` before processing, then again
-    with ``status="completed"`` after success (or ``"failed"``).
-
-    Args:
-        drive_root:          AOI folder (or :class:`AoiPaths` instance)
-                             containing the registry.
-        pair:                The pair dict from ``load_pairs_sorted``.
-        pair_id:             The pair folder name (from ``make_pair_id``).
-        run_uid:             Unique run identifier.  Auto-generated if None.
-        config_fingerprint:  Config hash for cross-checking.
-        status:              ``"started"``, ``"completed"``, or ``"failed"``.
-
-    Returns:
-        The registry entry dict (includes ``run_uid``).
-    """
     if isinstance(drive_root, AoiPaths):
         reg_path = drive_root.registry_jsonl
         ensure_dir(drive_root.root)
     else:
         drive_root = Path(drive_root)
         ensure_dir(drive_root)
-        reg_path = drive_root / _REGISTRY_FILENAME
+        reg_path = drive_root / REGISTRY_FILENAME
 
     if run_uid is None:
-        run_uid = _make_run_uid(pair_id)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        run_uid = f"{pair_id}__{ts}"
 
     entry = {
         "run_uid": run_uid,
@@ -536,9 +355,6 @@ def register_pair(
     return entry
 
 
-# ---------------------------------------------------------------------------
-# Per-pair run lock — self-contained reproducibility record
-# ---------------------------------------------------------------------------
 
 def save_run_lock(
     pair_drive_root: str | Path,
@@ -548,26 +364,7 @@ def save_run_lock(
     run_uid: str,
     config_fingerprint: str = "",
     config_dict: Optional[dict] = None,
-) -> Path:
-    """Write a run-lock JSON inside the pair folder.
-
-    Makes the pair folder self-contained: anyone can look at
-    ``run_lock.json`` and know exactly what was processed, when,
-    and with what config — without needing the root registry.
-
-    Args:
-        pair_drive_root:     The pair's drive folder (e.g.
-                             ``DRIVE_ROOT / pair_id``).
-        pair:                The pair dict from ``load_pairs_sorted``.
-        pair_id:             Pair folder name.
-        run_uid:             Unique run identifier (from ``register_pair``).
-        config_fingerprint:  Config hash.
-        config_dict:         Full config dict to embed (optional but
-                             recommended for full reproducibility).
-
-    Returns:
-        Path to the written ``run_lock.json``.
-    """
+):
     path = Path(pair_drive_root) / "run_lock.json"
     ensure_dir(path.parent)
 
@@ -597,7 +394,6 @@ def save_run_lock(
 
 
 def load_run_lock(pair_drive_root: str | Path) -> Optional[dict]:
-    """Read a per-pair run lock, or None if it doesn't exist."""
     path = Path(pair_drive_root) / "run_lock.json"
     if not path.exists():
         return None
@@ -617,35 +413,11 @@ def write_json(path: str | Path, obj: Any, *, indent: int = 2) -> Path:
     return path
 
 
-# ---------------------------------------------------------------------------
-# Pair-ID generation
-# ---------------------------------------------------------------------------
 
 _EMIT_DT_RE = re.compile(r"(\d{8}T\d{6})")
 
 
-def _emit_datetime_from_nc(emit_nc: str | Path) -> str:
-    """Extract the YYYYMMDDTHHMMSS timestamp from an EMIT L2A NC filename.
-
-    Example::
-
-        >>> _emit_datetime_from_nc("EMIT_L2A_RFL_001_20230615T123456_2312311_007.nc")
-        '20230615T123456'
-    """
-    stem = Path(emit_nc).stem
-    m = _EMIT_DT_RE.search(stem)
-    if m:
-        return m.group(1)
-    # Fallback: return whole stem (shouldn't happen with real EMIT filenames)
-    return stem
-
-
 def _s2_tile_id_from_item(s2_item: dict) -> str:
-    """Extract the MGRS tile ID (e.g. 'T11SQA') from an S2 STAC item dict.
-
-    Tries ``grid:code`` in properties first, then parses the item ``id``
-    (format like ``S2B_32TQM_20230615_0_L2A``).
-    """
     props = s2_item.get("properties", {}) or {}
     grid_code = props.get("grid:code")
     if grid_code:
@@ -668,7 +440,6 @@ def _s2_tile_id_from_item(s2_item: dict) -> str:
 
 
 def _s2_date_from_item(s2_item: dict) -> str:
-    """Extract YYYYMMDD from an S2 STAC item dict."""
     props = s2_item.get("properties", {}) or {}
     dt_str = props.get("datetime", "")
     if dt_str:
@@ -690,43 +461,18 @@ def _s2_date_from_item(s2_item: dict) -> str:
 
 
 def make_pair_id(emit_nc: str | Path, s2_item: dict) -> str:
-    """Build a unique pair identifier: ``{EMIT_datetime}_{S2_tile}_{S2_date}``.
-
-    Examples::
-
-        >>> make_pair_id(
-        ...     "EMIT_L2A_RFL_001_20230615T123456_2312311_007.nc",
-        ...     {"id": "S2B_11SQA_20230615_0_L2A",
-        ...      "properties": {"datetime": "2023-06-15T10:30:00Z",
-        ...                     "grid:code": "MGRS-11SQA"}},
-        ... )
-        '20230615T123456_T11SQA_20230615'
-
-    Args:
-        emit_nc:  Path to EMIT L2A reflectance netCDF.
-        s2_item:  Sentinel-2 STAC item dictionary.
-
-    Returns:
-        A filesystem-safe string uniquely identifying this EMIT–S2 pair.
-    """
-    emit_dt = _emit_datetime_from_nc(emit_nc)
+    stem = Path(emit_nc).stem
+    m = _EMIT_DT_RE.search(stem)
+    emit_dt = m.group(1) if m else stem
     s2_tile = _s2_tile_id_from_item(s2_item)
     s2_date = _s2_date_from_item(s2_item)
     return f"{emit_dt}_{s2_tile}_{s2_date}"
 
 
-# ---------------------------------------------------------------------------
-# RunPaths — folder layout for one pair
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class RunPaths:
-    """Folder layout for one EMIT–S2 pair.
-
-    The canonical folder name is ``pair_id`` (built by :func:`make_pair_id`).
-    ``run_id`` (EMIT-only) is kept for backward compatibility.
-    """
 
     run_id: str
     pair_id: str
@@ -779,25 +525,8 @@ class RunPaths:
         aoi: "AoiPaths | None" = None,
         pair_id: str | None = None,
         s2_item: dict | None = None,
-    ) -> "RunPaths":
+    ):
         """Create folder layout for one pair.
-
-        Args:
-            emit_nc:    Path to EMIT L2A netCDF.
-            local_root: Working directory for local outputs.
-            drive_base: If set, persistent output root.  A subfolder
-                        named ``pair_id`` is created under this.
-                        Ignored when *aoi* is provided.
-            aoi:        :class:`AoiPaths` instance.  When provided, the
-                        pair folder is created under ``aoi.root`` instead
-                        of *drive_base*.  This is the preferred API for
-                        the three-level hierarchy
-                        ``DRIVE_ROOT / aoi_slug / pair_id``.
-            pair_id:    Explicit pair identifier.  If *None* and *s2_item*
-                        is given, computed via :func:`make_pair_id`.
-                        Falls back to ``emit_id_from_nc`` for backward compat.
-            s2_item:    S2 STAC item dict (used to compute *pair_id* when
-                        not provided explicitly).
         """
         # If AoiPaths provided, use it as drive_base
         if aoi is not None:
@@ -884,45 +613,8 @@ class RunPaths:
         )
 
 
-class ReportWriter:
-    """
-    Report
-    """
-
-    def __init__(self, path: str | Path, *, mode: str = "overwrite"):
-        self.path = Path(path)
-        ensure_dir(self.path.parent)
-        self.mode = mode
-        self._started = False
-
-    def start(self, *, title: str = "EMIT and Sentinel-2 pairs report") -> "ReportWriter":
-        if self._started:
-            return self
-
-        overwrite = self.mode.lower() in {"overwrite", "w", "write"}
-        if overwrite:
-            self.path.write_text(f"# {title}\n\n- Generated: {utc_now_iso()}\n")
-        else:
-            if not self.path.exists():
-                self.path.write_text(f"# {title}\n\n- Generated: {utc_now_iso()}\n")
-        self._started = True
-        return self
-
-    def section(self, heading: str, lines: Iterable[str]) -> None:
-        if not self._started:
-            self.start()
-        with self.path.open("a", encoding="utf-8") as f:
-            f.write(f"\n## {heading}\n")
-            for ln in lines:
-                if ln is None:
-                    continue
-                f.write(f"- {ln}\n")
-
-    def raw(self, text: str) -> None:
-        if not self._started:
-            self.start()
-        with self.path.open("a", encoding="utf-8") as f:
-            f.write(text)
+# ReportWriter lives in report_builder.py now; alias set at end of file to avoid circular import
+ReportWriter = None
 
 
 # -----------------------------------------------------------------------------
@@ -1178,7 +870,7 @@ def write_s2_metadata(
 # -----------------------------------------------------------------------------
 
 
-def tif_geo_summary(path: str | Path) -> dict:
+def tif_geo_summary(path):
     """
     get geoTIFF spatial summary
     """
@@ -1228,7 +920,6 @@ class TileRecord:
     emit_b32_tif: str | None = None
     emit_b32_indices_0based: list[int] | None = None
 
-    # Per-tile realignment stats (populated by save_tile_pair when realign=True)
     realign_stats: dict | None = None
 
     def to_manifest_row(self) -> dict:
@@ -1242,7 +933,6 @@ class TileRecord:
             "s2_black_frac": self.s2_black_frac,
             "emit_b32_tif": self.emit_b32_tif,
         }
-        # Flatten realignment stats into manifest columns
         if self.realign_stats is not None:
             rs = self.realign_stats
             row["realign_applied"] = rs.get("applied", False)
@@ -1271,17 +961,13 @@ def write_tile_metadata(
     tile_info: dict,
     out_dir: str | Path,
     *,
-    emit_granule: str | None = None,
-    emit_time: Any = None,
-    s2_id: str | None = None,
-    s2_datetime: str | None = None,
-    params: dict | None = None,
-) -> tuple[Path, dict]:
+    emit_granule = None,
+    emit_time = None,
+    s2_id = None,
+    s2_datetime = None,
+    params = None,
+):
     """Write per-tile metadata JSON.
-
-    Filename includes ``pair_id`` when available for multi-scene
-    provenance (e.g. ``20230615T123456_T11SQA_20230615_tile003.json``).
-    Falls back to ``tile_003.json`` when ``pair_id`` is empty.
     """
     out_dir = ensure_dir(out_dir)
 
@@ -1349,28 +1035,7 @@ def write_global_manifest(
     *,
     filename: str = "global_manifest.csv",
 ) -> Path:
-    """Concatenate per-pair manifests into a single global manifest.
-
-    If *pair_manifests* is ``None``, all ``manifest.csv`` files found
-    one level below *output_root* are collected automatically::
-
-        output_root/
-        ├── pair_a/manifest.csv
-        ├── pair_b/manifest.csv
-        └── global_manifest.csv   ← written here
-
-    When *output_root* is an :class:`AoiPaths`, the manifest is written
-    into the AOI folder (``aoi.root / filename``).
-
-    Args:
-        output_root:     Root output directory or AoiPaths instance.
-        pair_manifests:  Explicit list of per-pair manifest CSV paths.
-                         If *None*, discovered by globbing.
-        filename:        Name of the global manifest file.
-
-    Returns:
-        Path to the written global manifest CSV.
-    """
+    """concatenate per-pair manifests into a single global manifest."""
     if isinstance(output_root, AoiPaths):
         output_root = output_root.root
     output_root = Path(output_root)
@@ -1380,7 +1045,7 @@ def write_global_manifest(
     if pair_manifests is None:
         pair_manifests = sorted(output_root.glob("*/manifest.csv"))
 
-    frames: list[pd.DataFrame] = []
+    frames = []
     for csv_path in pair_manifests:
         csv_path = Path(csv_path)
         if csv_path.exists() and csv_path.stat().st_size > 0:
@@ -1412,7 +1077,7 @@ def copy_any(
     overwrite: bool = False,
     use_rsync: bool = True,
     exclude: list[str] | None = None,
-) -> None:
+):
     """
     copy file/dir
     """
@@ -1464,7 +1129,7 @@ def copy_any(
         shutil.copy2(src, target)
 
 
-def write_archive_map(path: str | Path, mapping: dict[str, Any], *, report: ReportWriter | None = None) -> Path:
+def write_archive_map(path: str | Path, mapping: dict[str, Any], *, report: ReportWriter | None = None):
     path = Path(path)
     write_json(path, mapping)
 
@@ -1497,12 +1162,10 @@ def describe_tif(path):
         print("Res:", ds.res)
         print("Nodata:", ds.nodata)
 
-        # Dtypes / bits
         dtypes = ds.dtypes  # list per band
         uniq = sorted(set(dtypes))
         print("\nDtype(s):", uniq)
 
-        # bit depth per dtype
         bits = {dt: int(np.dtype(dt).itemsize * 8) for dt in uniq}
         print("Bit depth(s):", {dt: bits[dt] for dt in uniq})
 
@@ -1511,7 +1174,6 @@ def describe_tif(path):
         else:
             print("Bit depth per band:", [bits[dt] for dt in dtypes])
 
-        # Compression / tiling
         comp = ds.profile.get("compress", None) or ds.profile.get("compression", None)
         print("\nCompression:", comp if comp else "NONE/UNSPECIFIED")
 
@@ -1522,5 +1184,13 @@ def describe_tif(path):
         if blockx and blocky:
             print("Block size:", blockx, "x", blocky)
 
-        # Pixel interleave / layout (sometimes helpful)
         print("Profile keys:", {k: ds.profile.get(k) for k in ["dtype", "count", "interleave", "bigtiff", "driver"]})
+
+
+# deferred to avoid circular import (report_builder imports from this file)
+def _init_report_writer():
+    global ReportWriter
+    from documentation.report_builder import ReportBuilder
+    ReportWriter = ReportBuilder
+
+_init_report_writer()

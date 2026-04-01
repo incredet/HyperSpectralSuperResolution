@@ -17,8 +17,7 @@ def plot_s2_truecolor_from_stack(stack_path, ax=None):
             for i, d in enumerate(desc, start=1):
                 if d is None:
                     continue
-                d_low = d.lower()
-                if all(k in d_low for k in keywords):
+                if all(k in d.lower() for k in keywords):
                     return i
             return None
 
@@ -33,7 +32,6 @@ def plot_s2_truecolor_from_stack(stack_path, ax=None):
 
     rgb = np.moveaxis(arr, 0, -1)
 
-    # reflectance scaling heuristic (keep yours)
     if np.nanmax(rgb) > 1.5:
         rgb = rgb / 10000.0
 
@@ -51,12 +49,6 @@ def plot_s2_truecolor_from_stack(stack_path, ax=None):
 
 
 def _percentile_stretch(img, p_low=2, p_high=98):
-    """
-    Percentile-stretch to [0,1].
-    - If img is HxWxC: stretch each channel independently (works for any C>=1)
-    - If img is HxW: stretch as a single band
-    Ignores non-finite values.
-    """
     img = img.astype(np.float32, copy=False)
     out = np.zeros_like(img, dtype=np.float32)
 

@@ -62,7 +62,6 @@ def cache_wavelengths_json(wavelengths_nm: np.ndarray, out_path: str):
     Path(out_path).write_text(json.dumps(out, indent=2))
 
 
-# ── Sentinel-2 band centre wavelengths (nm) ──────────────────────────────
 S2_BAND_WAVELENGTHS_NM: dict[str, float] = {
     "B02": 490.0,   # Blue
     "B03": 560.0,   # Green
@@ -76,12 +75,7 @@ S2_BAND_WAVELENGTHS_NM: dict[str, float] = {
     "B12": 2190.0,  # SWIR-2
 }
 
-# ── Atmospheric absorption windows to exclude (nm) ───────────────────────
-# Ranges are intentionally wider than the textbook H₂O windows because
-# EMIT L2A products zero-fill bands well beyond the nominal edges:
-#   Window 1: bands 127-141  → 1327–1432 nm (textbook ~1350-1450)
-#   Window 2: bands 187-212  → 1774–1960 nm (textbook ~1800-1950)
-# Using ~20 nm margin on each side of the observed zero-data region.
+# Water vapour absorption windows to exclude (wider than nominal due to zero-fill artifacts)
 ATMOSPHERIC_EXCLUDE_NM: list[tuple[float, float]] = [
     (1310.0, 1455.0),  # Water vapour (EMIT zeroes 1327-1432 nm)
     (1755.0, 1980.0),  # Water vapour (EMIT zeroes 1774-1960 nm)
@@ -94,30 +88,6 @@ def select_emit_bands(
     s2_targets_nm: dict[str, float] | None = None,
     exclude_ranges_nm: list[tuple[float, float]] | None = None,
 ) -> np.ndarray:
-    """Select EMIT bands that include S2-corresponding bands and avoid
-    atmospheric absorption windows.
-
-    Algorithm:
-        1. Mark bands inside *exclude_ranges_nm* as invalid.
-        2. Find the closest valid EMIT band for each S2 target wavelength
-           (mandatory set).
-        3. Distribute the remaining ``num_keep - len(mandatory)`` bands
-           evenly across the valid (non-excluded) spectral range, excluding
-           the mandatory bands already chosen.
-        4. Merge, deduplicate, sort, and return 0-based indices.
-
-    Args:
-        wavelengths_nm:    Full EMIT wavelength array (e.g. 285 values).
-        num_keep:          Total number of bands to select (default 32).
-        s2_targets_nm:     Dict of S2 band name → centre wavelength in nm.
-                           Defaults to :data:`S2_BAND_WAVELENGTHS_NM`.
-        exclude_ranges_nm: List of ``(min_nm, max_nm)`` tuples defining
-                           wavelength ranges to exclude.  Defaults to
-                           :data:`ATMOSPHERIC_EXCLUDE_NM`.
-
-    Returns:
-        Sorted 0-based index array (``int64``, length *num_keep*).
-    """
     wl = np.asarray(wavelengths_nm, dtype=np.float64)
     n_bands = len(wl)
 
@@ -126,20 +96,16 @@ def select_emit_bands(
     if exclude_ranges_nm is None:
         exclude_ranges_nm = ATMOSPHERIC_EXCLUDE_NM
 
-    # Step 1: mask out atmospheric absorption windows
     valid_mask = np.ones(n_bands, dtype=bool)
     for wl_min, wl_max in exclude_ranges_nm:
         valid_mask &= ~((wl >= wl_min) & (wl <= wl_max))
 
-    # Step 2: find mandatory bands (closest valid EMIT band per S2 target)
     mandatory = set()
     for s2_wl in s2_targets_nm.values():
         dists = np.where(valid_mask, np.abs(wl - s2_wl), np.inf)
         mandatory.add(int(np.argmin(dists)))
 
     mandatory_arr = np.sort(np.array(list(mandatory), dtype=int))
-
-    # Step 3: distribute remaining bands evenly across valid range
     num_remaining = num_keep - len(mandatory_arr)
 
     valid_indices = np.where(valid_mask)[0]
@@ -154,10 +120,8 @@ def select_emit_bands(
     else:
         distributed = np.array([], dtype=int)
 
-    # Step 4: merge, deduplicate, sort
     selected = np.sort(np.unique(np.concatenate([mandatory_arr, distributed])))
 
-    # If deduplication reduced count below num_keep, pad from valid pool
     if len(selected) < num_keep:
         remaining_pool = np.setdiff1d(valid_indices, selected)
         need = num_keep - len(selected)
@@ -171,14 +135,7 @@ def select_emit_bands(
     return selected[:num_keep].astype(int)
 
 
-def closest_bands(
-    wavelengths_nm,
-    targets_nm,
-    *,
-    one_based=False,
-    return_picked=True,
-    verbose=False,
-):
+def closest_bands(wavelengths_nm, targets_nm, *, one_based=False, return_picked=True, verbose=False):
     wl = np.atleast_1d(np.asarray(wavelengths_nm, dtype=float))
     if np.isscalar(targets_nm):
         targets = [float(targets_nm)]

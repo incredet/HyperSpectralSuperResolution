@@ -1,6 +1,7 @@
 from pathlib import Path
 import re
 import json
+import warnings
 import numpy as np
 import rasterio
 from arosics import COREG_LOCAL
@@ -27,11 +28,6 @@ def s2_bandmap_from_template(s2_template_tif: str) -> dict[str, int]:
 
 def closest_band_1based(wavelengths_nm: np.ndarray, target_nm: float) -> int:
     return int(np.argmin(np.abs(np.asarray(wavelengths_nm, float) - float(target_nm)))) + 1
-
-
-def _norm_code(x: str) -> str:
-    return str(x).split("_", 1)[0].upper()
-
 
 
 def coregister_s2_granule_to_emit_granule(
@@ -80,7 +76,7 @@ def coregister_s2_granule_to_emit_granule(
     last_err = None
  
     for code_raw in prefer:
-        code = _norm_code(code_raw)
+        code = str(code_raw).split("_", 1)[0].upper()
         if code not in target_nm:
             continue
         if code not in s2_map:
@@ -116,8 +112,10 @@ def coregister_s2_granule_to_emit_granule(
 
             )
 
-            result = CRL.correct_shifts(cliptoextent=cliptoextent) 
-            ok = bool(getattr(CRL, "success", True)) 
+            result = CRL.correct_shifts(cliptoextent=cliptoextent)
+            if not hasattr(CRL, "success"):
+                warnings.warn("COREG_LOCAL missing 'success' attr — treating as failed", RuntimeWarning)
+            ok = bool(getattr(CRL, "success", False))
             info = {
                 "success": ok,
                 "s2_code": code,

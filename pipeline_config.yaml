@@ -1,0 +1,186 @@
+# ── AOI (overridden per-AOI by the notebook — these are just placeholders) ─
+aoi_lat: 0.0
+aoi_lon: 0.0
+
+
+# ── Search ────────────────────────────────────────────────────────────────
+# STAC API endpoint and collection for Sentinel-2 L2A
+s2_api:        "https://earth-search.aws.element84.com/v1"
+s2_collection: "sentinel-2-l2a"
+
+# Buffer around AOI centre point (metres) — defines the search bounding box
+search_buffer_m: 5000
+
+# Temporal bounds for EMIT/S2 search (ISO 8601, e.g. "2023-01-01").
+# Pin these for reproducibility — otherwise newly-ingested granules change results.
+search_start: "2022-08-01"
+search_end:   "2026-03-31"
+
+
+# ── Pairing ───────────────────────────────────────────────────────────────
+# Maximum temporal gap between EMIT and S2 acquisitions (days)
+pairing_days: 3.0
+
+# Rolling window for batched pairing (days)
+pairing_window_days: 14
+
+# Keep top-N EMIT granules per day before pairing
+emit_top_n_per_day: 5
+
+# Maximum sun-zenith-angle difference between EMIT and S2 (degrees)
+sun_deg_max: 5.0
+
+# Maximum time-of-day difference (hours)
+max_tod_diff_h: 1.5
+
+# Tile footprint for overlap scoring (metres)
+pairing_tile_m: 6000.0
+
+# Pre-filter: keep top-K pairs before detailed scoring
+top_k_prefilter: 50
+
+
+# ── Quality filters ───────────────────────────────────────────────────────
+max_s2_cloud_frac: 0.30
+max_emit_cloud_pct: 30.0
+
+# Maximum nodata (black) pixel fraction per tile (either sensor).
+# 0.0 = zero tolerance for nodata.
+max_black_frac: 0.0
+
+
+# ── AROSICS co-registration ──────────────────────────────────────────────
+# Grid resolution for tie-point placement (metres).
+# Larger = fewer but more reliable tie points.
+coreg_grid_res: 150
+
+# Maximum number of tie points
+coreg_max_points: 600
+
+# Matching window size in pixels [width, height].
+# Larger windows give more context but are slower and coarser.
+coreg_window_size: [128, 128]
+
+# Maximum allowed shift (metres) — reject tie points beyond this
+coreg_max_shift: 50
+
+# Minimum reliability score for a tie point (0–100)
+coreg_min_reliability: 60
+
+# Tie-point outlier filter level (1=lenient, 3=strict)
+coreg_tieP_filter_level: 3
+
+# Nodata values used during co-registration
+coreg_nodata_emit: 65535.0
+coreg_nodata_s2:   0.0
+
+# Output ground sampling distance [x, y] in metres
+coreg_out_gsd: [10.0, 10.0]
+
+# Resampling method for co-registration: "cubic", "bilinear", "nearest"
+coreg_resamp_calc:    "cubic"
+coreg_resamp_deshift: "cubic"
+
+# S2 bands preferred for co-registration (highest contrast)
+coreg_prefer_bands: ["B03", "B04", "B08"]
+
+# Whether to clip output to the intersection extent
+coreg_cliptoextent: false
+
+
+# ── Tiling ────────────────────────────────────────────────────────────────
+emit_tile_size: 96
+
+# S2-to-EMIT resolution ratio
+tile_scale: 6
+
+# Max per-tile cloud fraction (SCL classes 8, 9). Active when scl_path given.
+max_tile_cloud_frac: 0.05
+
+
+# ── Spectral fitting (regression) ────────────────────────────────────────
+# Polynomial degree for Ridge regression (S2 → EMIT)
+spectral_degree: 2
+
+# Ridge regularisation strength
+spectral_alpha: 1.0
+
+# Maximum coefficient of variation for homogeneous pixel selection
+spectral_max_cv: 0.25
+
+# Scipy zoom order for EMIT upsampling before fitting (1 = bilinear)
+spectral_emit_upsample_order: 1
+
+# ── Band selection ────────────────────────────────────────────────────────
+# Target wavelengths (nm) for the 32 EMIT bands to keep.
+# At runtime, the closest EMIT band is matched for each target.
+#
+# Selection criteria:
+#   - All 10 Sentinel-2 band centres (mandatory for regression GT)
+#   - Key diagnostic absorption features (minerals, vegetation, water)
+#   - Fill bands for spectral continuity between features
+#   - Excludes: noisy spectral edges (<400 nm, >2450 nm) and
+#     atmospheric window fringes (1290-1475 nm, 1735-2000 nm)
+#
+# Categories:
+#   S2  = Sentinel-2 corresponding band
+#   DX  = Diagnostic absorption feature
+#   FL  = Fill band for spectral continuity
+#
+emit_target_wavelengths_nm:
+  - 440    # FL  blue-violet transition
+  - 490    # S2  B02 Blue
+  - 530    # DX  green reflectance peak (vegetation vigor)
+  - 560    # S2  B03 Green
+  - 620    # FL  orange region
+  - 665    # S2  B04 Red — chlorophyll absorption
+  - 705    # S2  B05 Red Edge 1
+  - 720    # DX  red edge inflection point
+  - 740    # S2  B06 Red Edge 2
+  - 783    # S2  B07 Red Edge 3
+  - 842    # S2  B08 NIR
+  - 865    # S2  B8A NIR narrow
+  - 880    # DX  hematite crystal field absorption
+  - 920    # DX  goethite crystal field absorption
+  - 970    # DX  water absorption — canopy water content
+  - 1050   # FL  NIR-SWIR transition
+  - 1130   # FL  NIR-SWIR
+  - 1200   # DX  leaf water absorption
+  - 1260   # FL  pre-atmospheric-window edge
+  - 1510   # DX  cellulose O-H overtone
+  - 1560   # FL  SWIR-1 middle
+  - 1610   # S2  B11 SWIR-1
+  - 1680   # DX  lignin / non-photosynthetic vegetation
+  - 2040   # FL  post-atmospheric-window
+  - 2100   # FL  SWIR-2 transition
+  - 2190   # S2  B12 SWIR-2
+  - 2200   # DX  Al-OH — kaolinite, montmorillonite
+  - 2250   # DX  Fe-OH absorption
+  - 2290   # FL  between Fe-OH and carbonate
+  - 2340   # DX  carbonate / Mg-OH — calcite, dolomite
+  - 2390   # FL  post-carbonate
+  - 2440   # FL  near clean-range edge
+
+spectral_num_keep_bands: 32
+
+
+# ── Encoding / output ────────────────────────────────────────────────────
+# Reflectance-to-DN scale factor (reflectance × scale = uint16 DN)
+reflectance_scale: 10000.0
+
+# Nodata sentinel for uint16 GeoTIFFs
+nodata_uint16: 65535
+
+
+# ── DEM ───────────────────────────────────────────────────────────────────
+# Apply DEM-based terrain correction during EMIT orthorectification
+apply_dem_correction: true
+
+
+# ── Paths ─────────────────────────────────────────────────────────────────
+# Local scratch directory (Colab tmpdir, cleaned after each AOI)
+local_root: "pairs_output"
+
+# Drive output root — set per-run in the notebook, not here.
+# Must be provided when building the config or the pipeline will error.
+drive_root: null

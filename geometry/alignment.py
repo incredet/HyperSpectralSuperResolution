@@ -1,17 +1,4 @@
-"""
-geometry/alignment.py
----------------------
-Consolidated EMIT–S2 spatial alignment pipeline.
-
-Replaces the multi-cell notebook flow (orthorectify → crop → co-register →
-trim) with a single function call that produces pixel-locked, trimmed
-EMIT and S2 rasters ready for tiling.
-
-Public API
-----------
-align_emit_s2_pair  — full alignment from raw inputs to trimmed outputs
-AlignmentResult     — result container
-"""
+"""Consolidated EMIT–S2 spatial alignment pipeline."""
 
 from __future__ import annotations
 
@@ -44,52 +31,23 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Result container
-# ---------------------------------------------------------------------------
 
 
 @dataclass
 class AlignmentResult:
-    """Output of :func:`align_emit_s2_pair`."""
-
     emit_envi_trimmed: Path
-    """Final trimmed ENVI datacube (.bin)."""
-
     s2_tif_trimmed: Path
-    """Final co-registered, trimmed S2 GeoTIFF."""
-
     emit_utm_tif: Path
-    """uint16 UTM GeoTIFF (for inspection / AROSICS reference)."""
-
     emit_envi_full: Path
-    """Full (untrimmed) ENVI datacube."""
-
     bounds_trimmed: tuple[float, float, float, float]
-    """(left, bottom, right, top) in map CRS after trimming."""
-
     anchor_x0: float
-    """Grid anchor X (for consistent 60 m snapping)."""
-
     anchor_y0: float
-    """Grid anchor Y."""
-
     emit_conv_info: dict
-    """Metadata dict from ``convert_emit_nc_to_envi``."""
-
     coreg_info: dict
-    """Result dict from ``coregister_s2_granule_to_emit_granule``."""
-
     success: bool
-    """True if co-registration succeeded and outputs are valid."""
-
     s2_overlap_path: Path | None = None
-    """Intermediate cropped S2 (kept if ``keep_intermediate=True``)."""
 
 
-# ---------------------------------------------------------------------------
-# Main pipeline
-# ---------------------------------------------------------------------------
 
 
 def align_emit_s2_pair(
@@ -105,50 +63,7 @@ def align_emit_s2_pair(
     emit_info_save_path: str | Path | None = None,
     trim: bool = False,
 ) -> AlignmentResult:
-    """Run the full EMIT–S2 spatial alignment pipeline.
-
-    Orchestrates three (or four) steps:
-
-    1. **EMIT orthorectification** — ``convert_emit_nc_to_envi()`` with
-       optional DEM parallax correction, producing a UTM ENVI cube and
-       uint16 GeoTIFF.
-    2. **S2 crop** — ``crop_s2_stack_to_te()`` limits the S2 stack to the
-       EMIT footprint, reducing AROSICS computation and preventing
-       spurious tie-points in nodata regions.
-    3. **AROSICS co-registration** — local tie-point matching and warping
-       of S2 to the EMIT reference grid.
-    4. **(Optional) Trim** — remove edge artefacts, intersect valid
-       extents, snap to the 60 m grid, and crop both rasters.
-       Controlled by the ``trim`` parameter (default False).
-
-    When ``trim=False`` (default), the rasters are returned as-is after
-    co-registration.  Nodata at edges is handled downstream by
-    ``find_valid_paired_tiles``, which uses geotransforms to compute
-    the pixel correspondence and places the tiling grid on the valid
-    data region.  This avoids the sub-pixel offset that ``gdal_translate
-    -projwin`` can introduce when trimming.
-
-    Args:
-        emit_nc:       Path to EMIT L2A reflectance netCDF.
-        s2_stack:      Path to S2 10-band spectral stack GeoTIFF.
-        out_dir:       Directory for intermediate and final outputs.
-        config:        ``PipelineConfig`` with all parameters.
-        wl_nm:         EMIT wavelength array (285 values, nm).
-        emit_obs_nc:   Path to EMIT observation geometry netCDF (required
-                       if ``config.apply_dem_correction`` is True).
-        report:        Optional ``ReportWriter`` to log alignment details.
-        keep_intermediate: If True, retain intermediate files (cropped S2,
-                       untrimmed co-registered S2).
-        emit_info_save_path: If set, save EMIT conversion info JSON here.
-        trim:          If True, run step 4 (gdal_translate trim to common
-                       extent).  Default False — tiling handles nodata.
-
-    Returns:
-        :class:`AlignmentResult` with paths to final outputs and metadata.
-
-    Raises:
-        RuntimeError: If co-registration fails (``success=False``).
-    """
+    """Full EMIT-S2 alignment: orthorectify, crop, coregister, trim"""
     emit_nc = Path(emit_nc)
     s2_stack = Path(s2_stack)
     out_dir = Path(out_dir)
@@ -159,7 +74,6 @@ def align_emit_s2_pair(
     emit_utm_dir.mkdir(parents=True, exist_ok=True)
     s2_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── Step 1: EMIT orthorectification ──────────────────────────────────
 
     log.info("Step 1/4: EMIT orthorectification")
     envi_bin, emit_conv_info = convert_emit_nc_to_envi(
@@ -191,7 +105,6 @@ def align_emit_s2_pair(
             f"DEM correction: {config.apply_dem_correction}",
         ])
 
-    # ── Step 2: S2 crop to EMIT extent ───────────────────────────────────
 
     log.info("Step 2/4: Crop S2 to EMIT extent")
     s2_overlap_name = s2_stack.name.replace("S2_10band_10m", "overlap", 1)
@@ -216,7 +129,6 @@ def align_emit_s2_pair(
             f"Window: {s2_overlap_info.get('window')}",
         ])
 
-    # ── Step 3: AROSICS co-registration ──────────────────────────────────
 
     log.info("Step 3/4: AROSICS co-registration")
     out_s2_coreg = s2_dir / s2_overlap.stem.replace("overlap", "coreg") \
@@ -277,7 +189,6 @@ def align_emit_s2_pair(
             s2_overlap_path=s2_overlap,
         )
 
-    # ── Step 4 (optional): Trim to valid-pixel intersection ─────────────
 
     if trim:
         log.info("Step 4/4: Trim to common valid extent")
@@ -325,8 +236,6 @@ def align_emit_s2_pair(
             s2_overlap_path=s2_overlap if keep_intermediate else None,
         )
 
-    # ── No trim: return co-registered rasters as-is ──────────────────────
-    # Nodata at edges is handled downstream by find_valid_paired_tiles.
 
     if report:
         report.section("Spatial Trimming", [

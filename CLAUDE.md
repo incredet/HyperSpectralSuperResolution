@@ -43,8 +43,9 @@ HyperSpectralSuperResolution/
 │   ├── pairs_artifacts.py   # Pair metadata tracking
 │   └── report_builder.py    # Report generation
 ├── hif-benchmarking/        # Fusion method evaluation suite (see below)
-├── pipeline_defaults.json   # Central config for all pipeline parameters
+├── pipeline_config.yaml     # Single source of truth — all pipeline parameters (YAML, no hidden defaults)
 ├── spectral_diagnosis.py    # Spectral anomaly diagnostic tool
+├── NOTEBOOK_CHANGES.md      # Copy-paste guide for Pairs_Extract + Color_Matching notebooks
 ├── aois.csv                 # Areas of Interest
 ├── Pairs_EMIT_S2_demo_3-5.ipynb   # Pairing demo notebook
 ├── SR_EMIT_S2_BasicSR.ipynb       # Main SR training notebook (Colab)

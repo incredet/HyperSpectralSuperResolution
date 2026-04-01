@@ -36,12 +36,7 @@ from rasterio.transform import Affine
 NO_DATA_VALUE = -9999.0
 
 def _read_obs_cube_and_names(obs_nc):
-    """
-    Returns (obs_arr, band_names):
-      obs_arr: (H, W, 11) float32
-      band_names: list[str] length 11
-    Raises KeyError if cannot find expected OBS variables.
-    """
+    """Read observation cube array and band names from netCDF."""
     # Preferred canonical band-name order
     canonical = [
         ("path_length", ["path_length", "pathlength", "path_len", "plength"]),
@@ -117,23 +112,6 @@ def _read_obs_cube_and_names(obs_nc):
 
 
 
-def _pretty_write_xml(root: ET.Element, out_path: str):
-    """Write a pretty-printed XML to file."""
-    def _indent(elem, level=0):
-        i = "\n" + level * "  "
-        if len(elem):
-            if not elem.text or not elem.text.strip():
-                elem.text = i + "  "
-            for e in elem:
-                _indent(e, level + 1)
-            if not e.tail or not e.tail.strip():
-                e.tail = i
-        if level and (not elem.tail or not elem.tail.strip()):
-            elem.tail = i
-    _indent(root)
-    ET.ElementTree(root).write(out_path, encoding="utf-8", xml_declaration=True)
-
-
 def _write_xml_sidecar(
     out_bin_path: str,
     *,
@@ -150,7 +128,7 @@ def _write_xml_sidecar(
     band_names: list[str] | None = None,
     description: str | None = None,
 ):
-    """Create a compact XML metadata file next to the ENVI product."""
+    """Write XML metadata sidecar for ENVI product."""
     lines = shape[0]
     samples = shape[1]
     bands = shape[2] if len(shape) == 3 else (len(band_names) if band_names else 1)
@@ -160,12 +138,10 @@ def _write_xml_sidecar(
     if description:
         ET.SubElement(root, "Description").text = description
 
-    # Time
     t = ET.SubElement(root, "AcquisitionTime")
     ET.SubElement(t, "StartUTC").text = start_time.strftime("%Y-%m-%dT%H:%M:%SZ")
     ET.SubElement(t, "EndUTC").text = end_time.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # Geometry
     g = ET.SubElement(root, "Geometry")
     ET.SubElement(g, "EPSG").text = epsg_str
     if crs_wkt:
@@ -176,19 +152,16 @@ def _write_xml_sidecar(
         ET.SubElement(ps, "Y").text = f"{float(pixel_size[1]):.10g}"
 
     bb = ET.SubElement(root, "BoundingBoxLonLat")
-    # order: UL(corner_1), UR(corner_2), LR(corner_3), LL(corner_4)
     for i, (lon, lat) in enumerate(bbox_lonlat, start=1):
         c = ET.SubElement(bb, f"Corner{i}")
         ET.SubElement(c, "Lon").text = f"{float(lon):.10g}"
         ET.SubElement(c, "Lat").text = f"{float(lat):.10g}"
 
-    # Raster shape
     s = ET.SubElement(root, "RasterShape")
     ET.SubElement(s, "Lines").text = str(int(lines))
     ET.SubElement(s, "Samples").text = str(int(samples))
     ET.SubElement(s, "Bands").text = str(int(bands))
 
-    # Spectral info
     if wavelengths or fwhm or band_names:
         spec = ET.SubElement(root, "Spectral")
         if wavelengths:
@@ -207,7 +180,19 @@ def _write_xml_sidecar(
                 ET.SubElement(bn, "Band").text = str(name)
 
     out_xml = os.path.splitext(out_bin_path)[0] + ".xml"
-    _pretty_write_xml(root, out_xml)
+    def _indent(elem, level=0):
+        i = "\n" + level * "  "
+        if len(elem):
+            if not elem.text or not elem.text.strip():
+                elem.text = i + "  "
+            for e in elem:
+                _indent(e, level + 1)
+            if not e.tail or not e.tail.strip():
+                e.tail = i
+        if level and (not elem.tail or not elem.tail.strip()):
+            elem.tail = i
+    _indent(root)
+    ET.ElementTree(root).write(out_xml, encoding="utf-8", xml_declaration=True)
 
 def get_attr(ds, name):
     if hasattr(ds, "ncattrs") and name in ds.ncattrs():
@@ -232,7 +217,7 @@ def open_any_nc(path):
 
 
 def run_cmd(cmd: list[str], check=True) -> dict:
-    """Run a subprocess command and return a JSON-friendly record (with truncated stdout/stderr)."""
+    """Run subprocess and return JSON-friendly record."""
     import time as _time
     _label = cmd[0] if cmd else "?"
     print(f"  [run_cmd] START  {shlex.join(cmd[:6])}{'…' if len(cmd) > 6 else ''}")
@@ -287,7 +272,7 @@ def export_uint16_deflate_geotiff(
 
 
 def raster_meta(path: str) -> dict:
-    """Reads CRS/bounds/shape/res from any GDAL-readable raster (GeoTIFF or ENVI)."""
+    """Read CRS, bounds, shape, resolution from any GDAL raster."""
     p = Path(path)
     if not p.exists():
         return {"path": str(path), "exists": False}
@@ -314,33 +299,6 @@ def raster_meta(path: str) -> dict:
         return out
 
 
-def _bounds_to_out_crs_from_wgs84(
-    bounds_wgs84: tuple, out_crs: str,
-) -> tuple:
-    """Transform (left, bottom, right, top) in EPSG:4326 → *out_crs*."""
-    l, b, r, t = bounds_wgs84
-    tf = Transformer.from_crs("EPSG:4326", out_crs, always_xy=True)
-    xs = [l, l, r, r]
-    ys = [b, t, b, t]
-    X, Y = tf.transform(xs, ys)
-    return (min(X), min(Y), max(X), max(Y))
-
-
-def _bounds_to_out_crs(src_path: str, out_crs: str):
-    with rasterio.open(src_path) as ds:
-        b = ds.bounds
-        src_crs = ds.crs
-    if src_crs is None:
-        raise ValueError(f"Source CRS is None for {src_path}")
-
-    tf = Transformer.from_crs(src_crs, out_crs, always_xy=True)
-
-    # transform all 4 corners (safe for rotation-ish cases)
-    xs = [b.left, b.left, b.right, b.right]
-    ys = [b.bottom, b.top, b.bottom, b.top]
-    X, Y = tf.transform(xs, ys)
-
-    return (min(X), min(Y), max(X), max(Y))  # left, bottom, right, top
 
 def _intersect(a, b):
     # a,b: (l,b,r,t)
@@ -349,36 +307,6 @@ def _intersect(a, b):
     if (r <= l) or (t <= bb):
         return None
     return (l, bb, r, t)
-
-
-def _compute_te(src_path, s2_te_exact, s2_origin_xy, out_crs, xres=60.0, yres=60.0):
-    src_te = _bounds_to_out_crs(src_path, out_crs)  # (left,bottom,right,top) in out_crs
-
-    s2_te = tuple(map(float, s2_te_exact))  # (left,bottom,right,top)
-
-    inter = _intersect(src_te, s2_te)
-    if inter is None:
-        raise ValueError("No overlap between EMIT source bounds and S2 extent in out_crs.")
-
-    inter_left, inter_bottom, inter_right, inter_top = map(float, inter)
-
-    x0, y0 = map(float, s2_origin_xy)
-    step_x, step_y = float(xres), float(yres)
-
-    eps = 1e-9
-
-    left  = x0 + math.ceil(((inter_left  - x0) / step_x) - eps) * step_x
-    right = x0 + math.floor(((inter_right - x0) / step_x) + eps) * step_x
-
-    top    = y0 - math.ceil(((y0 - inter_top) / step_y) - eps) * step_y
-    bottom = y0 - math.floor(((y0 - inter_bottom) / step_y) + eps) * step_y
-
-
-    if right <= left or top <= bottom:
-        raise ValueError(f"Snapped TE is invalid: {(left,bottom,right,top)}")
-
-    return (left, bottom, right, top)
-
 
 
 def _which_gdal_edit() -> str | None:
@@ -397,11 +325,7 @@ def export_loc_uint16_deflate_geotiff(
     elev_range=(-1000.0, 12000.0),
     nodata_uint16: int = 0,
 ) -> dict:
-    """
-    Export EMIT LOC (lon,lat,elev) to UInt16 GeoTIFF with meaningful scaling.
-    Writes per-band scale/offset metadata when gdal_edit is available.
-    """
-    # Per-band scaling using -scale_X (aka -scale_bn) :contentReference[oaicite:3]{index=3}
+    """Export EMIT LOC (lon,lat,elev) to scaled UInt16 GeoTIFF."""
     cmd = [
         "gdal_translate",
         "-of", "GTiff",
@@ -421,7 +345,6 @@ def export_loc_uint16_deflate_geotiff(
     ]
     rec = run_cmd(cmd, check=True)
 
-    # Store decode metadata: true = raw*scale + offset :contentReference[oaicite:4]{index=4}
     scales = [
         (lon_range[1] - lon_range[0]) / 65535.0,
         (lat_range[1] - lat_range[0]) / 65535.0,
@@ -551,9 +474,6 @@ def export_obs_uint16_deflate_geotiff(
     return rec
 
 
-# ---------------------------------------------------------------------------
-# VRT-based direct georeferencing helpers
-# ---------------------------------------------------------------------------
 
 _USE_GEOLOC_VRT = True   # module flag; set False to fall back to scatter loop
 
@@ -902,7 +822,6 @@ def nc_to_envi(
                 })
             except Exception:
                 pass
-        # ---------------------------------------------------------------
 
 
         x0 = float(gt[0] + 0.5 * gt[1])
@@ -1089,9 +1008,12 @@ def nc_to_envi(
 
             if src_bounds_wgs84 is not None:
                 # Use caller-supplied geographic bounds (for VRT sources)
-                _src_te_out = _bounds_to_out_crs_from_wgs84(
-                    src_bounds_wgs84, out_crs,
-                )
+                l, b, r, t = src_bounds_wgs84
+                tf = Transformer.from_crs("EPSG:4326", out_crs, always_xy=True)
+                xs = [l, l, r, r]
+                ys = [b, t, b, t]
+                X, Y = tf.transform(xs, ys)
+                _src_te_out = (min(X), min(Y), max(X), max(Y))
                 s2_te = tuple(map(float, s2_te_exact))
                 inter = _intersect(_src_te_out, s2_te)
                 if inter is None:
@@ -1103,14 +1025,30 @@ def nc_to_envi(
                 top    = y0 - math.ceil(((y0 - inter_top) / step_y) - eps) * step_y
                 bottom = y0 - math.floor(((y0 - inter_bottom) / step_y) + eps) * step_y
             else:
-                left, bottom, right, top = _compute_te(
-                    src_path,
-                    s2_te_exact=s2_te_exact,
-                    s2_origin_xy=(s2_x0, s2_y0),
-                    out_crs=out_crs,
-                    xres=xres,
-                    yres=yres,
-                )
+                with rasterio.open(src_path) as ds:
+                    b = ds.bounds
+                    src_crs = ds.crs
+                if src_crs is None:
+                    raise ValueError(f"Source CRS is None for {src_path}")
+                tf = Transformer.from_crs(src_crs, out_crs, always_xy=True)
+                xs = [b.left, b.left, b.right, b.right]
+                ys = [b.bottom, b.top, b.bottom, b.top]
+                X, Y = tf.transform(xs, ys)
+                src_te = (min(X), min(Y), max(X), max(Y))
+                s2_te = tuple(map(float, s2_te_exact))
+                inter = _intersect(src_te, s2_te)
+                if inter is None:
+                    raise ValueError("No overlap between EMIT source bounds and S2 extent in out_crs.")
+                inter_left, inter_bottom, inter_right, inter_top = map(float, inter)
+                x0, y0 = map(float, (s2_x0, s2_y0))
+                step_x, step_y = float(xres), float(yres)
+                eps = 1e-9
+                left  = x0 + math.ceil(((inter_left  - x0) / step_x) - eps) * step_x
+                right = x0 + math.floor(((inter_right - x0) / step_x) + eps) * step_x
+                top    = y0 - math.ceil(((y0 - inter_top) / step_y) - eps) * step_y
+                bottom = y0 - math.floor(((y0 - inter_bottom) / step_y) + eps) * step_y
+                if right <= left or top <= bottom:
+                    raise ValueError(f"Snapped TE is invalid: {(left,bottom,right,top)}")
             # Compute expected dimensions for metadata (informational only)
             cols = int(round((right - left) / step_x))
             rows = int(round((top - bottom) / step_y))
@@ -1171,8 +1109,6 @@ def nc_to_envi(
             return rec
 
 
-
-        # ----------------------------------------------------------------
 
         # Precompute gather indices once (used by all exports)
         gy = glt0[..., 1][valid_glt2]
@@ -1712,14 +1648,7 @@ def convert_emit_nc_to_envi(
     dem_cache_dir: str | Path = "/tmp/dem_cache",
     correction_diagnostics: bool = False,
 ) -> Path | tuple[Path, dict]:
-    """
-    Convert EMIT netCDF to ENVI using nc_to_envi and return the main ENVI cube path (.bin).
-
-    - Uses nc_to_envi's deterministic naming + skip logic (overwrite=False by default)
-    - Adds a per-input tag to avoid collisions across tiles
-    - If apply_dem_correction=True, applies terrain parallax correction using
-      Copernicus GLO-30 DEM (requires emit_obs_nc for viewing angles).
-    """
+    """Convert EMIT netCDF to ENVI; optionally apply DEM terrain parallax correction."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     tmp_dir = out_dir / "tmp"

@@ -159,3 +159,343 @@ vietnam_central_highlands,14.00,108.00,Central Highlands coffee plantations — 
 colombia_coffee,5.00,-75.50,Colombian coffee axis — Quindio,cropland/tropical_montane
 taiwan_west,24.00,120.50,Western Taiwan rice-urban mosaic,cropland/urban
 hawaii_agriculture,20.80,-156.30,Maui sugar-pineapple agriculture — Hawaii USA,cropland/tropical
+nebraska_corn,41.0,-100.5,Nebraska corn-soybean belt — USA,cropland
+south_dakota_wheat,44.5,-99.0,South Dakota spring wheat — USA,cropland
+minnesota_soy,44.0,-95.0,Minnesota soybean-corn rotation — USA,cropland
+oklahoma_wheat,35.5,-98.0,Oklahoma winter wheat — USA,cropland
+north_dakota_durum,47.5,-100.5,North Dakota durum wheat — USA,cropland
+saskatchewan_canola,51.0,-106.5,Saskatchewan canola-wheat — Canada,cropland
+manitoba_grain,50.0,-98.5,Manitoba grain belt — Canada,cropland
+france_picardy,49.5,2.5,Picardy sugar beet-wheat — France,cropland
+germany_saxony,51.2,12.5,Saxony grain belt — Germany,cropland
+poland_masuria,51.5,20.5,Polish lowland grain — Masuria,cropland
+romania_wallachian,44.0,26.0,Wallachian Plain wheat — Romania,cropland
+hungary_alföld,47.0,20.0,Hungarian Great Plain — Alföld,cropland
+volga_grain,51.0,46.0,Volga grain belt — Saratov Russia,cropland
+kuban_wheat,45.5,40.0,Kuban breadbasket — Krasnodar Russia,cropland
+australia_nsw_wheat,-33.0,148.0,NSW wheat belt — Australia,cropland
+australia_wa_grain,-31.5,117.5,Western Australia grain belt,cropland
+argentina_cordoba,-32.5,-63.5,Córdoba soybean — Argentina,cropland
+argentina_santa_fe,-32.0,-61.5,Santa Fe soy-wheat — Argentina,cropland
+brazil_parana_soy,-24.0,-51.0,Paraná soybean — Brazil,cropland
+brazil_goias_soy,-16.0,-49.5,Goiás soy-maize double crop — Brazil,cropland
+brazil_bahia_soy,-12.0,-46.0,Western Bahia soy frontier — Brazil,cropland
+kazakhstan_grain,51.0,67.0,North Kazakhstan grain — Kostanay,cropland
+egypt_beheira,31.0,30.5,Beheira irrigated cotton — Nile Delta Egypt,cropland/irrigated
+uzbekistan_fergana,40.5,71.0,Fergana Valley cotton — Uzbekistan,cropland/irrigated
+california_imperial,33.0,-115.5,Imperial Valley irrigated — California,cropland/irrigated
+israel_negev,31.0,34.5,Negev drip-irrigated agriculture — Israel,cropland/irrigated
+libya_kufra,24.0,23.5,Kufra center-pivot irrigation — Libya,cropland/irrigated
+saudi_hail,27.5,41.5,Hail center-pivot farms — Saudi Arabia,cropland/irrigated
+spain_almeria,36.8,-2.5,Almería greenhouse agriculture — Spain,cropland/irrigated
+india_haryana,29.0,76.5,Haryana rice-wheat irrigated — India,cropland/irrigated
+china_henan,34.0,113.5,Henan wheat-maize double crop — China,cropland/irrigated
+iraq_mesopotamia,32.5,44.5,Mesopotamian irrigated agriculture — Iraq,cropland/irrigated
+pakistan_sindh_canal,27.5,68.5,Sindh canal-irrigated cotton — Pakistan,cropland/irrigated
+bangladesh_boro,24.0,90.0,Bangladesh boro rice — Dhaka division,cropland/rice
+india_wb_rice,23.0,88.0,West Bengal rice paddies — India,cropland/rice
+china_hunan_rice,27.5,112.0,Hunan double rice — China,cropland/rice
+china_jiangsu_rice,33.0,119.5,Jiangsu rice-wheat rotation — China,cropland/rice
+thailand_isan,15.5,103.0,Isan rainfed rice — northeast Thailand,cropland/rice
+vietnam_red_river,20.5,106.0,Red River Delta rice — Vietnam,cropland/rice
+japan_niigata,37.8,139.0,Niigata rice plains — Japan,cropland/rice
+philippines_luzon,15.5,121.0,Central Luzon rice granary — Philippines,cropland/rice
+myanmar_ayeyarwady,16.5,95.0,Ayeyarwady Delta rice — Myanmar,cropland/rice
+malaysia_palm,4.5,103.5,Pahang oil palm — Peninsular Malaysia,cropland/plantation
+indonesia_palm,-1.0,109.5,West Kalimantan oil palm — Indonesia,cropland/plantation
+kenya_tea,-0.5,37.0,Kericho tea highlands — Kenya,cropland/plantation
+brazil_sugarcane,-22.0,-47.5,São Paulo sugarcane belt — Brazil,cropland/plantation
+india_assam_tea,26.5,93.0,Assam tea gardens — India,cropland/plantation
+ghana_cocoa,6.5,-2.0,Ashanti cocoa belt — Ghana,cropland/plantation
+ivory_coast_cocoa,6.5,-5.5,Ivory Coast cocoa zone,cropland/plantation
+ethiopia_coffee,7.0,36.0,Kaffa coffee forest — Ethiopia,cropland/plantation
+rubber_thailand,8.0,99.0,Southern Thailand rubber — Surat Thani,cropland/plantation
+amazon_para,-3.5,-52.0,Pará terra firme forest — Brazil,tropical_forest
+amazon_acre,-9.5,-69.0,Acre transitional forest — Brazil,tropical_forest
+amazon_ecuador,-1.5,-76.5,Oriente lowland forest — Ecuador,tropical_forest
+amazon_guyana,4.5,-59.0,Guyana Shield forest — Guyana,tropical_forest
+amazon_colombia,1.0,-72.0,Vaupés lowland forest — Colombia,tropical_forest
+congo_cameroon,2.5,14.0,Dja forest reserve — Cameroon,tropical_forest
+congo_gabon,-0.5,11.5,Lopé rainforest — Gabon,tropical_forest
+congo_republic,-1.0,16.5,Odzala forest — Republic of Congo,tropical_forest
+borneo_sabah,5.0,117.5,Sabah lowland dipterocarp — Malaysia,tropical_forest
+sulawesi_forest,-1.5,121.5,Central Sulawesi montane — Indonesia,tropical_forest
+papua_lowland,-5.5,141.0,Trans-Fly lowland forest — PNG,tropical_forest
+mindanao_forest,8.0,126.0,Eastern Mindanao rainforest — Philippines,tropical_forest
+liberia_forest,6.0,-9.0,Sapo National Park — Liberia,tropical_forest
+sierra_leone_forest,7.5,-11.5,Gola rainforest — Sierra Leone,tropical_forest
+peru_tambopata,-13.0,-69.5,Tambopata lowland forest — Peru,tropical_forest
+bolivia_chapare,-16.5,-65.5,Chapare tropical forest — Bolivia,tropical_forest
+india_satpura,22.5,78.0,Satpura teak forest — Madhya Pradesh India,tropical_dry_forest
+mexico_jalisco,20.0,-105.0,Jalisco tropical dry forest — Mexico,tropical_dry_forest
+thailand_dry,14.5,99.0,Kanchanaburi dry forest — Thailand,tropical_dry_forest
+mozambique_miombo,-14.0,35.5,Niassa miombo dry forest — Mozambique,tropical_dry_forest
+bolivia_chiquitano,-17.5,-61.5,Chiquitanía dry forest — Bolivia,tropical_dry_forest
+australia_monsoon,-13.5,131.0,Arnhem Land monsoon vine forest — Australia,tropical_dry_forest
+nicaragua_dry,12.0,-86.0,Pacific lowland dry forest — Nicaragua,tropical_dry_forest
+cambodia_dry,13.5,106.5,Eastern Plains dry forest — Cambodia,tropical_dry_forest
+zambia_dry_forest,-13.5,29.0,South Luangwa dry forest — Zambia,tropical_dry_forest
+venezuela_llanos_dry,8.5,-69.0,Llanos dry forest patches — Venezuela,tropical_dry_forest
+colombia_cloud,5.5,-75.5,Quindío cloud forest — Colombia,tropical_montane_forest
+peru_cloud,-13.0,-72.5,Cusco cloud forest — Peru,tropical_montane_forest
+uganda_bwindi,-1.0,29.6,Bwindi montane forest — Uganda,tropical_montane_forest
+borneo_kinabalu,6.0,116.5,Kinabalu montane forest — Sabah,tropical_montane_forest
+costa_rica_monteverde,10.3,-84.8,Monteverde cloud forest — Costa Rica,tropical_montane_forest
+tanzania_usambara,-5.0,38.5,Usambara Mountains forest — Tanzania,tropical_montane_forest
+vietnam_hoang_lien,22.3,103.8,Hoàng Liên montane forest — Vietnam,tropical_montane_forest
+nigeria_mangrove,4.5,6.0,Niger Delta mangrove — Nigeria,mangrove
+myanmar_mangrove,15.5,96.5,Ayeyarwady Delta mangrove — Myanmar,mangrove
+brazil_maranhao_mangrove,-2.5,-44.0,Maranhão mangrove — Brazil,mangrove
+australia_kimberley_mang,-15.5,124.5,Kimberley mangrove — Western Australia,mangrove
+senegal_saloum_mangrove,13.5,-16.5,Saloum Delta mangrove — Senegal,mangrove
+mexico_sian_kaan_mangrove,19.5,-87.5,Sian Ka'an mangrove — Quintana Roo Mexico,mangrove
+india_pichavaram_mang,11.4,79.8,Pichavaram mangrove — Tamil Nadu India,mangrove
+panama_mangrove,8.0,-78.5,Gulf of San Miguel mangrove — Panama,mangrove
+ozark_missouri,37.0,-91.5,Ozark Plateau oak-hickory — Missouri USA,temperate_forest
+great_smoky,35.6,-83.5,Great Smoky Mountains — Tennessee USA,temperate_forest
+pacific_nw_forest,46.0,-122.0,Pacific NW Douglas fir — Washington USA,temperate_forest
+france_massif,44.5,3.0,Massif Central beech-oak — France,temperate_forest
+china_changbai,42.0,128.0,Changbai mixed forest — Jilin China,temperate_forest
+chile_araucaria,-38.0,-71.5,Araucaria forest — Chile,temperate_forest
+nz_fiordland,-45.5,167.5,Fiordland temperate rainforest — New Zealand,temperate_forest
+tasmania_huon,-43.0,146.5,Huon Valley tall eucalypt — Tasmania,temperate_forest
+turkey_kackar,40.8,41.0,Kaçkar Mountains mixed forest — Turkey,temperate_forest
+georgia_colchic,42.0,42.0,Colchic temperate rainforest — Georgia,temperate_forest
+japan_tohoku,39.5,140.0,Tōhoku beech forest — Japan,temperate_forest
+korea_jirisan,35.3,127.7,Jirisan mixed forest — South Korea,temperate_forest
+argentina_nahuel,-41.0,-71.5,Nahuel Huapi Nothofagus — Argentina,temperate_forest
+spain_asturias,43.2,-5.5,Asturian deciduous forest — Spain,temperate_forest
+italy_abruzzo,42.0,13.5,Abruzzo beech-fir — Italy,temperate_forest
+bhutan_broadleaf,27.5,89.5,Bhutan subtropical-temperate forest,temperate_forest
+southeast_us_piedmont,34.5,-82.5,Piedmont mixed hardwood — South Carolina USA,temperate_forest
+china_anhui_forest,30.5,118.0,Huangshan subtropical evergreen — Anhui China,temperate_forest
+portugal_cork_oak,38.5,-8.0,Cork oak montado — Alentejo Portugal,temperate_forest
+california_redwood,41.0,-124.0,Redwood coastal forest — California USA,temperate_forest
+oregon_cascades,44.0,-122.0,Cascade Range conifer — Oregon USA,temperate_forest
+hokkaido_north,43.5,143.0,Northern Hokkaido birch-conifer — Japan,boreal_forest
+sakhalin,47.0,143.0,Sakhalin Island boreal — Russia,boreal_forest
+kamchatka_south,51.0,157.0,Southern Kamchatka birch — Russia,boreal_forest
+quebec_laurentian,47.5,-74.0,Laurentian boreal — Quebec Canada,boreal_forest
+alberta_foothills,51.0,-115.5,Alberta boreal foothills — Canada,boreal_forest
+bc_interior,51.0,-121.0,BC interior spruce-fir — Canada,boreal_forest
+nova_scotia,45.0,-63.0,Nova Scotia spruce-fir — Canada,boreal_forest
+maine_boreal,46.5,-69.0,Maine northern boreal — USA,boreal_forest
+mongolia_khentii,48.5,109.5,Khentii Mountains larch — Mongolia,boreal_forest
+russia_ural_south,51.0,59.5,Southern Urals boreal-steppe — Russia,boreal_forest
+sardinia_maquis,39.5,9.5,Sardinia maquis interior — Italy,shrubland/mediterranean
+corsica_maquis,42.0,9.0,Corsica maquis — France,shrubland/mediterranean
+morocco_maquis,34.5,-5.0,Rif Mountains maquis — Morocco,shrubland/mediterranean
+chile_matorral,-33.5,-71.0,Chilean matorral — Valparaíso,shrubland/mediterranean
+australia_kwongan,-30.0,115.5,Kwongan heathland — Western Australia,shrubland/mediterranean
+california_chaparral_sb,34.5,-119.5,Santa Barbara chaparral — California,shrubland/mediterranean
+portugal_maquis,37.5,-8.5,Algarve maquis — Portugal,shrubland/mediterranean
+turkey_maquis,37.5,28.5,Aegean maquis — Turkey,shrubland/mediterranean
+namibia_shrub,-22.5,17.0,Namibian pro-Namib shrubland,shrubland/semi-arid
+botswana_kalahari_shrub,-23.0,23.5,Kalahari scrub savanna — Botswana,shrubland/semi-arid
+mexico_chihuahuan,30.0,-105.0,Chihuahuan creosote scrub — Mexico,shrubland/semi-arid
+australia_chenopod,-31.5,139.0,Chenopod shrubland — South Australia,shrubland/semi-arid
+iran_zagros_shrub,33.5,47.0,Zagros foothill shrubland — Iran,shrubland/semi-arid
+argentina_monte,-35.5,-67.5,Monte desert scrub — Mendoza Argentina,shrubland/semi-arid
+yemen_highland_shrub,15.0,44.0,Yemen highland scrub,shrubland/semi-arid
+kenya_nyika_shrub,-3.5,39.5,Nyika coastal shrubland — Kenya,shrubland/semi-arid
+chile_atacama_shrub,-27.0,-70.5,Atacama coastal shrubland — Chile,shrubland/semi-arid
+jordan_badia,31.5,37.0,Eastern Badia shrubland — Jordan,shrubland/semi-arid
+india_kutch,23.5,69.5,Kutch semi-arid scrub — Gujarat India,shrubland/semi-arid
+patagonia_shrub,-50.0,-71.0,Tierra del Fuego shrub — Argentina,shrubland/subantarctic
+falkland_shrub,-51.5,-59.0,Falkland Islands dwarf shrub,shrubland/subantarctic
+south_africa_renosterveld,-33.5,19.5,Renosterveld shrubland — South Africa,shrubland/heathland
+tanzania_selous,-9.0,37.5,Selous savanna — Tanzania,savanna
+mozambique_savanna,-17.5,34.5,Mozambican savanna — Zambézia,savanna
+burkina_faso_savanna,12.0,-1.5,Sudanian savanna — Burkina Faso,savanna
+mali_savanna,12.5,-8.0,Southern Mali savanna,savanna
+chad_savanna,10.0,17.0,Sudanian savanna — southern Chad,savanna
+zambia_kafue,-15.0,26.0,Kafue floodplain savanna — Zambia,savanna
+brazil_cerrado_ms,-20.5,-55.0,Cerrado-Pantanal transition — Mato Grosso do Sul,savanna
+australia_top_end,-14.0,132.5,Top End tropical savanna — NT Australia,savanna
+venezuela_gran_sabana,5.5,-61.5,Gran Sabana tepui grassland — Venezuela,savanna/grassland
+india_western_ghats_savanna,11.5,76.5,Deccan savanna-forest mosaic — India,savanna
+malawi_savanna,-13.5,34.0,Malawi miombo-savanna — Lilongwe,savanna/woodland
+argentina_entre_rios,-32.0,-59.5,Entre Ríos pampa grassland — Argentina,grassland
+south_africa_grassland,-29.5,29.5,KwaZulu-Natal Highveld grassland — SA,grassland
+montana_prairie,47.0,-108.0,Montana shortgrass prairie — USA,grassland
+colorado_prairie,39.5,-104.0,Colorado Front Range grassland — USA,grassland
+wyoming_grassland,42.5,-106.5,Wyoming mixed-grass prairie — USA,grassland
+uruguay_tacuarembo,-31.5,-55.5,Tacuarembó grassland — Uruguay,grassland
+south_africa_freestate,-29.0,26.5,Free State highveld grassland — SA,grassland
+australia_qld_grass,-25.0,149.0,Queensland subtropical grassland,grassland
+russia_orenburg,51.0,55.0,Orenburg steppe — Russia,steppe
+china_hulunbuir,49.0,119.5,Hulunbuir meadow steppe — Inner Mongolia,steppe/grassland
+kyrgyzstan_steppe,42.0,75.0,Kyrgyz mountain steppe,steppe/grassland
+turkey_central_steppe,39.0,33.5,Central Anatolian steppe — Turkey,steppe
+iran_steppe,36.5,53.0,Northern Iran steppe — Golestan,steppe
+tibet_nagqu,31.5,92.0,Nagqu alpine meadow — Tibet China,alpine/grassland
+kyrgyzstan_alpine,41.5,76.0,Son-Kul alpine pasture — Kyrgyzstan,alpine/grassland
+peru_puna,-15.0,-70.5,Puna highland grassland — Peru,alpine/grassland
+ethiopia_afroalpine,9.0,39.5,Bale Mountains afroalpine — Ethiopia,alpine/grassland
+colorado_alpine,39.0,-106.0,Colorado alpine tundra — USA,alpine/grassland
+sahara_mauritania,22.0,-8.0,Mauritanian sand sea — Sahara,desert
+sahara_libya,26.0,17.0,Libyan Murzuq sand sea,desert
+sahara_egypt_west,25.0,28.0,Western Desert — Egypt,desert
+gobi_mongolia,43.5,104.0,Gobi Desert — southern Mongolia,desert
+taklamakan,39.0,83.0,Taklamakan sand desert — Xinjiang China,desert
+karakum_turkmenistan,39.0,59.0,Karakum Desert — Turkmenistan,desert
+simpson_australia,-25.5,138.0,Simpson Desert — Australia,desert
+wahiba_oman,22.0,58.5,Wahiba Sands — Oman,desert
+lut_desert,32.0,58.5,Dasht-e Lut — Iran,desert
+chihuahuan_dunes,32.5,-106.5,White Sands gypsum dunes — New Mexico USA,desert
+sahara_hoggar,23.5,5.5,Hoggar volcanic plateau — Algeria,desert/rock
+sahara_tibesti,21.0,17.5,Tibesti Mountains — Chad,desert/rock
+negev_makhtesh,30.8,35.0,Makhtesh Ramon crater — Israel,desert/rock
+arabia_harrat,26.0,38.0,Harrat Khaybar lava field — Saudi Arabia,desert/volcanic
+iran_kavir_rock,34.5,52.5,Dasht-e Kavir rock desert — Iran,desert/rock
+patagonia_rock,-47.0,-69.0,Patagonian rock desert — Argentina,desert/rock
+australia_sturt,-29.5,142.0,Sturt Stony Desert — NSW Australia,desert/rock
+chott_el_jerid,33.7,8.0,Chott el Jerid salt lake — Tunisia,salt_flat
+lake_eyre,-28.5,137.5,Lake Eyre salt flat — South Australia,salt_flat
+salar_atacama,-23.5,-68.2,Salar de Atacama — Chile,salt_flat
+lake_magadi,-1.9,36.3,Lake Magadi soda lake — Kenya,salt_flat
+rann_of_kutch,24.0,70.0,Great Rann of Kutch — India,salt_flat
+erta_ale,13.5,40.7,Erta Ale volcanic desert — Afar Ethiopia,volcanic/barren
+tenerife_teide,28.3,-16.5,Teide volcanic cone — Canary Islands Spain,volcanic
+kamchatka_volcanic,51.0,157.5,Kamchatka volcanic plateau — Russia,volcanic
+galapagos_lava,-0.5,-91.0,Galápagos recent lava — Ecuador,volcanic
+chile_copper,-22.5,-68.5,Chuquicamata open-pit copper — Chile,mining/barren
+australia_pilbara_mine,-23.0,119.5,Pilbara iron ore mines — WA Australia,mining/barren
+brazil_carajas,-6.0,-50.0,Carajás iron ore — Pará Brazil,mining/barren
+mongolia_oyu_tolgoi,43.0,107.0,Oyu Tolgoi copper-gold mine — Mongolia,mining/barren
+south_africa_bushveld,-25.0,29.5,Bushveld platinum mines — SA,mining/barren
+new_york,40.7,-74.0,New York City metro — USA,urban
+london,51.5,-0.1,Greater London — UK,urban/temperate
+paris,48.9,2.3,Paris Île-de-France — France,urban/temperate
+istanbul,41.0,29.0,Istanbul metro — Turkey,urban
+jakarta,-6.2,106.8,Jakarta megacity — Indonesia,urban/tropical
+karachi,25.0,67.0,Karachi coastal megacity — Pakistan,urban/arid
+kinshasa,-4.3,15.3,Kinshasa-Brazzaville — DRC/Congo,urban/tropical
+bogota,4.7,-74.1,Bogotá highland city — Colombia,urban/mountain
+tehran,35.7,51.4,Tehran mountain-basin city — Iran,urban/arid
+dallas,32.8,-96.8,Dallas-Fort Worth metro — Texas USA,urban
+sydney,-33.9,151.2,Sydney metro — Australia,urban/temperate
+singapore,1.3,103.8,Singapore city-state,urban/tropical
+addis_ababa,9.0,38.7,Addis Ababa highland city — Ethiopia,urban/mountain
+buenos_aires,-34.6,-58.4,Buenos Aires metro — Argentina,urban
+chengdu,30.6,104.1,Chengdu basin city — Sichuan China,urban
+hyderabad,17.4,78.5,Hyderabad sprawl — Telangana India,urban
+casablanca,33.6,-7.6,Casablanca coastal — Morocco,urban
+johannesburg_east,-26.0,28.5,Johannesburg East Rand — SA,urban/grassland
+atlanta,33.7,-84.4,Atlanta sprawl — Georgia USA,urban/temperate
+kuala_lumpur,3.1,101.7,Kuala Lumpur metro — Malaysia,urban/tropical
+sudd_south,6.5,31.0,Sudd southern marshes — South Sudan,wetland
+bangweulu,-11.5,29.5,Bangweulu Swamps — Zambia,wetland
+llanos_wetland,7.0,-69.0,Llanos seasonal wetland — Venezuela,wetland
+iraq_marshes,31.0,47.0,Mesopotamian Marshes — Iraq,wetland
+okavango_panhandle,-18.5,21.5,Okavango Panhandle — Botswana,wetland/savanna
+niger_inland_delta,14.5,-4.0,Niger Inland Delta — Mali,wetland/floodplain
+amazon_varzea,-3.0,-60.5,Amazon várzea floodplain — Manaus Brazil,wetland/floodplain
+ganges_floodplain,25.5,85.0,Ganges floodplain — Bihar India,wetland/floodplain
+mekong_floodplain,11.0,105.0,Mekong floodplain — Cambodia,wetland/floodplain
+borneo_peat,1.5,110.5,Central Kalimantan peatland — Indonesia,peatland
+congo_peat,-1.5,18.5,Cuvette Centrale peatland — DRC,peatland
+sumatra_peat,0.5,104.0,Sumatra peatland — Riau Indonesia,peatland
+chesapeake_marsh,38.5,-76.0,Chesapeake Bay salt marsh — Maryland USA,wetland/coastal
+doñana_marsh,37.0,-6.3,Doñana marshes — Spain,wetland/coastal
+banc_darguin,19.5,-16.5,Banc d'Arguin tidal flats — Mauritania,wetland/coastal
+indus_delta,24.0,67.5,Indus Delta tidal wetland — Pakistan,wetland/coastal
+irrawaddy_delta,16.0,95.0,Irrawaddy Delta — Myanmar,coastal/delta
+niger_delta,4.8,6.5,Niger Delta — Nigeria,coastal/delta
+orinoco_delta,9.0,-62.0,Orinoco Delta — Venezuela,coastal/delta
+mahakam_delta,-0.5,117.0,Mahakam Delta — East Kalimantan Indonesia,coastal/delta
+volta_delta,6.0,0.5,Volta River Delta — Ghana,coastal/delta
+red_river_delta,20.5,106.5,Red River Delta coast — Vietnam,coastal/delta
+coral_coast_australia,-23.5,151.5,Great Barrier Reef coast — Queensland,coastal
+oman_coast,23.5,58.5,Oman Batinah coast — Oman,coastal/arid
+baja_coast,24.5,-110.0,Baja California Sur coast — Mexico,coastal/desert
+brazil_northeast_coast,-8.0,-34.8,Pernambuco coast — Brazil,coastal
+zanzibar_coast,-6.0,39.5,Zanzibar Island coast — Tanzania,coastal/tropical
+andes_ecuador,-1.0,-78.5,Ecuadorian Andes páramo,alpine/grassland
+andes_peru_south,-14.0,-71.0,Southern Peru Andes — Cusco,alpine/mountain
+atlas_middle,33.0,-4.5,Middle Atlas — Morocco,mountain/semi-arid
+drakensberg,-29.5,29.0,Drakensberg escarpment — South Africa,mountain/grassland
+pyrenees,42.7,0.5,Central Pyrenees — France-Spain,alpine/mountain
+caucasus,42.5,44.0,Greater Caucasus — Georgia,alpine/mountain
+hindu_kush,36.0,71.0,Hindu Kush — Afghanistan-Pakistan,alpine/mountain
+karakoram,36.0,76.0,Karakoram Range — Pakistan,alpine/glacier
+tien_shan,42.0,79.0,Tien Shan — Kyrgyzstan-China,alpine/mountain
+pamir,38.5,73.0,Pamir Plateau — Tajikistan,alpine/mountain
+rwenzori,0.4,29.9,Rwenzori Mountains — Uganda-DRC,alpine/tropical
+simien_ethiopia,13.2,38.4,Simien Mountains — Ethiopia,alpine/mountain
+andes_bolivia_cordillera,-17.0,-66.0,Cordillera Real — Bolivia,alpine/mountain
+rocky_mountain_co,40.0,-105.5,Rocky Mountain NP — Colorado USA,alpine/mountain
+sierra_nevada_us,37.0,-118.5,Sierra Nevada alpine — California USA,alpine/mountain
+japan_alps,36.3,137.6,Japanese Alps — Honshu Japan,alpine/mountain
+new_zealand_alps,-43.5,170.5,Southern Alps — New Zealand,alpine/mountain
+carpathian_tatras,49.2,20.0,High Tatras — Slovakia-Poland,alpine/mountain
+taiwan_central,24.0,121.2,Taiwan Central Mountain Range,mountain/tropical
+cameron_highlands,4.5,101.4,Cameron Highlands — Malaysia,mountain/tropical
+california_fire_scar,37.5,-120.0,Sierra Nevada fire scar — California USA,fire_scar
+australia_fire_scar,-37.0,149.0,Snowy Mountains fire scar — NSW Australia,fire_scar
+siberia_fire_scar,51.0,120.0,Siberian taiga fire scar — Russia,fire_scar
+amazon_fire_front,-8.5,-55.0,Pará deforestation-fire arc — Brazil,fire_scar
+portugal_fire_scar,40.0,-8.0,Central Portugal fire scar,fire_scar
+rondonia_deforest,-10.5,-62.5,Rondônia deforestation front — Brazil,deforestation
+borneo_deforest,1.0,112.0,Borneo palm oil deforestation — Indonesia,deforestation
+madagascar_deforest,-18.0,48.0,Eastern Madagascar slash-burn — Madagascar,deforestation
+congo_deforest,2.0,23.0,Northern DRC deforestation — DRC,deforestation
+myanmar_deforest,19.0,97.0,Shan State forest loss — Myanmar,deforestation
+danakil,14.2,40.3,Danakil Depression salt and sulfur — Ethiopia,barren/hydrothermal
+mono_lake,38.0,-119.0,Mono Lake tufa — California USA,barren/alkaline
+yellowstone_thermal,44.5,-110.5,Yellowstone thermal basins — Wyoming USA,barren/hydrothermal
+amazon_tapajos,-4.0,-55.5,Tapajós National Forest — Brazil,tropical_forest
+amazon_xingu,-10.5,-53.0,Xingu headwaters forest — Brazil,tropical_forest
+congo_ituri,1.5,28.5,Ituri rainforest — DRC,tropical_forest
+new_caledonia_forest,-22.0,166.5,New Caledonia tropical forest,tropical_forest
+fiji_forest,-17.5,178.0,Viti Levu tropical forest — Fiji,tropical_forest
+solomon_forest,-8.5,160.0,Solomon Islands lowland forest,tropical_forest
+central_african_forest,3.5,17.0,Sangha forest — Central African Republic,tropical_forest
+guinea_bissau_forest,12.0,-14.5,Guinea-Bissau coastal forest,tropical_forest
+kenya_masai_mara,-1.5,35.0,Masai Mara grassland — Kenya,grassland/savanna
+nebraska_sandhills,42.0,-101.0,Nebraska Sandhills grassland — USA,grassland
+brazil_campos_sulinos,-28.5,-51.0,Campos Sulinos grassland — Brazil,grassland
+lesotho_highland,-29.5,28.5,Lesotho highland grassland,grassland/alpine
+new_zealand_canterbury,-43.5,172.0,Canterbury Plains grassland — NZ,grassland
+south_africa_karoo_grass,-31.5,24.5,Eastern Karoo grassland — SA,grassland
+botswana_makgadikgadi,-20.5,25.5,Makgadikgadi Pans — Botswana,wetland/salt_flat
+paraguay_chaco_wetland,-21.0,-58.0,Paraguayan Chaco wetland,wetland
+brazil_pantanal_north,-16.5,-56.5,Northern Pantanal — Mato Grosso Brazil,wetland/savanna
+zambia_bangweulu_south,-12.5,30.0,Bangweulu Wetlands south — Zambia,wetland
+india_chilika,19.7,85.5,Chilika Lake lagoon — Odisha India,wetland/coastal
+iowa_north,43.0,-93.0,Northern Iowa corn-soybean — USA,cropland
+illinois_corn,40.0,-89.0,Central Illinois corn belt — USA,cropland
+india_mp_soybean,23.0,77.0,Madhya Pradesh soybean — India,cropland
+ethiopia_wheat,9.5,38.0,Ethiopian highland wheat — Arsi,cropland
+zambia_maize,-14.5,28.5,Zambian maize belt — Lusaka,cropland
+australia_qld_sugar,-19.5,147.0,Queensland sugarcane coast — Australia,cropland/plantation
+colombia_rice,4.0,-75.0,Tolima rice paddies — Colombia,cropland/rice
+egypt_fayoum,29.3,30.8,Fayoum oasis agriculture — Egypt,cropland/irrigated
+china_sichuan_rice,30.0,104.5,Sichuan Basin rice — China,cropland/rice
+tanzania_coffee,-3.5,36.5,Kilimanjaro coffee slopes — Tanzania,cropland/plantation
+botswana_savanna,-21.5,25.0,Central Botswana tree savanna,savanna
+nigeria_guinea_savanna,9.5,7.5,Nigerian Guinea savanna — Jos,savanna
+australia_kimberley_sav,-16.0,127.0,Kimberley savanna — WA Australia,savanna
+angola_savanna,-11.0,19.0,Angolan savanna — Huambo,savanna
+central_african_savanna,7.0,20.0,Central African savanna — CAR,savanna
+australia_mallee,-34.5,140.5,Mallee scrubland — SA-VIC border Australia,shrubland
+mexico_tamaulipan,26.0,-99.5,Tamaulipan thornscrub — Mexico,shrubland/semi-arid
+pakistan_balochistan,29.0,66.0,Balochistan scrubland — Pakistan,shrubland/semi-arid
+brazil_caatinga_north,-5.5,-37.5,Northern Caatinga scrub — RN Brazil,shrubland/semi-arid
+algeria_tassili,25.5,8.0,Tassili n Ajjer rock plateau — Algeria,desert/rock
+sudan_nubian,21.0,33.0,Nubian Desert — Sudan,desert
+india_great_rann,24.0,70.5,Great Rann seasonal desert — India,desert/salt_flat
+china_badain_jaran,40.0,102.0,Badain Jaran mega-dunes — Inner Mongolia,desert
+namibia_skeleton_south,-22.0,14.0,Southern Skeleton Coast — Namibia,desert/coastal
+india_odisha_crop,20.5,84.0,Odisha rice-pulse agriculture — India,cropland
+china_yunnan_terrace,23.5,103.0,Yunnan rice terraces — China,cropland/rice
+peru_amazon_deforest,-9.0,-75.5,Ucayali deforestation frontier — Peru,deforestation
+vietnam_mekong_rice,10.0,105.5,Mekong Delta rice — Vietnam,cropland/rice
+congo_mai_ndombe,-2.5,18.0,Mai-Ndombe forest-wetland — DRC,tropical_forest
+indonesia_flores,-8.5,121.0,Flores dry tropical — Indonesia,tropical_dry_forest
+chile_desert_coast,-24.5,-70.5,Atacama coast — Chile,desert/coastal
+turkey_cappadocia,38.5,34.5,Cappadocia volcanic terrain — Turkey,barren/volcanic
+oman_interior,22.5,57.0,Oman interior desert — Oman,desert
+mauritius_crop,-20.3,57.5,Mauritius sugarcane island,cropland/plantation
+taiwan_east_forest,23.5,121.3,Eastern Taiwan tropical forest,tropical_forest
+dominica_forest,15.4,-61.4,Dominica tropical forest — Caribbean,tropical_forest

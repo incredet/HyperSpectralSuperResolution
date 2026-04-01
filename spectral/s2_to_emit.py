@@ -1,43 +1,4 @@
-"""
-spectral/s2_to_emit.py
-----------------------
-Maps Sentinel-2 (10 bands, 10 m) into EMIT spectral space (32 subsampled
-bands, 60 m) using one independent 2nd-order polynomial Ridge regression per
-EMIT band.
-
-Pipeline overview
------------------
-Training (per tile pair):
-  1. Read S2  (10, 720, 720)  and EMIT-b32  (32, 120, 120).
-  2. Nearest-neighbour-repeat EMIT to the S2 10 m grid:
-       np.repeat(emit, 6, axis=1/2)  → (32, 720, 720)
-     Each 60 m EMIT pixel is replicated into a 6×6 block, pairing every
-     native 10 m S2 pixel with its parent EMIT value (many-to-one).
-     This exposes the model to the full per-pixel spectral variability
-     at 10 m, preventing extrapolation artefacts at inference time.
-  3. Flatten to pixel vectors and mask nodata.
-       X  (N, 10)   ← S2 band values at 10 m
-       Y  (N, 32)   ← EMIT reflectances (repeated from 60 m)
-  4. Fit 32 independent pipelines:
-       PolynomialFeatures(degree=2) → StandardScaler → Ridge
-     10 input features + degree-2 expansion → 65 polynomial terms per model.
-
-Inference:
-  - Apply the 32 fitted models to S2 at its native 10 m resolution.
-  - Output: (32, H_s2, W_s2) regression-synthetic hyperspectral cube at 10 m.
-  - Training and inference see the same 10 m pixel distribution.
-
-Public API
-----------
-  S2ToEMITRegressor        dataclass holding 32 fitted pipelines
-  fit_tile(...)            fit from a single tile pair
-  fit_tiles_batch(...)     fit by pooling pixels from many tile pairs
-  align_s2_to_emit_grid()  standalone block-average helper
-  plot_spectral_match()    3-panel: S2 | regression synth (from file) | EMIT ground truth
-  plot_r2_spectrum()       diagnostic: R² vs EMIT wavelength
-  scatter_band()           diagnostic: predicted vs ground-truth for one band
-  S2ToEMITMatcher          backward-compat alias for S2ToEMITRegressor
-"""
+"""S2→EMIT polynomial Ridge regression: fit per-tile, apply at 10 m."""
 
 from __future__ import annotations
 
@@ -60,9 +21,6 @@ from data.EMIT.emit_utils import closest_bands
 from scipy.ndimage import zoom
 
 
-# ---------------------------------------------------------------------------
-# Spatial alignment
-# ---------------------------------------------------------------------------
 
 def align_s2_to_emit_grid(
     s2_cube: np.ndarray,
@@ -71,45 +29,18 @@ def align_s2_to_emit_grid(
     s2_profile: dict | None = None,
     emit_profile: dict | None = None,
 ) -> np.ndarray:
-    """Downsample S2 to the EMIT 60 m grid by block-averaging.
-
-    When tile dimensions are exact multiples of *scale* — guaranteed by the
-    ``snap_bounds_to_grid(grid_m=60)`` step in the pairing pipeline — each
-    EMIT pixel corresponds to exactly ``scale × scale`` S2 pixels.  We
-    reshape and average those blocks directly, which is:
-
-    * Radiometrically correct  (area-weighted, flux-preserving).
-    * Interpolation-free       (no ringing, no edge artefacts).
-    * Physically faithful      (mirrors how a 60 m sensor integrates
-                                over its ground footprint).
-
-    If the sizes are **not** exact multiples of *scale* (rare edge-case),
-    we fall back to ``rasterio.reproject`` with ``Resampling.average``.
-    This requires ``s2_profile`` and ``emit_profile`` to be provided.
-
-    Args:
-        s2_cube:      S2 data ``(B, H*scale, W*scale)``, float32.
-        scale:        Spatial scale factor, default 6  (60 m / 10 m).
-        s2_profile:   Rasterio profile of *s2_cube* (fallback only).
-        emit_profile: Rasterio profile of the target EMIT grid (fallback only).
-
-    Returns:
-        ``(B, H, W)`` float32 array on the EMIT 60 m grid.
-    """
+    """Block-average S2 to EMIT grid. Falls back to rasterio if not exact multiples."""
     s2_cube = np.asarray(s2_cube, dtype=np.float32)
     B, H_s2, W_s2 = s2_cube.shape
 
     if H_s2 % scale == 0 and W_s2 % scale == 0:
         H, W = H_s2 // scale, W_s2 // scale
-        # reshape into blocks and average: no interpolation, exact alignment
         return s2_cube.reshape(B, H, scale, W, scale).mean(axis=(2, 4))
 
-    # ── fallback ─────────────────────────────────────────────────────────
     if s2_profile is None or emit_profile is None:
         raise ValueError(
-            f"Tile sizes ({H_s2}, {W_s2}) are not exact multiples of "
-            f"scale={scale}.  Provide s2_profile and emit_profile for the "
-            "rasterio reproject fallback."
+            f"Tile sizes ({H_s2}, {W_s2}) not exact multiples of "
+            f"scale={scale}; need s2_profile and emit_profile for fallback."
         )
     H_e = emit_profile["height"]
     W_e = emit_profile["width"]
@@ -129,12 +60,8 @@ def align_s2_to_emit_grid(
     return out
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
 
 def _read_raster(path: str | Path) -> tuple[np.ndarray, dict, float | None]:
-    """Read all bands as float32 ``(B, H, W)`` plus profile and nodata."""
     with rasterio.open(path) as ds:
         arr     = ds.read().astype(np.float32)
         profile = ds.profile.copy()
@@ -148,7 +75,6 @@ def _build_valid_mask(
     s2_nodata: float | None,
     emit_nodata: float | None,
 ) -> np.ndarray:
-    """Boolean flat mask ``(H*W,)`` — True where both sensors have valid data."""
     B_s2, H, W = s2_on_emit.shape
     N = H * W
     X = s2_on_emit.reshape(B_s2, N).T          # (N, B_s2)
@@ -171,30 +97,7 @@ def _block_homogeneity_mask(
     max_cv: float = 0.25,
     s2_nodata: float | None = None,
 ) -> np.ndarray:
-    """Identify spectrally homogeneous EMIT-scale blocks in an S2 tile.
-
-    For each ``scale × scale`` block of S2 pixels (corresponding to one
-    EMIT 60 m pixel), compute the coefficient of variation (CV = std/mean)
-    across the S2 band with the highest spatial variance (typically a
-    visible band that captures roads, buildings, shadows).  Blocks where
-    **all** bands have CV below *max_cv* are considered homogeneous.
-
-    Returns a boolean mask at the **S2 (10 m) resolution** — True for every
-    10 m pixel inside a homogeneous block, False for pixels in mixed blocks.
-
-    Parameters
-    ----------
-    s2_cube  : ``(B, H_s2, W_s2)`` float32 S2 tile at 10 m.
-    scale    : Block size (default 6 for 60 m / 10 m).
-    max_cv   : Maximum coefficient of variation for a block to be deemed
-               homogeneous.  Default 0.25 (25 %).
-    s2_nodata: S2 nodata sentinel; blocks containing any nodata pixel are
-               rejected.
-
-    Returns
-    -------
-    ``(H_s2 * W_s2,)`` boolean flat mask at 10 m resolution.
-    """
+    """Per-block CV filter at 10 m. Returns flat bool mask (H*W,)."""
     B, H_s2, W_s2 = s2_cube.shape
     H_e = H_s2 // scale
     W_e = W_s2 // scale
@@ -243,11 +146,6 @@ def _block_homogeneity_mask(
 def _read_emit_band_meta(
     emit_b32_path: str | Path,
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
-    """Read wavelength and band-index metadata stored in the b32 GeoTIFF.
-
-    Returns ``(band_indices_0based, wavelengths_nm)``.
-    Either may be ``None`` if the tags are absent.
-    """
     with rasterio.open(emit_b32_path) as ds:
         n = ds.count
         wavelengths, indices = [], []
@@ -264,95 +162,12 @@ def _read_emit_band_meta(
     return idx_arr, wl_arr
 
 
-def _write_geotiff(
-    cube: np.ndarray,
-    ref_profile: dict,
-    out_path: str | Path,
-    nodata: float | int,
-    wavelengths_nm: np.ndarray | None,
-    band_indices: np.ndarray | None,
-) -> None:
-    """Write a ``(B, H, W)`` cube as a compressed GeoTIFF.
-
-    The output dtype and DEFLATE predictor are chosen automatically from
-    the array dtype (uint16 → predictor 2, float → predictor 3).
-
-    Band descriptions and ``wavelength`` / ``emit_band_index`` tags are
-    written if the corresponding arrays are provided.
-    """
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    is_int = np.issubdtype(cube.dtype, np.integer)
-    profile = ref_profile.copy()
-    profile.update(
-        count=cube.shape[0],
-        dtype=str(cube.dtype),
-        nodata=nodata,
-        driver="GTiff",
-        compress="DEFLATE",
-        predictor=2 if is_int else 3,
-        tiled=True,
-        BIGTIFF="IF_SAFER",
-    )
-    profile.pop("interleave", None)
-
-    with rasterio.open(out_path, "w", **profile) as dst:
-        dst.write(cube)
-        for i in range(cube.shape[0]):
-            tags: dict[str, str] = {}
-            if wavelengths_nm is not None:
-                tags["wavelength"] = f"{wavelengths_nm[i]:.4f}"
-            if band_indices is not None:
-                tags["emit_band_index"] = str(int(band_indices[i]))
-            if tags:
-                dst.update_tags(i + 1, **tags)
 
 
-# ---------------------------------------------------------------------------
-# Matcher dataclass
-# ---------------------------------------------------------------------------
 
 @dataclass
 class S2ToEMITRegressor:
-    """Polynomial Ridge model mapping S2 (10 bands) → EMIT spectral space.
-
-    Do not instantiate directly — use :func:`fit_tile` or
-    :func:`fit_tiles_batch`.
-
-    Fitting is done with a single ``PolynomialFeatures`` expansion, a single
-    ``StandardScaler``, and a single multi-output ``Ridge`` regression that
-    solves all output bands simultaneously (one ``X^T X`` inversion, one
-    matrix multiply).
-
-    Attributes
-    ----------
-    band_indices_0based_ :
-        0-based indices of the kept EMIT bands in the full 285-band spectrum.
-    wavelengths_nm_ :
-        EMIT centre wavelengths for the output bands (nm), or ``None``.
-    n_s2_bands_ :
-        Number of S2 input features used during training (10).
-    n_output_bands_ :
-        Number of output EMIT bands (32).
-    scale_ :
-        S2/EMIT pixel scale factor used during training (6).
-    degree_ :
-        Polynomial degree (2).
-    alpha_ :
-        Ridge regularisation strength.
-    _poly_ :
-        Fitted ``PolynomialFeatures`` transformer.
-    _scaler_ :
-        Fitted ``StandardScaler`` transformer.
-    _W_ :
-        ``(n_output_bands, n_poly_features)`` Ridge coefficient matrix.
-    _b_ :
-        ``(n_output_bands,)`` Ridge intercept vector.
-    models_ :
-        Legacy field — kept only for backward compatibility with older
-        serialised regressors.  Empty for newly fitted regressors.
-    """
+    """Fitted S2→EMIT polynomial Ridge. Use fit_tile() or fit_tiles_batch()."""
 
     band_indices_0based_:  Optional[np.ndarray] = None
     wavelengths_nm_:       Optional[np.ndarray] = None
@@ -373,11 +188,6 @@ class S2ToEMITRegressor:
     models_:               list = field(default_factory=list, repr=False)
 
     def _build_fast_weights(self) -> None:
-        """Extract W/b from legacy ``models_`` list (old serialised format).
-
-        New regressors already have ``_W_`` and ``_b_`` set directly during
-        fitting and do **not** need this method.
-        """
         if self._W_ is not None or not self.models_:
             return
         self._poly_   = self.models_[0].named_steps["poly"]
@@ -391,19 +201,7 @@ class S2ToEMITRegressor:
         )
         self.n_output_bands_ = self._W_.shape[0]
 
-    # ── core ops ─────────────────────────────────────────────────────────
-
     def predict(self, X_s2: np.ndarray) -> np.ndarray:
-        """Predict EMIT reflectances from S2 pixel values.
-
-        Single polynomial expansion + one BLAS ``X_scaled @ W.T + b`` call.
-
-        Args:
-            X_s2: ``(N, 10)`` float32 array of S2 band values.
-
-        Returns:
-            ``(N, n_output_bands)`` float32 predicted EMIT reflectances.
-        """
         if self._W_ is None:
             # Try legacy path
             self._build_fast_weights()
@@ -415,20 +213,7 @@ class S2ToEMITRegressor:
         X_scaled = self._scaler_.transform(X_poly)
         return (X_scaled @ self._W_.T + self._b_).astype(np.float32)
 
-    def score(
-        self,
-        X_s2: np.ndarray,
-        Y_emit: np.ndarray,
-    ) -> np.ndarray:
-        """Per-band R² scores on an (X, Y) evaluation set.
-
-        Args:
-            X_s2:   ``(N, 10)`` S2 values.
-            Y_emit: ``(N, n_output_bands)`` ground-truth EMIT reflectances.
-
-        Returns:
-            ``(n_output_bands,)`` float array of R² scores.
-        """
+    def score(self, X_s2: np.ndarray, Y_emit: np.ndarray) -> np.ndarray:
         Y_pred = self.predict(X_s2)
         return np.array([
             r2_score(Y_emit[:, i], Y_pred[:, i])
@@ -442,33 +227,15 @@ class S2ToEMITRegressor:
         out_path: str | Path | None = None,
         out_nodata: int = 65535,
     ) -> np.ndarray:
-        """Apply the model to an S2 tile at its native 10 m resolution.
-
-        The model was trained in reflectance space (DN / 10000), so input
-        S2 values are normalised before prediction.  Predictions are
-        converted back to uint16 DN (× 10000) for storage.
-
-        Args:
-            s2_tile_path: Path to the S2 GeoTIFF tile (10 bands, 10 m).
-            out_path:     If given, write the result as a uint16 GeoTIFF.
-            out_nodata:   uint16 fill value for invalid pixels (default 65535).
-
-        Returns:
-            ``(n_output_bands, H_s2, W_s2)`` uint16 regression-synthetic
-            EMIT cube in DN units (reflectance × 10000).
-        """
+        """Apply model to S2 tile → uint16 synthetic EMIT cube (DN×10000)."""
         DN_SCALE = np.float32(10000.0)
 
         s2_cube, s2_prof, s2_nodata = _read_raster(s2_tile_path)
         B, H, W = s2_cube.shape
         n_out = self.n_output_bands_
 
-        X = s2_cube.reshape(B, H * W).T       # (N, 10)  — still in DN
+        X = s2_cube.reshape(B, H * W).T
 
-        # Build valid mask in DN space (before normalization).
-        # Use np.all (not np.any) for S2 nodata: only reject pixels where
-        # ALL bands are nodata.  Water pixels legitimately have near-zero
-        # SWIR reflectance — rejecting on any-band-zero kills them.
         valid = np.isfinite(X).all(axis=1)
         if s2_nodata is not None:
             valid &= ~np.all(np.isclose(X, s2_nodata), axis=1)
@@ -476,19 +243,13 @@ class S2ToEMITRegressor:
 
         out_flat = np.full((H * W, n_out), out_nodata, dtype=np.uint16)
         if valid.any():
-            # Normalize to reflectance: DN / 10000 → [0, ~1.0]
             X_valid = X[valid] / DN_SCALE
-            pred = self.predict(X_valid)        # reflectance space
-
-            # Clip to [0, per-band training max] — polynomial overshoot
-            # on bright or unusual pixels can produce extreme values.
+            pred = self.predict(X_valid)
             if self._y_max_ is not None:
                 np.clip(pred, 0.0, self._y_max_[np.newaxis, :], out=pred)
             else:
                 np.clip(pred, 0.0, None, out=pred)
 
-            # Convert reflectance → uint16 DN, clamp to [0, 65534]
-            # (65535 is reserved for nodata)
             pred_dn = np.rint(pred * DN_SCALE).astype(np.int32)
             np.clip(pred_dn, 0, int(out_nodata) - 1, out=pred_dn)
             out_flat[valid] = pred_dn.astype(np.uint16)
@@ -496,17 +257,30 @@ class S2ToEMITRegressor:
         result = out_flat.T.reshape(n_out, H, W)
 
         if out_path is not None:
-            _write_geotiff(
-                result, s2_prof, out_path, out_nodata,
-                self.wavelengths_nm_, self.band_indices_0based_,
+            out_path = Path(out_path)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            is_int = np.issubdtype(result.dtype, np.integer)
+            profile = s2_prof.copy()
+            profile.update(
+                count=result.shape[0], dtype=str(result.dtype),
+                nodata=out_nodata, driver="GTiff", compress="DEFLATE",
+                predictor=2 if is_int else 3, tiled=True, BIGTIFF="IF_SAFER",
             )
+            profile.pop("interleave", None)
+            with rasterio.open(out_path, "w", **profile) as dst:
+                dst.write(result)
+                for i in range(result.shape[0]):
+                    tags = {}
+                    if self.wavelengths_nm_ is not None:
+                        tags["wavelength"] = f"{self.wavelengths_nm_[i]:.4f}"
+                    if self.band_indices_0based_ is not None:
+                        tags["emit_band_index"] = str(int(self.band_indices_0based_[i]))
+                    if tags:
+                        dst.update_tags(i + 1, **tags)
 
         return result
 
-    # ── persistence ──────────────────────────────────────────────────────
-
     def save(self, path: str | Path) -> None:
-        """Serialise the regressor to disk with joblib."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         joblib.dump(self, path)
@@ -514,18 +288,12 @@ class S2ToEMITRegressor:
 
     @staticmethod
     def load(path: str | Path) -> "S2ToEMITRegressor":
-        """Deserialise a previously saved regressor."""
         return joblib.load(path)
 
 
-# Backward-compat alias — old notebooks / serialised .joblib files reference
-# S2ToEMITMatcher.  This lets them unpickle and work without code changes.
-S2ToEMITMatcher = S2ToEMITRegressor
+S2ToEMITMatcher = S2ToEMITRegressor  # legacy alias
 
 
-# ---------------------------------------------------------------------------
-# Fitting — single tile
-# ---------------------------------------------------------------------------
 
 def fit_tile(
     s2_tile_path: str | Path,
@@ -537,103 +305,58 @@ def fit_tile(
     max_cv: float = 0.25,
     verbose: bool = True,
     emit_upsample_order: int = 1,
+    mode: str = "upsample",
 ) -> tuple[S2ToEMITRegressor, dict]:
-    """Fit 32 polynomial Ridge models from a single aligned tile pair.
+    """Fit polynomial Ridge from one tile pair. mode='upsample' | 'downsample'."""
+    assert mode in ("upsample", "downsample"), mode
 
-    Training is done at the **native S2 10 m resolution** using only
-    pixels from **spectrally homogeneous** EMIT-scale blocks.  Each EMIT
-    60 m pixel is upsampled into a ``scale × scale`` block so that every
-    10 m S2 pixel is paired with its parent EMIT value.  However, blocks
-    that contain mixed land-cover (roads crossing vegetation, field
-    edges, etc.) are excluded from training via the *max_cv* homogeneity
-    threshold.
-
-    This avoids the mixed-label problem: in mixed blocks, the EMIT value
-    is an area-weighted average of spectrally different surfaces, so
-    training on those pixels would teach the model to predict blended
-    values for sub-pixel features, causing haloing at edges.  By training
-    only on homogeneous blocks, the model learns the true spectral mapping
-    from "pure" pixels.  At inference, roads and edges are predicted by
-    interpolation from these clean training examples rather than being
-    pulled toward a mixed target.
-
-    Args:
-        s2_tile_path:       Path to S2 GeoTIFF tile (10 bands, 10 m).
-        emit_b32_tile_path: Path to EMIT-b32 GeoTIFF tile (32 bands, 60 m).
-        scale:              S2/EMIT resolution ratio (default 6).
-        degree:             Polynomial degree (default 2).
-        alpha:              Ridge regularisation strength (default 1.0).
-        max_cv:             Maximum coefficient of variation (std/mean) within
-                            a ``scale × scale`` block for it to be considered
-                            homogeneous.  Default 0.25 (25 %).
-        verbose:            Print progress and R² summary.
-        emit_upsample_order: Interpolation order for upsampling EMIT to the
-                            S2 grid.  0 = nearest-neighbour, 1 = bilinear
-                            (default), 3 = bicubic.
-
-    Returns:
-        ``(matcher, stats)`` where *stats* is a dict containing:
-        ``n_train_pixels``, ``r2_per_band``, ``r2_mean``, ``r2_min``,
-        ``wavelengths_nm``, ``n_homo_blocks``, ``n_total_blocks``.
-    """
     DN_SCALE = np.float32(10000.0)
 
     s2_cube,  s2_prof,   s2_nodata   = _read_raster(s2_tile_path)
     emit_b32, emit_prof, emit_nodata = _read_raster(emit_b32_tile_path)
-
-    # Upsample EMIT to 10 m using the configured interpolation order.
-    emit_at_s2 = zoom(emit_b32, (1, scale, scale), order=emit_upsample_order)
-
     band_indices, wavelengths_nm = _read_emit_band_meta(emit_b32_tile_path)
 
-    # Standard nodata mask at 10 m (before normalization — nodata is in DN)
-    valid = _build_valid_mask(s2_cube, emit_at_s2, s2_nodata, emit_nodata)
+    if mode == "downsample":
+        B, H, W = s2_cube.shape
+        if H % scale or W % scale:
+            raise ValueError(f"S2 tile ({H}×{W}) not exact multiple of scale={scale}")
+        s2_cube = s2_cube.reshape(B, H // scale, scale, W // scale, scale).mean(axis=(2, 4))
+        emit_use = emit_b32
+    else:
+        emit_use = zoom(emit_b32, (1, scale, scale), order=emit_upsample_order)
 
-    # Homogeneity mask: only keep pixels inside spectrally uniform EMIT blocks
-    homo = _block_homogeneity_mask(s2_cube, scale, max_cv=max_cv,
-                                   s2_nodata=s2_nodata)
-    valid &= homo
+    valid = _build_valid_mask(s2_cube, emit_use, s2_nodata, emit_nodata)
 
-    # Normalize to reflectance space: DN / 10000 → [0, ~1.0]
-    s2_cube    = s2_cube    / DN_SCALE
-    emit_at_s2 = emit_at_s2 / DN_SCALE
+    if mode == "upsample":
+        homo = _block_homogeneity_mask(s2_cube, scale, max_cv=max_cv,
+                                       s2_nodata=s2_nodata)
+        valid &= homo
+
+    s2_cube  = s2_cube  / DN_SCALE
+    emit_use = emit_use / DN_SCALE
 
     B_s2, H, W = s2_cube.shape
-    X_all = s2_cube.reshape(B_s2, H * W).T                # (N, 10)
-    Y_all = emit_at_s2.reshape(emit_at_s2.shape[0], H * W).T  # (N, 32)
-
+    X_all = s2_cube.reshape(B_s2, H * W).T
+    Y_all = emit_use.reshape(emit_use.shape[0], H * W).T
     X_train = X_all[valid]
     Y_train = Y_all[valid]
     n_out   = Y_train.shape[1]
 
-    # Homogeneity diagnostics
-    H_e = H // scale
-    W_e = W // scale
+    H_e, W_e = (H, W) if mode == "downsample" else (H // scale, W // scale)
     n_total_blocks = H_e * W_e
-    n_homo_pixels  = int(homo.sum())
-    n_homo_blocks  = n_homo_pixels // (scale * scale) if scale > 0 else 0
 
     if verbose:
-        print(
-            f"Homo:     {n_homo_blocks}/{n_total_blocks} blocks "
-            f"({100 * n_homo_blocks / max(1, n_total_blocks):.1f}%) "
-            f"pass CV<{max_cv}"
-        )
-        print(
-            f"Fitting:  {X_train.shape[0]:,} valid pixels  |  "
-            f"{X_train.shape[1]} S2 bands  →  {n_out} EMIT bands"
-        )
+        if mode == "upsample":
+            n_homo = int(homo.sum()) // (scale * scale)
+            print(f"Homo: {n_homo}/{n_total_blocks} blocks pass CV<{max_cv}")
+        print(f"{mode}: {X_train.shape[0]:,} px  |  {B_s2} S2 → {n_out} EMIT bands")
 
     if X_train.shape[0] < 100:
-        raise ValueError(
-            f"Only {X_train.shape[0]} valid training pixels after "
-            f"homogeneity filtering (max_cv={max_cv}). Try increasing "
-            f"max_cv or using fit_tiles_batch() to pool more tiles."
-        )
+        raise ValueError(f"Only {X_train.shape[0]} valid pixels (mode={mode})")
 
     poly   = PolynomialFeatures(degree=degree, include_bias=False)
     scaler = StandardScaler()
-    ridge  = Ridge(alpha=alpha)
+    ridge  = Ridge(alpha=alpha, random_state=42)
 
     X_poly   = poly.fit_transform(X_train.astype(np.float64))
     X_scaled = scaler.fit_transform(X_poly)
@@ -642,48 +365,38 @@ def fit_tile(
     regressor = S2ToEMITRegressor(
         band_indices_0based_ = band_indices,
         wavelengths_nm_ = wavelengths_nm,
-        n_s2_bands_ = s2_cube.shape[0],
+        n_s2_bands_ = B_s2,
         n_output_bands_ = n_out,
         scale_ = scale,
         degree_ = degree,
         alpha_ = alpha,
         _poly_ = poly,
         _scaler_ = scaler,
-        _W_ = ridge.coef_.astype(np.float64),   # (n_out, P)
+        _W_ = ridge.coef_.astype(np.float64),
         _b_ = ridge.intercept_.astype(np.float64),
-        _y_max_ = Y_train.max(axis=0).astype(np.float32),  # per-band max in reflectance
+        _y_max_ = Y_train.max(axis=0).astype(np.float32),
     )
 
-    Y_pred      = regressor.predict(X_train)
+    Y_pred = regressor.predict(X_train)
     r2_per_band = np.array([
         r2_score(Y_train[:, i], Y_pred[:, i]) for i in range(n_out)
     ])
 
     stats = {
-        "n_train_pixels": int(X_train.shape[0]),
-        "n_emit_bands":   n_out,
-        "n_homo_blocks":  n_homo_blocks,
-        "n_total_blocks": n_total_blocks,
-        "max_cv":         max_cv,
-        "r2_per_band":    r2_per_band.tolist(),
-        "r2_mean":        float(r2_per_band.mean()),
-        "r2_min":         float(r2_per_band.min()),
+        "mode": mode, "n_train_pixels": int(X_train.shape[0]),
+        "n_emit_bands": n_out,
+        "r2_per_band": r2_per_band.tolist(),
+        "r2_mean": float(r2_per_band.mean()),
+        "r2_min":  float(r2_per_band.min()),
         "wavelengths_nm": wavelengths_nm.tolist() if wavelengths_nm is not None else None,
     }
 
     if verbose:
-        print(
-            f"Done.     R² mean={stats['r2_mean']:.4f}  "
-            f"min={stats['r2_min']:.4f}  "
-            f"max={max(stats['r2_per_band']):.4f}"
-        )
+        print(f"R² mean={stats['r2_mean']:.4f}  min={stats['r2_min']:.4f}")
 
     return regressor, stats
 
 
-# ---------------------------------------------------------------------------
-# Fitting — multiple tiles
-# ---------------------------------------------------------------------------
 
 def fit_tiles_batch(
     tile_pairs: Sequence[tuple[str | Path, str | Path]],
@@ -695,33 +408,11 @@ def fit_tiles_batch(
     verbose: bool = True,
     emit_upsample_order: int = 1,
 ) -> tuple[S2ToEMITRegressor, dict]:
-    """Fit 32 models by pooling 10 m pixels from multiple tile pairs.
-
-    Preferred over per-tile fitting when many tiles are available: pooling
-    captures a wider range of scene conditions and surface types, which makes
-    the polynomial fit more robust and less prone to overfitting.
-
-    Training uses native 10 m S2 pixels from spectrally homogeneous
-    EMIT-scale blocks only (CV < *max_cv*).  See :func:`fit_tile` for
-    rationale (avoids mixed-label haloing at edges).
-
-    Band metadata (indices, wavelengths) is read from the first tile; all
-    tiles in the batch are assumed to share the same EMIT-b32 band selection.
-
-    Args:
-        tile_pairs: Sequence of ``(s2_tile_path, emit_b32_tile_path)`` tuples.
-        scale, degree, alpha, max_cv, verbose: same as :func:`fit_tile`.
-        emit_upsample_order: Interpolation order for upsampling EMIT to the
-                            S2 grid.  0 = nearest-neighbour, 1 = bilinear
-                            (default), 3 = bicubic.
-
-    Returns:
-        ``(matcher, stats)`` with an additional ``n_tiles`` key in *stats*.
-    """
+    """Fit by pooling pixels from multiple tile pairs."""
     DN_SCALE = np.float32(10000.0)
 
-    all_X: list[np.ndarray] = []
-    all_Y: list[np.ndarray] = []
+    all_X = []
+    all_Y = []
     band_indices:  np.ndarray | None = None
     wavelengths_nm: np.ndarray | None = None
     n_s2_bands: int | None = None
@@ -737,14 +428,12 @@ def fit_tiles_batch(
             band_indices, wavelengths_nm = _read_emit_band_meta(emit_path)
             n_s2_bands = s2_cube.shape[0]
 
-        # Nodata / homogeneity masks built in DN space (before normalization)
         valid = _build_valid_mask(s2_cube, emit_at_s2, s2_nodata, emit_nodata)
 
         homo = _block_homogeneity_mask(s2_cube, scale, max_cv=max_cv,
                                        s2_nodata=s2_nodata)
         valid &= homo
 
-        # Normalize to reflectance space: DN / 10000 → [0, ~1.0]
         s2_cube    = s2_cube    / DN_SCALE
         emit_at_s2 = emit_at_s2 / DN_SCALE
 
@@ -768,10 +457,9 @@ def fit_tiles_batch(
             f"{X_train.shape[1]} S2 bands  →  {n_out} EMIT bands"
         )
 
-    # Single poly expansion → single scaler → single multi-output Ridge
     poly   = PolynomialFeatures(degree=degree, include_bias=False)
     scaler = StandardScaler()
-    ridge  = Ridge(alpha=alpha)
+    ridge  = Ridge(alpha=alpha, random_state=42)
 
     X_poly   = poly.fit_transform(X_train.astype(np.float64))
     X_scaled = scaler.fit_transform(X_poly)
@@ -817,9 +505,6 @@ def fit_tiles_batch(
     return regressor, stats
 
 
-# ---------------------------------------------------------------------------
-# Diagnostics
-# ---------------------------------------------------------------------------
 
 def plot_spectral_match(
     s2_tile_path: str | Path,
@@ -835,42 +520,9 @@ def plot_spectral_match(
     save_path: str | Path | None = None,
     show: bool = True,
 ) -> None:
-    """Three-panel comparison: S2 | regression-synth EMIT | EMIT ground truth.
-
-    Reads all three panels directly from disk — no re-inference.  Call this
-    after ``apply_to_tile`` has already written *synth_emit_path*.
-
-    Panel 1 — **S2 at 10 m** (true colour from B04/B03/B02 band descriptions,
-    or first three bands as fallback).
-
-    Panel 2 — **Synthetic EMIT at 10 m** (the GeoTIFF written by
-    ``apply_to_tile``; three bands chosen closest to *targets_nm*).
-
-    Panel 3 — **EMIT ground truth at 60 m** (same three wavelength bands,
-    so colours are physically comparable).
-
-    Wavelengths are resolved in order: *wavelengths_nm* parameter →
-    per-band tags in *synth_emit_path* → per-band tags in
-    *emit_b32_tile_path* → approximate fallback.
-
-    Args:
-        s2_tile_path:       Path to S2 GeoTIFF tile (10 bands, 10 m).
-        synth_emit_path:    Path to synthetic EMIT GeoTIFF written by
-                            ``apply_to_tile`` (32 bands, 10 m).
-        emit_b32_tile_path: Path to EMIT-b32 GeoTIFF tile (32 bands, 60 m).
-        wavelengths_nm:     Optional 32-element wavelength array (nm).
-                            If *None*, read from file tags.
-        targets_nm:         Target R/G/B wavelengths for the hyperspectral panels.
-        percentile:         Low/high percentile for per-channel contrast stretch.
-        gamma:              Display gamma (default 1/2.2 ≈ sRGB).
-        title_suffix:       Appended to the first panel title (e.g. tile index).
-        r2_mean:            If provided, displayed in the S2 panel title.
-        save_path:          Optional path to save the figure.
-        show:               Call ``plt.show()`` after plotting.
-    """
+    """3-panel comparison: S2 | regression synth | EMIT GT."""
     import matplotlib.pyplot as plt
 
-    # ── helper ────────────────────────────────────────────────────────────
     def _stretch_rgb(rgb: np.ndarray) -> np.ndarray:
         rgb = rgb.astype(np.float32, copy=True)
         out = np.zeros_like(rgb)
@@ -889,7 +541,6 @@ def plot_spectral_match(
         vals = [float(t["wavelength"]) for t in tags if "wavelength" in t]
         return np.array(vals) if len(vals) == ds.count else None
 
-    # ── Resolve wavelengths ───────────────────────────────────────────────
     wl_arr = wavelengths_nm
     if wl_arr is None:
         with rasterio.open(synth_emit_path) as ds:
@@ -906,7 +557,6 @@ def plot_spectral_match(
         rgb_idxs = [n * 2 // 3, n // 2, n // 6]
         wl_str   = "approx R/G/B"
 
-    # ── Open all three files in one pass ─────────────────────────────────
     with rasterio.open(s2_tile_path) as s2_ds, \
          rasterio.open(synth_emit_path) as syn_ds, \
          rasterio.open(emit_b32_tile_path) as emit_ds:
@@ -936,7 +586,6 @@ def plot_spectral_match(
         emit_rgb  = np.moveaxis(emit_ds.read(bands_1based).astype(np.float32), 0, -1)
         emit_nodata = emit_ds.nodata
 
-    # ── Nodata → nan, then normalize to [0, ~1] for display ─────────────
     # All three panels may be uint16 DN (scaled by 10000) or float32
     # reflectance.  Auto-detect and normalize consistently.
     for rgb, nd in [(s2_rgb, s2_nodata), (pred_rgb, pred_nodata), (emit_rgb, emit_nodata)]:
@@ -951,7 +600,6 @@ def plot_spectral_match(
     if np.nanmax(emit_rgb) > 1.5:
         emit_rgb /= 10_000.0
 
-    # ── Plot ──────────────────────────────────────────────────────────────
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     r2_str = f"  R²={r2_mean:.4f}" if r2_mean is not None else ""
     for ax, img, title in zip(
@@ -984,18 +632,7 @@ def plot_r2_spectrum(
     save_path: str | Path | None = None,
     show: bool = True,
 ) -> None:
-    """Plot R² as a function of EMIT wavelength.
-
-    A well-fitted model should have high R² across the spectrum, with
-    characteristic dips near atmospheric absorption features (1400 nm,
-    1900 nm) where both sensors have reduced SNR.
-
-    Args:
-        stats:     Dict returned by :func:`fit_tile` or :func:`fit_tiles_batch`.
-        title:     Plot title.
-        save_path: If given, save the figure here.
-        show:      Call ``plt.show()``.
-    """
+    """R² vs EMIT wavelength plot."""
     import matplotlib.pyplot as plt
 
     r2  = np.array(stats["r2_per_band"])
@@ -1036,21 +673,7 @@ def scatter_band(
     save_path: str | Path | None = None,
     show: bool = True,
 ) -> float:
-    """Scatter plot of predicted vs. ground-truth for one EMIT band.
-
-    Args:
-        matcher:   Fitted :class:`S2ToEMITRegressor`.
-        X_s2:      ``(N, 10)`` S2 values.
-        Y_emit:    ``(N, 32)`` EMIT ground-truth values.
-        band_idx:  Which of the 32 EMIT bands to visualise (0-based).
-        sample:    Max number of points to scatter (for speed).
-        seed:      Random seed for sub-sampling.
-        save_path: Optional path to save the figure.
-        show:      Call ``plt.show()``.
-
-    Returns:
-        R² score for the chosen band.
-    """
+    """Predicted vs GT scatter for one band. Returns R²."""
     import matplotlib.pyplot as plt
 
     y_true = Y_emit[:, band_idx].astype(np.float32)

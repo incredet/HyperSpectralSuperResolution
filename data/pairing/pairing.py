@@ -36,10 +36,6 @@ def pair_emit_to_s2(
     s2_limit: int = 5000,
     **matcher_kwargs,
 ):
-    """
-    Returns list of records:
-      {emit_item, s2_item, scl_cloud, dbg}
-    """
     emit_dedup = emit_dedupe_latest_revision(emit_items)
 
     if emit_top_n_per_day is not None:
@@ -98,7 +94,6 @@ def pair_emit_to_s2(
 
 
 def _emit_time_batches(emit_items: List[dict], window_days: int) -> List[List[dict]]:
-    """Split EMIT items into chronological time windows."""
     items = [(emit_item_datetime_utc(it), it) for it in emit_items]
     items = [(dt, it) for dt, it in items if dt is not None]
     items.sort(key=lambda x: x[0])
@@ -124,19 +119,12 @@ def pair_emit_to_s2_batched(
     s2_api: str,
     s2_collection: str,
     days: float = 3.0,
-
-    window_days: int = 14,     
+    window_days: int = 14,
     resume: bool = True,
-
-    # emit selection knobs
     emit_top_n_per_day: Optional[int] = 5,
     emit_max_cloud_pct: Optional[float] = None,
-
-    # s2 indexing knobs
-    s2_limit: int = 200,  
-    s2_chunk_days: int = 14,      # if your build_s2_index supports it
-
-    # matcher knobs
+    s2_limit: int = 200,
+    s2_chunk_days: int = 14,
     sun_deg_max: float = 5.0,
     max_tod_diff_h: float = 1.5,
     tile_m: float = 6000.0,
@@ -144,10 +132,6 @@ def pair_emit_to_s2_batched(
     meta_cc_max: Optional[float] = None,
     scl_cloud_max: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """
-    Runs pairing in time batches and writes JSON outputs per batch.
-    Returns a run summary dict.
-    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -156,10 +140,8 @@ def pair_emit_to_s2_batched(
     if resume and ckpt_path.exists():
         done = set(json.loads(ckpt_path.read_text()).get("done_batches", []))
 
-    # 1) EMIT: latest revision dedupe
     emit_dedup = emit_dedupe_latest_revision(emit_items)
 
-    # 2) Optional: keep top-N per day (NOT 1/day)
     if emit_top_n_per_day is not None:
         emit_sel = emit_keep_top_n_per_day(
             emit_dedup,
@@ -182,19 +164,16 @@ def pair_emit_to_s2_batched(
         "batches": [],
     }
 
-    # 3) Process batches
     for bi, batch_emit in enumerate(batches):
         batch_id = f"{bi:03d}"
         if batch_id in done:
             continue
 
-        # batch time span
         dts = [emit_item_datetime_utc(it) for it in batch_emit]
         dts = [dt for dt in dts if dt is not None]
         dt_min = min(dts) - timedelta(days=days)
         dt_max = max(dts) + timedelta(days=days)
 
-        # build S2 index for this batch window
         s2_index = build_s2_index(
             aoi_geom_wgs84=aoi_geom_wgs84,
             dt_min_utc=dt_min,
@@ -202,8 +181,6 @@ def pair_emit_to_s2_batched(
             s2_api=s2_api,
             s2_collection=s2_collection,
             limit=s2_limit,
-            # optional if supported:
-            # chunk_days=s2_chunk_days,
         )
 
         out_jsonl = out_dir / f"pairs_batch_{batch_id}.jsonl"

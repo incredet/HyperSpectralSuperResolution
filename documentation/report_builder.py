@@ -1,81 +1,43 @@
-"""
-documentation/report_builder.py
--------------------------------
-Rich run-report generation with embedded graphics, R² aggregation,
-and export to both markdown and self-contained HTML.
-
-Public API
-----------
-ReportBuilder            — extends ReportWriter with image/table/stats support
-R2Aggregator             — collects per-tile R² stats and computes summaries
-plot_r2_histogram        — histogram of per-tile mean R²
-plot_r2_per_band         — box-plot of R² by wavelength/band
-plot_side_by_side_rgb    — save S2 vs EMIT comparison to PNG
-plot_example_tiles       — generate example tile-pair images
-plot_realignment_summary — scatter + histogram of per-tile alignment shifts
-"""
+"""Markdown reporting and R² aggregation for pipeline runs."""
 
 from __future__ import annotations
 
-import base64
-import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Sequence
 
 import numpy as np
 import matplotlib
-
-matplotlib.use("Agg")          # non-interactive backend for file output
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from documentation.pairs_artifacts import ReportWriter
+from documentation.pairs_artifacts import ensure_dir, utc_now_iso
 
 if TYPE_CHECKING:
     from documentation.config import PipelineConfig
 
 
-# ---------------------------------------------------------------------------
-# R² Aggregation
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class R2Aggregator:
-    """Collect R² statistics from all tiles and compute scene-level summaries."""
-
-    tile_indices: list[int] = field(default_factory=list)
-    r2_per_band: list[np.ndarray] = field(default_factory=list)
-    r2_mean: list[float] = field(default_factory=list)
+    tile_indices: list = field(default_factory=list)
+    r2_per_band: list = field(default_factory=list)
+    r2_mean: list = field(default_factory=list)
     wavelengths_nm: np.ndarray | None = None
 
-    # ── mutation helpers ──────────────────────────────────────────────────
-
     def add(self, idx: int, r2_bands: np.ndarray, r2_mean_val: float) -> None:
-        """Append one tile's results."""
         self.tile_indices.append(idx)
         self.r2_per_band.append(np.asarray(r2_bands, dtype=np.float64))
         self.r2_mean.append(float(r2_mean_val))
 
-    # ── aggregation ──────────────────────────────────────────────────────
-
     def summary(self) -> dict[str, Any]:
-        """Compute scene-level R² statistics.
-
-        Returns a dict with keys:
-        ``n_tiles``, ``n_bands``,
-        ``global_mean``, ``global_median``, ``global_min``, ``global_max``,
-        ``global_std``,
-        ``per_band_mean``, ``per_band_std``.
-        """
         if not self.r2_mean:
             return {"n_tiles": 0, "n_bands": 0}
 
         means = np.array(self.r2_mean)
-        stacked = np.stack(self.r2_per_band)  # (n_tiles, n_bands)
+        stacked = np.stack(self.r2_per_band)
 
         return {
             "n_tiles": len(self.r2_mean),
@@ -90,7 +52,6 @@ class R2Aggregator:
         }
 
     def to_markdown_table(self) -> str:
-        """Return a markdown table of per-tile R² statistics."""
         if not self.r2_mean:
             return "_No tiles fitted._\n"
 
@@ -104,18 +65,12 @@ class R2Aggregator:
         return "\n".join(lines) + "\n"
 
 
-# ---------------------------------------------------------------------------
-# Plotting
-# ---------------------------------------------------------------------------
-
-
 def plot_r2_histogram(
     r2_means: Sequence[float],
     out_path: str | Path,
     *,
     title: str = "R² distribution across tiles",
 ) -> Path:
-    """Histogram of per-tile mean R² with summary vertical lines."""
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -149,11 +104,10 @@ def plot_r2_per_band(
     *,
     title: str = "R² by spectral band",
 ) -> Path:
-    """Box-plot of R² across tiles for each spectral band."""
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    stacked = np.stack(r2_per_band)  # (n_tiles, n_bands)
+    stacked = np.stack(r2_per_band)
     n_bands = stacked.shape[1]
 
     fig, ax = plt.subplots(figsize=(max(8, n_bands * 0.35), 5))
@@ -189,22 +143,9 @@ def plot_realignment_summary(
     *,
     title: str = "Per-tile realignment shifts",
 ) -> Path | None:
-    """Create a 2-panel figure: scatter of (dx, dy) shifts + histogram of magnitudes.
-
-    Only tiles with ``realign_stats`` that were actually applied are plotted.
-
-    Args:
-        tile_records: List of :class:`TileRecord` objects (with ``realign_stats``).
-        out_path:     Where to save the PNG.
-        title:        Figure super-title.
-
-    Returns:
-        Path to the saved PNG, or ``None`` if no realigned tiles found.
-    """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Collect shift data from tile records
     dys, dxs = [], []
     rejected = 0
     for rec in tile_records:
@@ -227,7 +168,6 @@ def plot_realignment_summary(
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
 
-    # ── Left panel: scatter of (dx, dy) shifts ───────────────────────────
     sc = ax1.scatter(dxs_arr, dys_arr, c=mags, cmap="viridis",
                      s=30, alpha=0.7, edgecolors="white", linewidth=0.3)
     ax1.axhline(0, color="grey", ls="--", lw=0.5)
@@ -239,14 +179,12 @@ def plot_realignment_summary(
     cbar = fig.colorbar(sc, ax=ax1, shrink=0.8)
     cbar.set_label("magnitude (EMIT px)")
 
-    # Mean shift marker
     mean_dy = float(np.mean(dys_arr))
     mean_dx = float(np.mean(dxs_arr))
     ax1.plot(mean_dx, mean_dy, "rx", markersize=10, markeredgewidth=2,
              label=f"mean ({mean_dx:.3f}, {mean_dy:.3f})")
     ax1.legend(fontsize=8)
 
-    # ── Right panel: histogram of shift magnitudes ────────────────────────
     ax2.hist(mags, bins=min(20, max(5, len(mags) // 2)),
              edgecolor="white", color="#4C72B0", alpha=0.85)
     ax2.axvline(float(np.mean(mags)), color="crimson", ls="--", lw=1.5,
@@ -265,44 +203,6 @@ def plot_realignment_summary(
     return out_path
 
 
-def plot_side_by_side_rgb(
-    s2_path: str | Path,
-    emit_path: str | Path,
-    out_path: str | Path,
-    *,
-    wl_nm: np.ndarray | None = None,
-    title: str = "",
-    gamma: float = 1 / 2.2,
-) -> Path:
-    """Save a side-by-side S2 / EMIT true-colour comparison to *out_path*.
-
-    Delegates to ``viz.plots`` for the actual rendering.
-    """
-    from viz.plots import plot_s2_truecolor_from_stack, show_emit_rgb_from_envi
-
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-    plot_s2_truecolor_from_stack(str(s2_path), ax=ax1)
-
-    emit_p = Path(emit_path)
-    show_emit_rgb_from_envi(
-        str(emit_p.parent),
-        pattern=str(emit_p.name),
-        wavelengths_nm=wl_nm,
-        ax=ax2,
-        gamma=gamma,
-    )
-
-    if title:
-        fig.suptitle(title, fontsize=12, y=1.02)
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    return out_path
-
-
 def plot_example_tiles(
     tile_records: list,
     out_dir: str | Path,
@@ -310,10 +210,6 @@ def plot_example_tiles(
     n: int = 3,
     wl_nm: np.ndarray | None = None,
 ) -> list[Path]:
-    """Generate side-by-side RGB plots for *n* evenly-spaced tiles.
-
-    Delegates to ``tiles_helpers.utils.plot_tile_pair_simple``.
-    """
     from tiles_helpers.utils import plot_tile_pair_simple
 
     out_dir = Path(out_dir)
@@ -322,11 +218,10 @@ def plot_example_tiles(
     if not tile_records:
         return []
 
-    # Pick evenly spaced indices: first, middle(s), last
     indices = np.round(np.linspace(0, len(tile_records) - 1, n)).astype(int)
     indices = sorted(set(indices))
 
-    paths: list[Path] = []
+    paths = []
     for i in indices:
         rec = tile_records[i]
         png = out_dir / f"example_tile_{rec.idx:03d}.png"
@@ -342,149 +237,57 @@ def plot_example_tiles(
     return paths
 
 
-# ---------------------------------------------------------------------------
-# HTML helpers
-# ---------------------------------------------------------------------------
+class ReportBuilder:
 
+    def __init__(self, path: str | Path, *, html_path=None, mode: str = "overwrite"):
+        self.path = Path(path)
+        ensure_dir(self.path.parent)
+        self.mode = mode
+        self._started = False
 
-def _image_to_base64(path: Path) -> str:
-    """Read an image file and return a data-URI string."""
-    suffix = path.suffix.lower().lstrip(".")
-    mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
-            "svg": "image/svg+xml"}.get(suffix, "image/png")
-    data = path.read_bytes()
-    b64 = base64.b64encode(data).decode("ascii")
-    return f"data:{mime};base64,{b64}"
+    def start(self, *, title: str = "EMIT and Sentinel-2 pairs report"):
+        if self._started:
+            return self
+        if self.mode.lower() in {"overwrite", "w", "write"} or not self.path.exists():
+            self.path.write_text(f"# {title}\n\n- Generated: {utc_now_iso()}\n")
+        self._started = True
+        return self
 
+    def section(self, heading: str, lines) -> None:
+        if not self._started:
+            self.start()
+        with self.path.open("a", encoding="utf-8") as f:
+            f.write(f"\n## {heading}\n")
+            for ln in lines:
+                if ln is not None:
+                    f.write(f"- {ln}\n")
 
-_HTML_TEMPLATE = textwrap.dedent("""\
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-    <meta charset="utf-8">
-    <title>{title}</title>
-    <style>
-      body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
-             Roboto, Helvetica, sans-serif; max-width: 960px; margin: 2em auto;
-             line-height: 1.6; color: #222; }}
-      h1 {{ border-bottom: 2px solid #333; padding-bottom: .3em; }}
-      h2 {{ border-bottom: 1px solid #ccc; padding-bottom: .2em; margin-top: 2em; }}
-      table {{ border-collapse: collapse; margin: 1em 0; }}
-      th, td {{ border: 1px solid #ccc; padding: .35em .6em; text-align: left; }}
-      th {{ background: #f5f5f5; }}
-      img {{ max-width: 100%; height: auto; }}
-      .img-row {{ display: flex; gap: 1em; flex-wrap: wrap; }}
-      .img-row img {{ flex: 1 1 45%; min-width: 300px; }}
-      pre {{ background: #f8f8f8; padding: 1em; overflow-x: auto; }}
-      code {{ background: #f0f0f0; padding: .1em .3em; border-radius: 3px; }}
-    </style>
-    </head>
-    <body>
-    {body}
-    </body>
-    </html>
-""")
-
-
-# ---------------------------------------------------------------------------
-# ReportBuilder
-# ---------------------------------------------------------------------------
-
-
-class ReportBuilder(ReportWriter):
-    """Extended report writer producing both markdown and HTML outputs.
-
-    Usage::
-
-        report = ReportBuilder(md_path, html_path=html_path)
-        report.start(title="Run XYZ")
-        report.add_config_table(config)
-        report.add_image("Comparison", some_png)
-        report.add_r2_section(r2_aggregator)
-        report.finalise_html()
-    """
-
-    def __init__(
-        self,
-        path: str | Path,
-        *,
-        html_path: str | Path | None = None,
-        mode: str = "overwrite",
-    ):
-        super().__init__(path, mode=mode)
-        self.html_path = Path(html_path) if html_path else None
-        self._images: list[tuple[str, Path]] = []
-
-    # ── config table ─────────────────────────────────────────────────────
+    def raw(self, text: str) -> None:
+        if not self._started:
+            self.start()
+        with self.path.open("a", encoding="utf-8") as f:
+            f.write(text)
 
     def add_config_table(self, config: "PipelineConfig") -> None:
-        """Write the full pipeline configuration as a markdown table."""
         d = config.to_dict()
         lines = ["| Parameter | Value |", "|-----------:|:------|"]
         for k, v in d.items():
             lines.append(f"| `{k}` | `{v}` |")
         self.raw(f"\n## Pipeline Configuration\n\n" + "\n".join(lines) + "\n")
 
-    # ── images ───────────────────────────────────────────────────────────
-
-    def add_image(
-        self, heading: str, path: str | Path, caption: str = ""
-    ) -> None:
-        """Append a single image to the report."""
+    def add_image(self, heading: str, path: str | Path, caption: str = "") -> None:
         path = Path(path)
-        self._images.append((heading, path))
         alt = caption or heading
-        # Use relative path from the report's directory
         try:
             rel = path.relative_to(self.path.parent)
         except ValueError:
             rel = path
         self.raw(f"\n## {heading}\n\n![{alt}]({rel})\n")
 
-    def add_image_row(
-        self, heading: str, paths: list[Path], captions: list[str] | None = None
-    ) -> None:
-        """Append multiple images side-by-side."""
-        if captions is None:
-            captions = [f"Image {i+1}" for i in range(len(paths))]
-        self.raw(f"\n## {heading}\n\n")
-        # Markdown table for side-by-side display
-        header = " | ".join(captions)
-        sep = " | ".join(["---"] * len(paths))
-        cells = []
-        for p, c in zip(paths, captions):
-            p = Path(p)
-            self._images.append((c, p))
-            try:
-                rel = p.relative_to(self.path.parent)
-            except ValueError:
-                rel = p
-            cells.append(f"![{c}]({rel})")
-        row = " | ".join(cells)
-        self.raw(f"| {header} |\n| {sep} |\n| {row} |\n")
-
-    # ── tables ───────────────────────────────────────────────────────────
-
     def add_table(self, heading: str, markdown_table: str) -> None:
-        """Append a pre-formatted markdown table."""
         self.raw(f"\n## {heading}\n\n{markdown_table}\n")
 
-    # ── realignment section ──────────────────────────────────────────────
-
-    def add_realignment_section(
-        self,
-        tile_records: list,
-        *,
-        plot_path: Path | None = None,
-    ) -> None:
-        """Write the per-tile realignment summary to the report.
-
-        Args:
-            tile_records: List of :class:`TileRecord` with ``realign_stats``.
-            plot_path:    Path to the shift summary PNG (from
-                          :func:`plot_realignment_summary`).
-        """
-        # Gather stats
+    def add_realignment_section(self, tile_records: list, *, plot_path=None) -> None:
         applied, rejected, total = 0, 0, 0
         dys, dxs = [], []
         for rec in tile_records:
@@ -522,16 +325,7 @@ class ReportBuilder(ReportWriter):
         if plot_path and Path(plot_path).exists():
             self.add_image("Realignment Shift Distribution", plot_path)
 
-    # ── R² section ───────────────────────────────────────────────────────
-
-    def add_r2_section(
-        self,
-        agg: R2Aggregator,
-        *,
-        histogram_path: Path | None = None,
-        per_band_path: Path | None = None,
-    ) -> None:
-        """Write the full R² quality section to the report."""
+    def add_r2_section(self, agg: R2Aggregator, *, histogram_path=None, per_band_path=None) -> None:
         s = agg.summary()
         if s["n_tiles"] == 0:
             self.section("Spectral Fitting — R² Quality", ["No tiles fitted."])
@@ -552,125 +346,3 @@ class ReportBuilder(ReportWriter):
             self.add_image("R² Distribution Across Tiles", histogram_path)
         if per_band_path and per_band_path.exists():
             self.add_image("R² by Spectral Band", per_band_path)
-
-    # ── HTML generation ──────────────────────────────────────────────────
-
-    def finalise_html(self, title: str = "Run Report") -> Path | None:
-        """Generate a self-contained HTML report with base64-embedded images.
-
-        Returns the HTML path, or None if no html_path was configured.
-        """
-        if self.html_path is None:
-            return None
-
-        md_text = self.path.read_text(encoding="utf-8")
-
-        # Replace markdown image references with base64 data URIs
-        import re
-        def _replace_img(m: re.Match) -> str:
-            alt = m.group(1)
-            rel_path = m.group(2)
-            # Try resolving relative to the markdown file's directory
-            img_path = self.path.parent / rel_path
-            if not img_path.exists():
-                img_path = Path(rel_path)
-            if img_path.exists():
-                data_uri = _image_to_base64(img_path)
-                return f'<img src="{data_uri}" alt="{alt}" />'
-            return m.group(0)  # keep original if not found
-
-        html_body = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", _replace_img, md_text)
-
-        # Convert basic markdown to HTML
-        html_body = _markdown_to_html(html_body)
-
-        html = _HTML_TEMPLATE.format(title=title, body=html_body)
-
-        self.html_path.parent.mkdir(parents=True, exist_ok=True)
-        self.html_path.write_text(html, encoding="utf-8")
-        return self.html_path
-
-
-def _markdown_to_html(md: str) -> str:
-    """Minimal markdown → HTML conversion (headings, lists, tables, images).
-
-    This is intentionally simple — no external dependency required.
-    """
-    import re
-    lines = md.split("\n")
-    html_lines: list[str] = []
-    in_table = False
-    in_list = False
-
-    for line in lines:
-        stripped = line.strip()
-
-        # Already-converted <img> tags — pass through
-        if stripped.startswith("<img "):
-            if in_list:
-                html_lines.append("</ul>")
-                in_list = False
-            html_lines.append(stripped)
-            continue
-
-        # Headings
-        hm = re.match(r"^(#{1,6})\s+(.*)", stripped)
-        if hm:
-            if in_list:
-                html_lines.append("</ul>")
-                in_list = False
-            if in_table:
-                html_lines.append("</table>")
-                in_table = False
-            level = len(hm.group(1))
-            html_lines.append(f"<h{level}>{hm.group(2)}</h{level}>")
-            continue
-
-        # Table rows
-        if stripped.startswith("|") and stripped.endswith("|"):
-            cells = [c.strip() for c in stripped.split("|")[1:-1]]
-            # Skip separator rows
-            if all(set(c) <= {"-", ":", " "} for c in cells):
-                continue
-            if not in_table:
-                html_lines.append("<table>")
-                in_table = True
-                tag = "th"
-            else:
-                tag = "td"
-            row = "".join(f"<{tag}>{c}</{tag}>" for c in cells)
-            html_lines.append(f"<tr>{row}</tr>")
-            continue
-
-        if in_table and not stripped.startswith("|"):
-            html_lines.append("</table>")
-            in_table = False
-
-        # Bullet lists
-        if stripped.startswith("- "):
-            if not in_list:
-                html_lines.append("<ul>")
-                in_list = True
-            html_lines.append(f"<li>{stripped[2:]}</li>")
-            continue
-
-        if in_list and not stripped.startswith("- "):
-            html_lines.append("</ul>")
-            in_list = False
-
-        # Bold / code
-        line = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", line)
-        line = re.sub(r"`([^`]+)`", r"<code>\1</code>", line)
-
-        # Paragraph
-        if stripped:
-            html_lines.append(f"<p>{line}</p>")
-        else:
-            html_lines.append("")
-
-    if in_list:
-        html_lines.append("</ul>")
-    if in_table:
-        html_lines.append("</table>")
-
-    return "\n".join(html_lines)

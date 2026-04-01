@@ -1,23 +1,20 @@
 from __future__ import annotations
+import re
 import sys
 
 import datetime as dt
 from pathlib import Path
-from typing import Iterable, List
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 import pyproj
 from shapely.geometry import Point, box, Polygon
 
 import numpy as np
 import xarray as xr
 import earthaccess as ea
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timezone, timedelta
 from shapely.ops import unary_union
 
-
-
-
-from datetime import datetime, timezone, timedelta, date
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from data.download_utils import retry as _retry_download
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -29,7 +26,6 @@ from pairing.pairs_utils import (
 EMIT_SHORT_NAME = "EMITL2ARFL" 
 
 def _umm_additional_attr(umm: dict, name: str):
-    """Return first value of a UMM AdditionalAttributes entry by Name (case-insensitive)."""
     want = name.strip().upper()
     for a in (umm.get("AdditionalAttributes") or []):
         if str(a.get("Name", "")).strip().upper() == want:
@@ -39,10 +35,6 @@ def _umm_additional_attr(umm: dict, name: str):
 
 
 def emit_sun_vec_from_umm(umm: dict):
-    """
-    EMIT provides SOLAR_ZENITH + SOLAR_AZIMUTH in AdditionalAttributes.
-    Convert zenith -> elevation and return unit sun vector.
-    """
     zen = _umm_additional_attr(umm, "SOLAR_ZENITH")
     az  = _umm_additional_attr(umm, "SOLAR_AZIMUTH")
     if zen is None or az is None:
@@ -59,7 +51,6 @@ def emit_sun_vec_from_umm(umm: dict):
 
 
 def emit_geom_wgs84_from_umm(umm: dict):
-    """Parse UMM GPolygons into a Shapely geometry (Polygon/MultiPolygon) in EPSG:4326."""
     gpolys = (
         (umm.get("SpatialExtent") or {})
         .get("HorizontalSpatialDomain", {})
@@ -115,9 +106,7 @@ def emit_item_date(item: dict) -> Optional[date]:
 
 def emit_cloud_pct(item: dict) -> float:
     umm = item.get("umm") or {}
-    v = umm.get("CloudCover", None)
-    if v is None:
-        v = item.get("CloudCover", None)
+    v = umm.get("CloudCover", None) or item.get("CloudCover", None)
     try:
         return float(v) if v is not None else float("inf")
     except Exception:
@@ -162,9 +151,6 @@ def emit_latest_revision_time(item: dict) -> datetime:
 
 
 def emit_dedupe_latest_revision(items: Iterable[dict], key_fn=None) -> List[dict]:
-    """
-    Keep only latest-revision item per stable key.
-    """
     def _default_key(it: dict) -> str:
         umm = it.get("umm") or {}
         for k in ("GranuleUR", "NativeId", "EntryTitle", "ShortName"):
@@ -188,10 +174,6 @@ def emit_dedupe_latest_revision(items: Iterable[dict], key_fn=None) -> List[dict
     return list(best.values())
 
 def emit_keep_top_n_per_day(items: Iterable[dict], *, n_per_day: int = 5, max_cloud_pct: Optional[float] = None) -> List[dict]:
-    """
-    Optional: keep top-N least-cloudy per UTC day (after dedupe).
-    If max_cloud_pct is set, drop cloudier than threshold.
-    """
     buckets = {}
     for it in items:
         d = emit_item_date(it)
@@ -220,12 +202,6 @@ def search(
     count: int = 200,
     sort: bool = True,
 ):
-    """Search for EMIT granules within a bounding box and time window.
-
-    When *sort* is True (default), results are sorted by acquisition
-    time then by GranuleUR so the output order is deterministic
-    regardless of the CMR query response order.
-    """
     if start is None and end is None:
         import warnings
         warnings.warn(
@@ -244,7 +220,6 @@ def search(
         print("No granules found for the given search criteria.")
         return None
 
-    # Deterministic sort: by acquisition time, then granule UR
     if sort:
         def _sort_key(item):
             t = emit_item_datetime_utc(item)
@@ -256,65 +231,26 @@ def search(
     return result
 
 
-def _filter_rfl_links(links: Iterable[str], desired_assets: List[str] = ['_RFL_', '_MASK_']) -> List[str]:
-    filtered_asset_links = []
-    for url in links:
-        asset_name = url.split('/')[-1]
-        if any(asset in asset_name for asset in desired_assets):
-            filtered_asset_links.append(url)
-    print(f"Filtered to {len(filtered_asset_links)} reflectance-related asset link(s).")
-    return filtered_asset_links
-
-
-from pathlib import Path
-from typing import List
-import re
-
-import earthaccess as ea
-
-
-def _rfl_scene_key(pick) -> Optional[str]:
-    """Extract the scene key (timestamp_orbit_scene) from an L2A RFL granule.
-
-    EMIT filenames follow the pattern::
-
-        EMIT_L2A_RFL_001_20220828T205930_2224013_009.nc
-
-    The scene key is ``20220828T205930_2224013_009`` — shared with the
-    corresponding L1B OBS file ``EMIT_L1B_OBS_001_20220828T205930_2224013_009.nc``.
-    """
-    pattern = re.compile(
-        r"EMIT_L2A_(?:RFL|RFLUNCERT|MASK)_\d{3}_"
-        r"(\d{8}T\d{6}_\d{7}_\d{3})"
-    )
-    for url in pick.data_links():
-        m = pattern.search(url.split("/")[-1].split("?")[0])
-        if m:
-            return m.group(1)
-    return None
-
-
 def find_obs_for_rfl(
     rfl_pick,
     *,
     short_name: str = "EMITL1BRAD",
     version: str = "001",
 ):
-    """Find the L1B granule whose OBS file corresponds to an L2A RFL granule.
-
-    Strategy: derive the scene key from the RFL filename, then search CMR
-    for the matching L1B RAD granule by ``granule_name`` wildcard.  This is
-    a single CMR query — no need to search by bbox/temporal and filter.
-
-    Returns the earthaccess granule object (has ``.data_links()``), or
-    ``None`` if no matching L1B granule is found.
-    """
-    scene_key = _rfl_scene_key(rfl_pick)
+    pattern = re.compile(
+        r"EMIT_L2A_(?:RFL|RFLUNCERT|MASK)_\d{3}_"
+        r"(\d{8}T\d{6}_\d{7}_\d{3})"
+    )
+    scene_key = None
+    for url in rfl_pick.data_links():
+        m = pattern.search(url.split("/")[-1].split("?")[0])
+        if m:
+            scene_key = m.group(1)
+            break
     if scene_key is None:
         print("[WARN] Could not parse scene key from RFL granule links.")
         return None
 
-    # CMR supports wildcards in granule_name
     pattern = f"EMIT_L1B_RAD_*_{scene_key}*"
     res = ea.search_data(
         short_name=short_name,
@@ -330,7 +266,6 @@ def find_obs_for_rfl(
 
 
 def _obs_links_from_l1b(l1b_granule) -> List[str]:
-    """Extract OBS .nc URLs from an L1B RAD granule's data links."""
     links = []
     for url in l1b_granule.data_links():
         name = Path(url.split("?", 1)[0]).name
@@ -347,29 +282,19 @@ def download_reflectance(
     download_obs: bool = False,
     obs_dest_dir: Optional[Path | str] = None,
 ) -> List[Path]:
-    """Download EMIT L2A Reflectance assets and, optionally, the matching L1B OBS.
-
-    Args:
-        pick:          earthaccess granule object for the L2A RFL product.
-        dest_dir:      Directory for reflectance / mask downloads.
-        assets:        Substrings to filter asset links (default: RFL + MASK).
-        download_obs:  If *True*, also find and download the corresponding
-                       L1B OBS .nc file (viewing/solar angles, path length,
-                       slope, etc.).  Requires the scene key to be parseable
-                       from the RFL filename.
-        obs_dest_dir:  Where to save the OBS file.  Defaults to *dest_dir*.
-
-    Returns:
-        List of downloaded file paths.  If *download_obs* is True and the
-        OBS file was found, it is appended at the end of the list.
-    """
     dest = Path(dest_dir)
     dest.mkdir(parents=True, exist_ok=True)
 
-    links = _filter_rfl_links(pick.data_links(), desired_assets=assets)
+    filtered_asset_links = []
+    for url in pick.data_links():
+        asset_name = url.split('/')[-1]
+        if any(asset in asset_name for asset in assets):
+            filtered_asset_links.append(url)
+    print(f"Filtered to {len(filtered_asset_links)} reflectance-related asset link(s).")
+    links = filtered_asset_links
     if not links:
         raise RuntimeError("No EMIT L2A Reflectance .nc links for the selected granule")
-    downloaded = [Path(p) for p in ea.download(links, str(dest))]
+    downloaded = [Path(p) for p in _retry_download(ea.download, links, str(dest))]
 
     if download_obs:
         obs_dir = Path(obs_dest_dir) if obs_dest_dir else dest
@@ -379,7 +304,7 @@ def download_reflectance(
         if l1b is not None:
             obs_links = _obs_links_from_l1b(l1b)
             if obs_links:
-                obs_files = [Path(p) for p in ea.download(obs_links, str(obs_dir))]
+                obs_files = [Path(p) for p in _retry_download(ea.download, obs_links, str(obs_dir))]
                 downloaded.extend(obs_files)
                 print(f"Downloaded {len(obs_files)} OBS file(s) alongside reflectance.")
             else:
@@ -392,7 +317,6 @@ def download_reflectance(
 
 
 def download_obs_from_l1b_granules(l1b_granules, dest_dir: Path | str):
-    """Download OBS files from pre-fetched L1B granule objects (legacy helper)."""
     dest = Path(dest_dir)
     dest.mkdir(parents=True, exist_ok=True)
 
@@ -407,17 +331,12 @@ def download_obs_from_l1b_granules(l1b_granules, dest_dir: Path | str):
     return [Path(p) for p in files]
 
 
-# ---------------------------------------------------------------------------
-# Fetch helpers (reconstruct item objects from stored IDs)
-# ---------------------------------------------------------------------------
-
 def fetch_emit_umm_by_granuleur(
     granuleur: str,
     *,
     short_name: str = "EMITL2ARFL",
     version: str = "001",
 ) -> dict:
-    """Fetch the UMM metadata dict for a single EMIT granule from NASA CMR."""
     import requests
 
     CMR_GRANULES_UMM = "https://cmr.earthdata.nasa.gov/search/granules.umm_json"
@@ -442,10 +361,6 @@ def refetch_emit_pick(
     short_name: str = "EMITL2ARFL",
     version: str = "001",
 ):
-    """Re-fetch a single EMIT earthaccess granule object by its granule UR.
-
-    Returns the earthaccess granule (has ``.data_links()``).
-    """
     res = ea.search_data(
         short_name=short_name,
         version=version,
