@@ -381,3 +381,7 @@ class ReportBuilder:
             self.add_image("R² Distribution Across Tiles", histogram_path)
         if per_band_path and per_band_path.exists():
             self.add_image("R² by Spectral Band", per_band_path)
+
+    def finalise_html(self, title: str = "Run Report") -> Path | None:
+        """Kept for backward compatibility — returns the markdown path."""
+        return self.path
