@@ -225,6 +225,7 @@ def build_s2_index(
                     limit=limit,
                 )
                 items_all.extend(items)
+                cur = nxt
                 continue
             except Exception:
                 # …fallback to bbox if the server chokes

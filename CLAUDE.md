@@ -14,7 +14,7 @@ The user (Irynka) works primarily in **Colab notebooks** for training and uses t
 - **EMIT**: 285 bands total, 32 selected bands, 380-2500nm, ~60m resolution
 - **Sentinel-2 L2A**: 10 bands at 10m/20m, uint16, DN scaled by 10000
 - **Scale factor**: 6 (60m/10m)
-- **Tile size**: 120 EMIT pixels = 7200m = 720 S2 pixels. LR patches = 20×20
+- **Tile size**: 96 EMIT pixels = 5760m = 576 S2 pixels. LR patches = 16×16
 - **Regression**: polynomial Ridge, degree=2, alpha=1.0, homogeneous pixels CV<0.25, bilinear EMIT upsampling (scipy zoom order=1)
 - **Normalization**: S2 and EMIT DN values / 10000 → reflectance [0, ~1.0]
 
