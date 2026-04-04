@@ -91,7 +91,7 @@ class PipelineConfig:
         d = d.copy()
 
         # Backwards-compat defaults for keys added after initial config
-        d.setdefault("qc_min_r2", 0.70)
+        d.setdefault("qc_min_r2", 0.0)
         d.setdefault("qc_max_emit_cloud_frac", 0.05)
         d.setdefault("qc_max_s2_bright_frac", 0.05)
 

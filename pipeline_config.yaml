@@ -50,7 +50,7 @@ max_black_frac: 0.0
 
 # ── Post-hoc tile QC (EMIT mask + S2 brightness) ────────────────────
 # Minimum mean R² (regression) to consider a tile for QC / training
-qc_min_r2: 0.70
+qc_min_r2: 0.0
 
 # Max EMIT cloud+cirrus fraction per tile (from L2A mask layer)
 qc_max_emit_cloud_frac: 0.05
