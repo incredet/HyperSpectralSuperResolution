@@ -49,6 +49,10 @@ class PipelineConfig:
     tile_scale: int
     max_tile_cloud_frac: float
 
+    qc_min_r2: float
+    qc_max_emit_cloud_frac: float
+    qc_max_s2_bright_frac: float
+
     emit_target_wavelengths_nm: tuple[float, ...]
     spectral_num_keep_bands: int
 
@@ -85,6 +89,11 @@ class PipelineConfig:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "PipelineConfig":
         d = d.copy()
+
+        # Backwards-compat defaults for keys added after initial config
+        d.setdefault("qc_min_r2", 0.70)
+        d.setdefault("qc_max_emit_cloud_frac", 0.05)
+        d.setdefault("qc_max_s2_bright_frac", 0.05)
 
         _tuple_fields = {
             f.name for f in fields(cls)
@@ -140,6 +149,14 @@ class PipelineConfig:
             "scale": self.tile_scale,
             "max_black_frac": self.max_black_frac,
             "max_cloud_frac": self.max_tile_cloud_frac,
+        }
+
+    @property
+    def qc_params(self) -> dict[str, Any]:
+        return {
+            "min_r2": self.qc_min_r2,
+            "max_emit_cloud_frac": self.qc_max_emit_cloud_frac,
+            "max_s2_bright_frac": self.qc_max_s2_bright_frac,
         }
 
     @property
