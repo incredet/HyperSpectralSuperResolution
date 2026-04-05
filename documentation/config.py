@@ -51,6 +51,7 @@ class PipelineConfig:
 
     qc_min_r2: float
     qc_max_emit_cloud_frac: float
+    qc_min_r2_reverse: float
     qc_max_s2_bright_frac: float
 
     emit_target_wavelengths_nm: tuple[float, ...]
@@ -93,7 +94,8 @@ class PipelineConfig:
         # Backwards-compat defaults for keys added after initial config
         d.setdefault("qc_min_r2", 0.0)
         d.setdefault("qc_max_emit_cloud_frac", 0.05)
-        d.setdefault("qc_max_s2_bright_frac", 0.05)
+        d.setdefault("qc_min_r2_reverse", 0.70)
+        d.setdefault("qc_max_s2_bright_frac", 1.0)
 
         _tuple_fields = {
             f.name for f in fields(cls)
@@ -156,6 +158,7 @@ class PipelineConfig:
         return {
             "min_r2": self.qc_min_r2,
             "max_emit_cloud_frac": self.qc_max_emit_cloud_frac,
+            "min_r2_reverse": self.qc_min_r2_reverse,
             "max_s2_bright_frac": self.qc_max_s2_bright_frac,
         }
 

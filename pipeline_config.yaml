@@ -48,15 +48,18 @@ max_emit_cloud_pct: 30.0
 # 0.0 = zero tolerance for nodata.
 max_black_frac: 0.0
 
-# ── Post-hoc tile QC (EMIT mask + S2 brightness) ────────────────────
+# ── Post-hoc tile QC (EMIT mask + reverse R²) ───────────────────────
 # Minimum mean R² (regression) to consider a tile for QC / training
 qc_min_r2: 0.0
 
 # Max EMIT cloud+cirrus fraction per tile (from L2A mask layer)
 qc_max_emit_cloud_frac: 0.05
 
-# Max fraction of S2 pixels with mean reflectance > 0.25
-qc_max_s2_bright_frac: 0.05
+# Min reverse R² (EMIT→S2) — catches S2 cloud contamination
+qc_min_r2_reverse: 0.70
+
+# Max fraction of S2 pixels with mean reflectance > 0.25 (legacy, kept for reference)
+qc_max_s2_bright_frac: 1.0
 
 
 # ── AROSICS co-registration ──────────────────────────────────────────────

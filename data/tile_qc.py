@@ -187,6 +187,111 @@ def s2_bright_frac(s2_tif, threshold=0.25):
     return float((mean_r[valid] > threshold).sum() / valid.sum())
 
 
+def reverse_r2(emit_tif, s2_tif, scale=6, degree=2, alpha=1.0):
+    """EMIT→S2 R² at 60m. Downsample S2 by block-averaging, fit Ridge."""
+    from sklearn.linear_model import Ridge
+    from sklearn.metrics import r2_score
+    from sklearn.preprocessing import PolynomialFeatures, StandardScaler
+
+    DN = np.float32(10000.0)
+    with rasterio.open(emit_tif) as ds:
+        emit = ds.read().astype(np.float32)
+    with rasterio.open(s2_tif) as ds:
+        s2 = ds.read().astype(np.float32)
+
+    B_s2, H, W = s2.shape
+    if H % scale or W % scale:
+        return np.nan
+    s2_lo = s2.reshape(B_s2, H // scale, scale, W // scale, scale).mean(axis=(2, 4))
+
+    emit = emit / DN
+    s2_lo = s2_lo / DN
+
+    B_e = emit.shape[0]
+    h, w = emit.shape[1], emit.shape[2]
+    X = emit.reshape(B_e, h * w).T
+    Y = s2_lo.reshape(B_s2, h * w).T
+
+    valid = np.all(np.isfinite(X), axis=1) & np.all(np.isfinite(Y), axis=1)
+    valid &= np.any(X > 0, axis=1) & np.any(Y > 0, axis=1)
+    X, Y = X[valid], Y[valid]
+
+    if X.shape[0] < 50:
+        return np.nan
+
+    poly = PolynomialFeatures(degree=degree, include_bias=False)
+    scaler = StandardScaler()
+    ridge = Ridge(alpha=alpha, random_state=42)
+
+    Xp = scaler.fit_transform(poly.fit_transform(X.astype(np.float64)))
+    ridge.fit(Xp, Y)
+    Yp = ridge.predict(Xp)
+
+    r2s = [r2_score(Y[:, i], Yp[:, i]) for i in range(B_s2)]
+    return float(np.mean(r2s))
+
+
+# ── visual diagnostics ───────────────────────────────────────────────
+
+def plot_tile_examples(qc_df, n=4, out_path=None):
+    """Plot S2 true-color for sample tiles in each QC category."""
+    import matplotlib.pyplot as plt
+
+    categories = {
+        "pass (both R² high, clean)": qc_df[
+            (qc_df["r2_mean"] >= 0.75) & (qc_df["r2_reverse"] >= 0.50) &
+            (qc_df["combined_frac"] <= 0.05)],
+        "fail reverse R² only": qc_df[
+            (qc_df["r2_mean"] >= 0.75) & (qc_df["r2_reverse"] < 0.50) &
+            (qc_df["combined_frac"] <= 0.05)],
+        "fail cloud only": qc_df[
+            (qc_df["r2_mean"] >= 0.75) & (qc_df["combined_frac"] > 0.05)],
+        "fail both": qc_df[
+            (qc_df["r2_mean"] < 0.50) | (qc_df["r2_reverse"] < 0.20)],
+    }
+
+    fig, axes = plt.subplots(len(categories), n, figsize=(3.5 * n, 3.5 * len(categories)))
+    if axes.ndim == 1:
+        axes = axes[None, :]
+
+    for row, (label, subset) in enumerate(categories.items()):
+        sample = subset.sample(n=min(n, len(subset)), random_state=42)
+        for col in range(n):
+            ax = axes[row, col]
+            if col >= len(sample):
+                ax.axis("off")
+                continue
+            r = sample.iloc[col]
+            s2_tif = r.get("s2_tif")
+            if pd.isna(s2_tif) or not Path(s2_tif).exists():
+                ax.text(0.5, 0.5, "no S2", ha="center", va="center", transform=ax.transAxes)
+                ax.axis("off")
+                continue
+            try:
+                _plot_s2_rgb(s2_tif, ax)
+            except Exception:
+                ax.text(0.5, 0.5, "err", ha="center", va="center", transform=ax.transAxes)
+            ax.set_title(f"R²={r['r2_mean']:.2f} rev={r['r2_reverse']:.2f}\ncld={r['combined_frac']:.2f}",
+                         fontsize=8)
+            ax.axis("off")
+        axes[row, 0].set_ylabel(label, fontsize=9, rotation=0, ha="right", va="center")
+
+    plt.tight_layout()
+    if out_path:
+        fig.savefig(str(out_path), dpi=150, bbox_inches="tight")
+    plt.show()
+
+
+def _plot_s2_rgb(s2_tif, ax):
+    """Quick S2 true-color (B4=band3, B3=band2, B2=band1 in 0-indexed 10-band stack)."""
+    with rasterio.open(s2_tif) as ds:
+        rgb = ds.read([3, 2, 1]).astype(np.float32) / 10000.0
+    rgb = np.moveaxis(rgb, 0, -1)
+    p2, p98 = np.nanpercentile(rgb[np.isfinite(rgb)], [2, 98])
+    rgb = np.clip((rgb - p2) / (p98 - p2 + 1e-6), 0, 1)
+    ax.imshow(rgb)
+
+
 # ── pair-level orchestration ──────────────────────────────────────────
 
 def download_emit_mask(granule_ur, dest_dir):
@@ -260,11 +365,21 @@ def qc_pair(pair_dir, tile_rows_df, manifest_df, *,
             except Exception:
                 pass
 
+        r2_rev = np.nan
+        if pd.notna(b32_tif) and pd.notna(s2_tif) and \
+           Path(b32_tif).exists() and Path(s2_tif).exists():
+            try:
+                r2_rev = reverse_r2(b32_tif, s2_tif)
+            except Exception:
+                pass
+
         rows.append({
             "tile_idx": tile_idx,
             "r2_mean": float(trow["r2_mean"]),
             **cloud_info,
             "s2_bright_frac": s2_bright,
+            "r2_reverse": r2_rev,
+            "s2_tif": str(s2_tif) if pd.notna(s2_tif) else "",
         })
 
     shutil.rmtree(tmp, ignore_errors=True)
@@ -273,8 +388,8 @@ def qc_pair(pair_dir, tile_rows_df, manifest_df, *,
 
 # ── CLI ───────────────────────────────────────────────────────────────
 
-def run_qc(drive_base, *, min_r2, max_emit_cloud_frac, max_s2_bright_frac,
-           cloud_band=0, cirrus_band=2):
+def run_qc(drive_base, *, min_r2, max_emit_cloud_frac, min_r2_reverse,
+           max_s2_bright_frac, cloud_band=0, cirrus_band=2):
     import earthaccess as ea
     ea.login()
 
@@ -325,13 +440,15 @@ def run_qc(drive_base, *, min_r2, max_emit_cloud_frac, max_s2_bright_frac,
         n_flagged = 0
         for r in rows:
             pc = r["combined_frac"] <= max_emit_cloud_frac if np.isfinite(r["combined_frac"]) else False
+            p_rev = r["r2_reverse"] >= min_r2_reverse if np.isfinite(r["r2_reverse"]) else False
             ps = r["s2_bright_frac"] <= max_s2_bright_frac if np.isfinite(r["s2_bright_frac"]) else False
-            if not pc:
+            ok = pc and p_rev and ps
+            if not ok:
                 n_flagged += 1
             qc_rows.append({
                 "aoi_slug": aoi_slug, "pair_id": pair_id, **r,
-                "pass_emit_cloud": pc, "pass_s2_bright": ps,
-                "pass_qc": pc and ps,
+                "pass_emit_cloud": pc, "pass_r2_reverse": p_rev,
+                "pass_s2_bright": ps, "pass_qc": ok,
             })
 
         if n_flagged:
@@ -348,8 +465,9 @@ def run_qc(drive_base, *, min_r2, max_emit_cloud_frac, max_s2_bright_frac,
     n_total = len(qc_df)
     print(f"\nSaved {out_csv}")
     print(f"Pass QC: {n_pass}/{n_total} ({100*n_pass/n_total:.1f}%)")
-    print(f"EMIT cloud fail: {(~qc_df['pass_emit_cloud']).sum()}")
-    print(f"S2 bright fail:  {(~qc_df['pass_s2_bright']).sum()}")
+    print(f"EMIT cloud fail:   {(~qc_df['pass_emit_cloud']).sum()}")
+    print(f"Reverse R² fail:   {(~qc_df['pass_r2_reverse']).sum()}")
+    print(f"S2 bright fail:    {(~qc_df['pass_s2_bright']).sum()}")
 
     if failed:
         print(f"\n{len(failed)} pairs failed:")
