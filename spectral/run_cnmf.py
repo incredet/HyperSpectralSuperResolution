@@ -171,14 +171,29 @@ def main():
 
     tile_list = build_tile_list(drive_base, tile_df)
 
-    # ── Load analytical R ──
+    # ── Load analytical R (generate from S2A SRF CSV if .mat is missing) ──
     import scipy.io
 
     repo_root = Path(__file__).resolve().parent.parent
-    srf_path = Path(args.srf_mat) if args.srf_mat else (
-        repo_root / "hif-benchmarking" / "data" / "srf_R.mat")
+    bench_data = repo_root / "hif-benchmarking" / "data"
+    srf_path = Path(args.srf_mat) if args.srf_mat else (bench_data / "srf_R.mat")
+
     if not srf_path.exists():
-        sys.exit(f"srf_R.mat not found: {srf_path}")
+        srf_csv = bench_data / "s2a_srf.csv"
+        if not srf_csv.exists():
+            sys.exit(f"Neither srf_R.mat nor s2a_srf.csv found in {bench_data}")
+        print(f"srf_R.mat not found — generating from {srf_csv.name} ...")
+        sys.path.insert(0, str(repo_root / "hif-benchmarking" / "main"))
+        from compute_srf import load_s2_srf, compute_R, EMIT_TARGET_WAVELENGTHS_NM
+        srf_wl, srf_dict = load_s2_srf(str(srf_csv))
+        emit_centers = np.array(EMIT_TARGET_WAVELENGTHS_NM)
+        R = compute_R(srf_wl, srf_dict, emit_centers, emit_fwhm=7.5)
+        scipy.io.savemat(str(srf_path), {
+            "R": R,
+            "emit_wavelengths_nm": emit_centers,
+            "emit_fwhm_nm": 7.5,
+        }, do_compression=True)
+        print(f"  Saved: {srf_path}")
 
     srf_data = scipy.io.loadmat(str(srf_path))
     pre_R = srf_data["R"]
