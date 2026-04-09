@@ -29,6 +29,12 @@ import sys
 import time
 from pathlib import Path
 
+# Ensure repo root is on sys.path so `documentation` and `spectral` are importable
+# regardless of how the script is invoked.
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 import numpy as np
 import pandas as pd
 
