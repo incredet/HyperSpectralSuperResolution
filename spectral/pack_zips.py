@@ -122,8 +122,6 @@ def main():
             print(f"{r2_csv.name}: {len(r2_df)} OK tiles")
 
             # Merge on (aoi_slug, pair_id, tile_idx)
-            # tiles_clean has tile_idx, r2_df also has tile_idx (from tile_name parsing or directly)
-            # Use tile_name to extract tile_idx if needed
             if "tile_idx" not in r2_df.columns and "tile_name" in r2_df.columns:
                 import re
                 r2_df["tile_idx"] = r2_df["tile_name"].apply(
@@ -131,9 +129,13 @@ def main():
                 )
 
             merge_cols = ["aoi_slug", "pair_id", "tile_idx"]
+            # Bring in r2 column + out_path (actual GT location on disk)
+            extra_cols = [r2_col]
+            if "out_path" in r2_df.columns:
+                extra_cols.append("out_path")
             before = len(df)
             df = df.merge(
-                r2_df[merge_cols + [r2_col]],
+                r2_df[merge_cols + extra_cols],
                 on=merge_cols,
                 how="inner",
             )
@@ -178,13 +180,21 @@ def main():
 
         tiles_dir = drive_base / aoi_slug / pair_id / "tiles"
         tile_entries = []
+        has_out_path = "out_path" in group.columns
 
         for _, row in group.iterrows():
             tile_idx = int(row["tile_idx"])
             tile_name = f"{pair_id}_tile{tile_idx:03d}"
 
             lr_path = tiles_dir / f"{tile_name}_emit_b32.tif"
-            gt_path = tiles_dir / f"{tile_name}{gt_suffix_on_disk}"
+
+            # GT path: use out_path from R² CSV if available (methods
+            # save to different subdirs like CNMF/, SFIM/), else look
+            # in tiles/ with the standard suffix.
+            if has_out_path and pd.notna(row.get("out_path")):
+                gt_path = Path(row["out_path"])
+            else:
+                gt_path = tiles_dir / f"{tile_name}{gt_suffix_on_disk}"
 
             if not lr_path.exists() or not gt_path.exists():
                 missing_files += 1
