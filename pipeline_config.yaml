@@ -50,7 +50,7 @@ max_black_frac: 0.0
 
 # ── Post-hoc tile QC (EMIT mask + reverse R²) ───────────────────────
 # Minimum mean R² (regression) to consider a tile for QC / training
-qc_min_r2: 0.0
+qc_min_r2: 0.75
 
 # Max EMIT cloud+cirrus fraction per tile (from L2A mask layer)
 qc_max_emit_cloud_frac: 0.05
@@ -175,6 +175,25 @@ emit_target_wavelengths_nm:
   - 2440   # FL  near clean-range edge
 
 spectral_num_keep_bands: 32
+
+
+# ── CNMF fusion ──────────────────────────────────────────────────────────
+# Maximum number of endmembers (VCA extracts up to this many)
+cnmf_max_endmembers: 20
+
+# Maximum inner NMF iterations per phase
+cnmf_inner_iters: 200
+
+# Maximum outer CNMF iterations (1 is typical for real data)
+cnmf_outer_iters: 1
+
+# Inner-loop convergence threshold (relative cost change).
+# 1e-8 matches MATLAB CNMF_fusion.m.  NMF stops early if
+# (cost_prev - cost_now) / cost_prev < threshold.
+cnmf_th: 1.0e-8
+
+# Outer-loop convergence threshold (looser — most work happens inside)
+cnmf_th_outer: 1.0e-2
 
 
 # ── Encoding / output ────────────────────────────────────────────────────

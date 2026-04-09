@@ -62,7 +62,7 @@ hif-benchmarking/
 │   ├── tif2mat_wald.py      # Prepare Wald protocol data from GeoTIFF tiles
 │   ├── run_batch.py         # Run MATLAB fusion methods in parallel batches
 │   ├── run_regression_wald.py  # Run Python regression fusion in Wald space
-│   ├── select_wald_tiles.py   # R²-filter + stratified subsample for Wald eval
+│   ├── select_wald_tiles.py   # QC-filtered tile selection + stratified subsample for Wald eval
 │   ├── metrics_wald.py      # Compute 7 metrics: PSNR, SSIM, SAM, ERGAS, RMSE, UIQI, SCC
 │   ├── produce_glp.py       # Pure-Python GLP implementation
 │   ├── produce_sfim.py      # Pure-Python SFIM implementation
@@ -88,7 +88,7 @@ hif-benchmarking/
 ```
 r2_all_tiles.csv (from Color_Matching.ipynb) + aois.csv
   │
-  ▼  select_wald_tiles.py (R² >= 0.75, stratified ~40-60 tiles)
+  ▼  select_wald_tiles.py (from tiles_clean.csv, proportional stratified ~400 tiles)
 wald_tile_list.csv
   │
   ▼  tif2mat_wald.py --tile-list wald_tile_list.csv
@@ -159,7 +159,7 @@ The core regression pipeline. Key functions:
 ### tif2mat_wald.py — Wald Protocol Data Preparation
 
 - Reads GeoTIFF tiles from Drive, degrades by scale factor, saves as .mat
-- HSI degradation: Gaussian blur (sigma=2.0) + decimation
+- HSI degradation: Gaussian blur (sigma = scale/2.35482, i.e. FWHM = scale pixels) + decimation. For scale=6, sigma ≈ 2.548. This matches the GLP and FUSE internal blur conventions for consistent Wald evaluation.
 - MSI degradation: block averaging
 - Normalizes to [0,1] by dividing by global_max (stored in metadata JSON)
 - Discovery: scans **two levels deep** (aoi_*/pair_id/tiles/) — was fixed from one-level scan
@@ -221,12 +221,12 @@ Regression method: run via `run_regression_wald.py` (Python, no MATLAB needed).
 
 ```bash
 # Wald evaluation pipeline (from hif-benchmarking/ directory)
-# Step 0: Select tiles (R² filter + stratified subsample)
+# Step 0: Select tiles (QC-filtered + proportional stratified subsample)
 python main/select_wald_tiles.py \
-    --r2-csv /path/to/r2_all_tiles.csv \
+    --tiles-csv /path/to/tiles_clean.csv \
     --aois-csv /path/to/aois.csv \
     --drive-root /path/to/data \
-    --min-r2 0.75 --tiles-per-category 5 \
+    --max-total 400 \
     --output wald_tile_list.csv
 
 # Step 1: Prepare .mat files from selected tiles

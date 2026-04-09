@@ -159,7 +159,7 @@ def _estimate_srf(
     msi: np.ndarray,
     scale_factor: int,
     eps: float = 1e-7,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Estimate the spectral response function (SRF) via constrained LS
     """
@@ -497,11 +497,12 @@ def cnmf_fuse(
     hs: np.ndarray,
     ms: np.ndarray,
     *,
+    pre_R: np.ndarray | None = None,
     max_endmembers: int = 20,
     inner_iters: int = 200,
     outer_iters: int = 1,
-    th_h: float = 1e-5,
-    th_m: float = 1e-5,
+    th_h: float = 1e-8,
+    th_m: float = 1e-8,
     th_outer: float = 1e-2,
     eps: float = 1e-7,
     verbose: bool = False,
@@ -513,33 +514,18 @@ def cnmf_fuse(
     Parameters
     ----------
     hs : (H_lr, W_lr, B_hs) float32
-        Low-resolution hyperspectral image.
     ms : (H_hr, W_hr, B_ms) float32
-        High-resolution multispectral image.
-    max_endmembers : int
-        Maximum number of endmembers (default 20).
-    inner_iters : int
-        Maximum inner NMF iterations (default 200).
-    outer_iters : int
-        Maximum outer CNMF iterations (default 1).
+    pre_R : (B_ms, B_hs) float64/32, optional
+        Pre-computed spectral response matrix (rows sum to 1).
+        When provided, skips per-tile SRF estimation and offset
+        subtraction — matches MATLAB CNMF with analytical R.
+    max_endmembers, inner_iters, outer_iters : int
     th_h, th_m : float
-        Convergence threshold for HS and MS NMF inner loops.
+        Convergence threshold for inner NMF loops (default 1e-8,
+        matches MATLAB CNMF_fusion.m).
     th_outer : float
         Convergence threshold for the outer loop.
-    eps : float
-        Small constant to avoid division by zero in NMF updates.
-    verbose : bool
-        Print diagnostic information.
-    seed : int
-        Random seed for VCA reproducibility.
-
-    Returns
-    -------
-    fused : (H_hr, W_hr, B_hs) float32
-        Fused image at MS spatial resolution.
-    info : dict
-        Diagnostic info with keys 'M', 'rmse_h', 'rmse_m', 'srf_error',
-        'n_outer_iters'.
+    eps, verbose, seed : see defaults.
     """
     rows_lr, cols_lr, bands_hs = hs.shape
     rows_hr, cols_hr, bands_ms = ms.shape
@@ -548,18 +534,28 @@ def cnmf_fuse(
     if verbose:
         print(f"CNMF: HS={hs.shape} MS={ms.shape} scale={w}")
 
-    # ── Step 1: Estimate SRF and subtract offsets from MSI ──
-    R_srf, offsets, srf_error = _estimate_srf(hs, ms, w, eps=eps)
-
-    # Subtract offsets from MSI (matching CNMF_fusion.m lines 52-68)
-    ms = ms.copy()
-    for b in range(bands_ms):
-        ms[:, :, b] -= offsets[b]
-    ms = np.clip(ms, 0.0, None)
-
-    if verbose:
-        print(f"  SRF error: {srf_error}")
-        print(f"  SRF offsets: {offsets}")
+    # ── Step 1: SRF (R matrix) ──
+    if pre_R is not None:
+        # Analytical R provided — no per-tile estimation, no offset subtraction.
+        # Matches MATLAB CNMF_fusion.m with Pre_R (lines 57-60).
+        R_srf = np.asarray(pre_R, dtype=np.float32)
+        assert R_srf.shape == (bands_ms, bands_hs), (
+            f"pre_R shape {R_srf.shape} != expected ({bands_ms}, {bands_hs})")
+        srf_error = np.zeros(bands_ms, dtype=np.float32)
+        ms = ms.copy()
+        if verbose:
+            print(f"  Using pre-computed R ({bands_ms}×{bands_hs}), "
+                  f"row sums={R_srf.sum(axis=1).round(4).tolist()}")
+    else:
+        # Estimate SRF from data and subtract offsets from MSI
+        R_srf, offsets, srf_error = _estimate_srf(hs, ms, w, eps=eps)
+        ms = ms.copy()
+        for b in range(bands_ms):
+            ms[:, :, b] -= offsets[b]
+        ms = np.clip(ms, 0.0, None)
+        if verbose:
+            print(f"  SRF error: {srf_error}")
+            print(f"  SRF offsets: {offsets}")
 
     # ── Step 2: Determine number of endmembers M ──
     # Clip negative values
@@ -1114,17 +1110,21 @@ def cnmf_fuse_tiles(
     max_endmembers: int = 20,
     inner_iters: int = 200,
     outer_iters: int = 1,
+    th_h: float = 1e-8,
+    th_m: float = 1e-8,
+    th_outer: float = 1e-2,
+    pre_R: np.ndarray | None = None,
     verbose_first: int = 2,
     skip_existing: bool = True,
 ) -> list[dict]:
     """
     Process CNMF fusion for a list of tiles.
 
-    n_workers=1  → sequential (uses all available BLAS threads).
-    n_workers>1  → multiprocessing Pool; each worker uses ``blas_threads``
-                   BLAS threads so total = n_workers × blas_threads ≤ cpu_count.
-                   Rule of thumb: n_workers × blas_threads ≈ cpu_count.
-                   E.g. on 12 cores: n_workers=6, blas_threads=2.
+    pre_R : (B_ms, B_hs) optional analytical spectral response matrix.
+            Passed through to cnmf_fuse(); when set, skips per-tile
+            SRF estimation (consistent with MATLAB + compute_srf.py).
+    th_h, th_m : inner NMF convergence threshold (default 1e-8, matches MATLAB).
+    th_outer : outer loop convergence threshold.
     """
     import time as _time
     try:
@@ -1134,7 +1134,9 @@ def cnmf_fuse_tiles(
 
     cnmf_kwargs = dict(max_endmembers=max_endmembers,
                        inner_iters=inner_iters,
-                       outer_iters=outer_iters, verbose=False)
+                       outer_iters=outer_iters,
+                       th_h=th_h, th_m=th_m, th_outer=th_outer,
+                       verbose=False, pre_R=pre_R)
 
     # ── Build work list, skip existing / missing ──
     work = []

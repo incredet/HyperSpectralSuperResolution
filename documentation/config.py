@@ -62,6 +62,12 @@ class PipelineConfig:
     spectral_max_cv: float
     spectral_emit_upsample_order: int
 
+    cnmf_max_endmembers: int
+    cnmf_inner_iters: int
+    cnmf_outer_iters: int
+    cnmf_th: float
+    cnmf_th_outer: float
+
     reflectance_scale: float
     nodata_uint16: int
 
@@ -96,6 +102,12 @@ class PipelineConfig:
         d.setdefault("qc_max_emit_cloud_frac", 0.05)
         d.setdefault("qc_min_r2_reverse", 0.70)
         d.setdefault("qc_max_s2_bright_frac", 1.0)
+
+        d.setdefault("cnmf_max_endmembers", 20)
+        d.setdefault("cnmf_inner_iters", 200)
+        d.setdefault("cnmf_outer_iters", 1)
+        d.setdefault("cnmf_th", 1e-8)
+        d.setdefault("cnmf_th_outer", 1e-2)
 
         _tuple_fields = {
             f.name for f in fields(cls)
@@ -161,6 +173,25 @@ class PipelineConfig:
             "min_r2_reverse": self.qc_min_r2_reverse,
             "max_s2_bright_frac": self.qc_max_s2_bright_frac,
         }
+
+    @property
+    def cnmf_params(self) -> dict[str, Any]:
+        return {
+            "max_endmembers": self.cnmf_max_endmembers,
+            "inner_iters": self.cnmf_inner_iters,
+            "outer_iters": self.cnmf_outer_iters,
+            "th_h": self.cnmf_th,
+            "th_m": self.cnmf_th,
+            "th_outer": self.cnmf_th_outer,
+        }
+
+    @property
+    def scale_factor_dn(self) -> float:
+        return self.reflectance_scale
+
+    @property
+    def nodata_emit(self) -> int:
+        return self.nodata_uint16
 
     @property
     def spectral_params(self) -> dict[str, Any]:

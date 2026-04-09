@@ -469,6 +469,10 @@ def run_qc(drive_base, *, min_r2, max_emit_cloud_frac, min_r2_reverse,
     print(f"Reverse R² fail:   {(~qc_df['pass_r2_reverse']).sum()}")
     print(f"S2 bright fail:    {(~qc_df['pass_s2_bright']).sum()}")
 
+    clean_csv = drive_base / "tiles_clean.csv"
+    qc_df[qc_df["pass_qc"]].to_csv(clean_csv, index=False)
+    print(f"Clean tile list: {clean_csv} ({n_pass} tiles)")
+
     if failed:
         print(f"\n{len(failed)} pairs failed:")
         for a, p, reason in failed:
