@@ -45,6 +45,54 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 
 
+# S2A band parameters (centre wavelength nm, FWHM nm) from ESA S2 handbook.
+# 10 bands used in the pipeline: B02–B08, B8A, B11, B12.
+_S2A_BANDS = [
+    ("B02",  492.4,  66),
+    ("B03",  559.8,  36),
+    ("B04",  664.6,  31),
+    ("B05",  704.1,  15),
+    ("B06",  740.5,  15),
+    ("B07",  782.8,  20),
+    ("B08",  832.8, 106),
+    ("B8A",  864.7,  21),
+    ("B11", 1613.7,  91),
+    ("B12", 2202.4, 175),
+]
+
+EMIT_FWHM_NM = 7.5  # EMIT spectral FWHM (all bands)
+
+
+def compute_analytical_R(emit_centers: np.ndarray) -> np.ndarray:
+    """
+    Compute the spectral response matrix R analytically.
+
+    Both S2 and EMIT bands are modelled as Gaussians. For each pair (i, j):
+        R[i,j] = integral( S2_i(λ) × EMIT_j(λ) dλ )
+    Rows normalised to sum to 1.
+
+    For two Gaussians with centres μ1, μ2 and sigmas σ1, σ2 the product
+    integral has a closed-form proportional to:
+        exp( -(μ1-μ2)² / (2(σ1²+σ2²)) )
+    which avoids numerical integration entirely.
+    """
+    sigma_emit = EMIT_FWHM_NM / 2.35482
+    n_s2 = len(_S2A_BANDS)
+    n_emit = len(emit_centers)
+    R = np.zeros((n_s2, n_emit), dtype=np.float64)
+
+    for i, (_, s2_center, s2_fwhm) in enumerate(_S2A_BANDS):
+        sigma_s2 = s2_fwhm / 2.35482
+        var_sum = sigma_s2 ** 2 + sigma_emit ** 2
+        for j, ec in enumerate(emit_centers):
+            R[i, j] = np.exp(-0.5 * (s2_center - ec) ** 2 / var_sum)
+
+    row_sums = R.sum(axis=1, keepdims=True)
+    row_sums[row_sums == 0] = 1.0
+    R /= row_sums
+    return R
+
+
 def parse_args():
     ap = argparse.ArgumentParser(
         description="Run CNMF fusion on QC-clean tiles.",
@@ -171,32 +219,15 @@ def main():
 
     tile_list = build_tile_list(drive_base, tile_df)
 
-    # ── Load analytical R (generate from S2A SRF CSV if .mat is missing) ──
-    import scipy.io
+    # ── Analytical R matrix ──
+    if args.srf_mat:
+        import scipy.io
+        srf_data = scipy.io.loadmat(args.srf_mat)
+        pre_R = srf_data["R"]
+    else:
+        emit_centers = np.array(list(config.emit_target_wavelengths_nm))
+        pre_R = compute_analytical_R(emit_centers)
 
-    repo_root = Path(__file__).resolve().parent.parent
-    bench_data = repo_root / "hif-benchmarking" / "data"
-    srf_path = Path(args.srf_mat) if args.srf_mat else (bench_data / "srf_R.mat")
-
-    if not srf_path.exists():
-        srf_csv = bench_data / "s2a_srf.csv"
-        if not srf_csv.exists():
-            sys.exit(f"Neither srf_R.mat nor s2a_srf.csv found in {bench_data}")
-        print(f"srf_R.mat not found — generating from {srf_csv.name} ...")
-        sys.path.insert(0, str(repo_root / "hif-benchmarking" / "main"))
-        from compute_srf import load_s2_srf, compute_R, EMIT_TARGET_WAVELENGTHS_NM
-        srf_wl, srf_dict = load_s2_srf(str(srf_csv))
-        emit_centers = np.array(EMIT_TARGET_WAVELENGTHS_NM)
-        R = compute_R(srf_wl, srf_dict, emit_centers, emit_fwhm=7.5)
-        scipy.io.savemat(str(srf_path), {
-            "R": R,
-            "emit_wavelengths_nm": emit_centers,
-            "emit_fwhm_nm": 7.5,
-        }, do_compression=True)
-        print(f"  Saved: {srf_path}")
-
-    srf_data = scipy.io.loadmat(str(srf_path))
-    pre_R = srf_data["R"]
     print(f"\nAnalytical R: {pre_R.shape}, "
           f"row sums: {pre_R.sum(axis=1).round(4).tolist()}")
 
