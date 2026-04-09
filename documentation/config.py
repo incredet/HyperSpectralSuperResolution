@@ -67,6 +67,7 @@ class PipelineConfig:
     cnmf_outer_iters: int
     cnmf_th: float
     cnmf_th_outer: float
+    cnmf_tile_timeout: float
 
     reflectance_scale: float
     nodata_uint16: int
@@ -108,6 +109,7 @@ class PipelineConfig:
         d.setdefault("cnmf_outer_iters", 1)
         d.setdefault("cnmf_th", 1e-8)
         d.setdefault("cnmf_th_outer", 1e-2)
+        d.setdefault("cnmf_tile_timeout", 120)
 
         _tuple_fields = {
             f.name for f in fields(cls)
@@ -183,6 +185,7 @@ class PipelineConfig:
             "th_h": self.cnmf_th,
             "th_m": self.cnmf_th,
             "th_outer": self.cnmf_th_outer,
+            "tile_timeout": self.cnmf_tile_timeout,
         }
 
     @property

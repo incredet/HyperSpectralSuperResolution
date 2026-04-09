@@ -231,6 +231,13 @@ def main():
     print(f"\nAnalytical R: {pre_R.shape}, "
           f"row sums: {pre_R.sum(axis=1).round(4).tolist()}")
 
+    # ── Output CSV path ──
+    if args.start is not None or args.stop is not None:
+        suffix = f"_{args.start or 0}_{args.stop or 'end'}"
+    else:
+        suffix = ""
+    csv_path = drive_base / f"r2_cnmf_tiles{suffix}.csv"
+
     # ── Run CNMF ──
     from spectral.cnmf import cnmf_fuse_tiles
 
@@ -248,13 +255,8 @@ def main():
     )
     elapsed = time.time() - tic
 
-    # ── Save CSV ──
+    # Write CSV once at end
     cnmf_df = pd.DataFrame(all_rows)
-    if args.start is not None or args.stop is not None:
-        suffix = f"_{args.start or 0}_{args.stop or 'end'}"
-    else:
-        suffix = ""
-    csv_path = drive_base / f"r2_cnmf_tiles{suffix}.csv"
     cnmf_df.to_csv(csv_path, index=False)
 
     ok_df = cnmf_df[cnmf_df["status"] == "OK"]

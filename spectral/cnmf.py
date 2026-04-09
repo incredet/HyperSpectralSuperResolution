@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time as _time
 import warnings
 from pathlib import Path
 from typing import Optional
@@ -8,6 +9,10 @@ import numpy as np
 from scipy.ndimage import gaussian_filter
 from scipy.optimize import lsq_linear
 from scipy.stats import norm
+
+# Module-level deadline for NMF early exit.  Set by cnmf_fuse() before
+# calling NMF helpers; checked inside inner loops.  0 = no limit.
+_deadline: float = 0.0
 
 try:
     import cv2
@@ -277,6 +282,8 @@ def _nmf_update_H(
                 H = H_saved.copy()
                 cost = cost_prev
                 break
+            if _deadline and _time.monotonic() > _deadline:
+                break
             cost_prev = cost
             H_saved[:] = H
 
@@ -364,6 +371,8 @@ def _nmf_update_WH(
                 H = H_saved.copy()
                 cost = cost_prev
                 break
+            if _deadline and _time.monotonic() > _deadline:
+                break
             cost_prev = cost
             W_saved[:] = W
             H_saved[:] = H
@@ -417,6 +426,8 @@ def _nmf_update_W_fixed_H(
             if cost_prev > 0 and (cost_prev - cost) / (cost + eps) < threshold:
                 W = W_saved.copy()
                 cost = cost_prev
+                break
+            if _deadline and _time.monotonic() > _deadline:
                 break
             cost_prev = cost
             W_saved[:] = W
@@ -481,6 +492,8 @@ def _nmf_ite_hs_joint(
                 H = H_saved.copy()
                 cost = cost_prev
                 break
+            if _deadline and _time.monotonic() > _deadline:
+                break
             cost_prev = cost
             W_saved[:] = W
             H_saved[:] = H
@@ -507,6 +520,7 @@ def cnmf_fuse(
     eps: float = 1e-7,
     verbose: bool = False,
     seed: int = 0,
+    tile_timeout: float = 0,
 ) -> tuple[np.ndarray, dict]:
     """
     CNMF hyperspectral–multispectral fusion.
@@ -525,11 +539,17 @@ def cnmf_fuse(
         matches MATLAB CNMF_fusion.m).
     th_outer : float
         Convergence threshold for the outer loop.
+    tile_timeout : float
+        Max wall-clock seconds for this tile. 0 = no limit.
+        When exceeded, NMF loops exit early with current best.
     eps, verbose, seed : see defaults.
     """
     rows_lr, cols_lr, bands_hs = hs.shape
     rows_hr, cols_hr, bands_ms = ms.shape
     w = rows_hr // rows_lr  # scale factor
+
+    global _deadline
+    _deadline = (_time.monotonic() + tile_timeout) if tile_timeout > 0 else 0.0
 
     if verbose:
         print(f"CNMF: HS={hs.shape} MS={ms.shape} scale={w}")
@@ -1113,6 +1133,7 @@ def cnmf_fuse_tiles(
     th_h: float = 1e-8,
     th_m: float = 1e-8,
     th_outer: float = 1e-2,
+    tile_timeout: float = 120,
     pre_R: np.ndarray | None = None,
     verbose_first: int = 2,
     skip_existing: bool = True,
@@ -1125,6 +1146,7 @@ def cnmf_fuse_tiles(
             SRF estimation (consistent with MATLAB + compute_srf.py).
     th_h, th_m : inner NMF convergence threshold (default 1e-8, matches MATLAB).
     th_outer : outer loop convergence threshold.
+    tile_timeout : max wall-clock seconds per tile (default 120). 0 = no limit.
     """
     import time as _time
     try:
@@ -1136,6 +1158,7 @@ def cnmf_fuse_tiles(
                        inner_iters=inner_iters,
                        outer_iters=outer_iters,
                        th_h=th_h, th_m=th_m, th_outer=th_outer,
+                       tile_timeout=tile_timeout,
                        verbose=False, pre_R=pre_R)
 
     # ── Build work list, skip existing / missing ──

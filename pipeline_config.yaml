@@ -195,6 +195,10 @@ cnmf_th: 1.0e-8
 # Outer-loop convergence threshold (looser — most work happens inside)
 cnmf_th_outer: 1.0e-2
 
+# Per-tile wall-clock timeout in seconds. NMF loops exit early when
+# exceeded, returning the current best.  0 = no limit.
+cnmf_tile_timeout: 120
+
 
 # ── Encoding / output ────────────────────────────────────────────────────
 # Reflectance-to-DN scale factor (reflectance × scale = uint16 DN)
