@@ -5,16 +5,16 @@
 Bachelor's thesis project: **Hyperspectral Single-Image Super-Resolution** using EMIT (60m, 285→32 bands) and Sentinel-2 (10m, 10 bands) satellite imagery. The pipeline has two stages:
 
 1. **Fusion method evaluation** — Compare fusion methods (SFIM, GLP, CNMF, HySure, MAPSMM, Regression) using Wald's protocol to determine which produces the best ground truth for SR training. The `hif-benchmarking/` framework handles this.
-2. **SR model training** — Train RRDBNet6x (modified ESRGAN) to learn 6× upsampling from EMIT→fused GT. Runs in Google Colab with BasicSR framework.
+2. **SR model training** — Train RRDBNet6x (modified ESRGAN) to learn 6× upsampling from EMIT→fused GT. Moving from Colab to standalone Python scripts (pure PyTorch, no BasicSR dependency).
 
-The user (Irynka) works primarily in **Colab notebooks** for training and uses this repo for the data pipeline and evaluation code. When helping with notebook code, **provide copy-paste instructions — do NOT edit notebooks directly** unless explicitly asked.
+The user (Irynka) is migrating training from Colab notebooks to standalone scripts. The repo contains the data pipeline, evaluation code, and (soon) the training scripts.
 
 ## Key Technical Parameters
 
 - **EMIT**: 285 bands total, 32 selected bands, 380-2500nm, ~60m resolution
 - **Sentinel-2 L2A**: 10 bands at 10m/20m, uint16, DN scaled by 10000
 - **Scale factor**: 6 (60m/10m)
-- **Tile size**: 96 EMIT pixels = 5760m = 576 S2 pixels. LR patches = 16×16
+- **Tile size**: 96 EMIT pixels (96×96 at 60m) = 576 S2 pixels (576×576 at 10m). LR crop = 16×16, GT crop = 96×96
 - **Regression**: polynomial Ridge, degree=2, alpha=1.0, homogeneous pixels CV<0.25, bilinear EMIT upsampling (scipy zoom order=1)
 - **Normalization**: S2 and EMIT DN values / 10000 → reflectance [0, ~1.0]
 
@@ -74,9 +74,9 @@ hif-benchmarking/
 │   ├── CSTF/, NSSR/, LTMR/, LTTR/                    # Additional methods
 │   └── _*/                  # Disabled/experimental methods (prefixed with _)
 ├── data/
-│   ├── GT/EMIT32_WALD/      # Ground truth .mat files (120×120×32)
-│   ├── HS/EMIT32_WALD/6/    # Degraded HS .mat files (20×20×32)
-│   ├── MS/EMIT32_WALD/      # Degraded MS .mat files (120×120×10)
+│   ├── GT/EMIT32_WALD/      # Ground truth .mat files (96×96×32)
+│   ├── HS/EMIT32_WALD/6/    # Degraded HS .mat files (16×16×32)
+│   ├── MS/EMIT32_WALD/      # Degraded MS .mat files (96×96×10)
 │   ├── SR/{method}/EMIT32_WALD/6/  # Fusion outputs per method
 │   ├── eval/                # Summary and ranking CSVs
 │   └── meta/                # Per-scene metadata JSONs
@@ -92,7 +92,7 @@ r2_all_tiles.csv (from Color_Matching.ipynb) + aois.csv
 wald_tile_list.csv
   │
   ▼  tif2mat_wald.py --tile-list wald_tile_list.csv
-.mat files: GT (120×120×32), HS (20×20×32), MS (120×120×10)
+.mat files: GT (96×96×32), HS (16×16×32), MS (96×96×10)
   │
   ├──▶ run_batch.py (MATLAB methods: SFIM, GLP, CNMF, HySure, MAPSMM)
   │      → data/SR/{method}/EMIT32_WALD/6/{scene}.mat (key: 'sri')
@@ -105,46 +105,43 @@ data/eval/EMIT32_WALD_6_summary.csv  — all methods × all scenes
 data/eval/EMIT32_WALD_6_ranking.csv  — mean metrics + rank per method
 ```
 
-### Data Flow — SR Training (Colab)
+### Data Flow — SR Training
 
 ```
-Drive: EMIT_S-2_Matches/{date}/aoi_*/pair/tiles/
+Drive: EMIT_S-2_Matches/{date}/zips_{gt_source}/
   │
-  ├── {tile}_emit_b32.tif    (32 bands, 120×120, 60m)  → LR input
-  ├── {tile}_s2.tif           (10 bands, 720×720, 10m)
-  └── {tile}_regression_synth.tif (32 bands, 720×720, 10m) → GT candidate
+  ├── {aoi}__{pair_id}.zip    (one zip per scene)
+  │   ├── {tile}__emit_b32.tif          (32 bands, 96×96, 60m) → LR
+  │   └── {tile}__{gt_source}.tif       (32 bands, 576×576, 10m) → GT
   │
-  ▼  R² filtering (compute_tile_r2, threshold=0.75)
+  ▼  AOI-level split (70/15/15 train/val/test, seed=42)
   │
-  ▼  Convert to .npy (C,H,W float32, reflectance [0,1])
+  ▼  PairedZipDataset reads TIFs from zips on-the-fly
+  │   Normalize: uint16 / 10000 → float32 reflectance [0, ~1.0]
+  │   Random crop in LR space → scale to GT space
   │
-  ├── LR: (32, 120, 120) from EMIT-b32 / 10000
-  └── GT: (32, 720, 720) from regression_synth / 10000 (or SFIM GT)
-  │
-  ▼  BasicSR training with PairedNpyDataset
-  │   RRDBNet6x: 20×20 → 120×120 (2× then 3× nearest-neighbor upsampling)
+  ▼  RRDBNet6x: 16×16 → 96×96 (2× then 3× nearest-neighbor)
   │
   ▼  Super-resolved EMIT at 10m resolution
 ```
 
 ## Critical Code Details
 
-### RRDBNet6x Architecture (in Colab notebook)
+### RRDBNet6x Architecture
 
 - 2× nearest-neighbor + 3× nearest-neighbor = 6× total upsampling
-- Bicubic skip connection: `return out + base` — **NOT** `out * 0.1 + base` or `out + 0.5 * base`
-- `nn.init.zeros_` on conv_last so initial output = pure bicubic
+- **No skip connection** — `return out` (deliberate choice: avoids bicubic circularity in the thesis argument). Do NOT add a skip connection.
 - Internal RRDB scaling `* 0.2` in ResidualDenseBlock and RRDB blocks is standard ESRGAN — do NOT change
-- Validated model sizes:
-  - 64/8 (small, for quick overfit tests)
-  - **128/16** (24.5M params, primary thesis model) — LR=2e-4, grad_clip max_norm=5.0
-  - 256/23 (87.7M params) — failed to generalize, not recommended
+- Current baseline config: **196/24** (NUM_FEAT=196, NUM_BLOCK=24), GT_SIZE=96, BATCH_SIZE=64, LR=2e-4, grad_clip max_norm=5.0
+- Planned extensions: perceptual loss, channel attention (but NOT skip connections)
 
-### PairedNpyDataset (in Colab notebook)
+### PairedZipDataset
 
-- Random crop alignment fix: compute crop in LR space first (`top_lq`), then `top_gt = top_lq * scale`
-- gt_size must be divisible by scale (use 120, NOT 128 — 128/6=21.33 causes size mismatch)
-- For overfit tests: disable random crops, use full tiles
+- Reads LR/GT tiles directly from zip files via `rasterio.MemoryFile` (avoids extracting thousands of small files)
+- Random crop alignment: compute crop in LR space first (`top_lq`), then `top_gt = top_lq * scale`
+- gt_size must be divisible by scale=6 (use 120, 144, 192 etc. Never 128)
+- AOI-level train/val/test split (entire AOIs held out, not random tiles)
+- Augmentation: horizontal flip + vertical flip + 90° rotation (train only)
 
 ### spectral/s2_to_emit.py — Regression Fusion
 
@@ -163,7 +160,7 @@ The core regression pipeline. Key functions:
 - MSI degradation: block averaging
 - Normalizes to [0,1] by dividing by global_max (stored in metadata JSON)
 - Discovery: scans **two levels deep** (aoi_*/pair_id/tiles/) — was fixed from one-level scan
-- Dimensions: GT=120×120, HS_degraded=20×20, MS_degraded=120×120
+- Dimensions: GT=96×96, HS_degraded=16×16, MS_degraded=96×96
 
 ## Existing Evaluation Results
 
@@ -178,19 +175,18 @@ Regression method: run via `run_regression_wald.py` (Python, no MATLAB needed).
 
 ## Training Status & Key Findings
 
-- **128/16 model** (primary): reached 40.1 dB validation PSNR at 6k iters with regression GT. Should run for 100k+ iterations.
-- **Overfit tests confirmed**: small model (64/8) reached 45 dB, big model (128/16) reached 47.6 dB on single tiles
-- **256/23 model failed**: loss spikes and PSNR oscillation, even with max_norm=10.0. Not worth pursuing for thesis.
-- **GT source toggle**: notebook supports `GT_SOURCE = 'regression'` or `'sfim'` with R² filtering (threshold=0.75)
+- **Current baseline**: 196/24 model (NUM_FEAT=196, NUM_BLOCK=24), no skip connection, CNMF GT, GT_SIZE=96, BATCH_SIZE=64
+- **GT source**: CNMF (switched from regression/SFIM — see project memory for justification). Notebook supports `GT_SOURCE = 'cnmf'`, `'regression'`, or `'sfim'`
+- **Previous results**: 128/16 model reached 40.1 dB val PSNR at 6k iters (regression GT, with skip). Current no-skip baseline needs full training run.
+- **Overfit tests confirmed**: model can learn (45+ dB on memorized tiles)
+- **Migrating to scripts**: moving from Colab+BasicSR to standalone pure PyTorch scripts
 
 ## Common Pitfalls — Read Before Making Changes
 
-1. **Python module caching in Colab**: After code changes, restart runtime. `inspect.getsource` can show correct code while cached module runs stale version.
-2. **Crop alignment**: Always compute crop position in LR space first, then multiply by scale for GT. Random GT-space crops cause sub-pixel misalignment.
-3. **gt_size divisibility**: Must be divisible by scale=6. Use 120, 192, 360 etc. Never 128.
-4. **loss_weight**: Keep at 1.0. Setting to 5.0 inflates reported loss 5× without improving training.
-5. **Drive I/O**: Avoid per-tile glob calls on Drive. Scan directories once, build lookup dicts.
-6. **Gradient clipping**: 128/16 model needs max_norm=5.0 (1.0 is too tight for 24.5M params). Bigger models had trouble with any clip value.
+1. **Crop alignment**: Always compute crop position in LR space first, then multiply by scale for GT. Random GT-space crops cause sub-pixel misalignment.
+2. **gt_size divisibility**: Must be divisible by scale=6. Use 120, 144, 192 etc. Never 128.
+3. **loss_weight**: Keep at 1.0. Setting to 5.0 inflates reported loss 5× without improving training.
+4. **Gradient clipping**: max_norm=5.0 works well. 1.0 is too tight for large models.
 7. **.mat file keys**: GT files use key `'hsi'`, MS files use `'msi'`, fusion output files use `'sri'`. metrics_wald.py expects exactly these keys.
 8. **Normalization in Wald protocol**: tif2mat_wald.py normalizes to [0,1] using global_max. The regression wrapper must work in this same [0,1] space (no DN/10000 conversion needed since inputs are already normalized).
 9. **RRDB internal scaling**: The `* 0.2` multipliers inside ResidualDenseBlock and RRDB are standard ESRGAN practice for training stability. Do NOT remove or change them.
@@ -203,11 +199,10 @@ Regression method: run via `run_regression_wald.py` (Python, no MATLAB needed).
 - shapely, pyproj, pystac-client
 - MATLAB (for CNMF, HySure, MAPSMM, FUSE — not needed for GLP, SFIM, Regression)
 
-### Colab (SR training)
-- PyTorch, BasicSR (`basicsr` package)
-- Custom registered: `RRDBNet6x` architecture, `PairedNpyDataset` dataset
-- Data on Google Shared Drive: `HyperResData/EMIT_S-2_Matches/{date}/`
-- wandb (optional logging)
+### SR training (standalone scripts, pure PyTorch)
+- PyTorch, rasterio, numpy, wandb
+- Data: zip files from `HyperResData/EMIT_S-2_Matches/{date}/zips_{gt_source}/`
+- No BasicSR dependency
 
 ## File Naming Conventions
 
@@ -246,10 +241,7 @@ python main/produce_sfim.py --dataset EMIT32_WALD --scale 6
 
 ## What NOT To Do
 
-- Do not edit Colab notebooks directly — provide copy-paste code blocks
+- Do not add a skip connection to RRDBNet6x — decision is final (bicubic circularity argument)
 - Do not change RRDB internal `* 0.2` scaling factors
 - Do not use gt_size values not divisible by 6
-- Do not use `out * 0.1 + base` or `out + 0.5 * base` in RRDBNet6x forward — must be `out + base`
 - Do not run glob per-tile on Google Drive (extremely slow)
-- Do not attempt 256/23 model for thesis — stick with 128/16
-- Do not skip runtime restart after code changes in Colab
