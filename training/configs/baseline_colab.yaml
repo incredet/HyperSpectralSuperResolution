@@ -8,10 +8,10 @@ seed: 42
 num_bands: 32
 scale: 6
 gt_size: 96
-batch_size: 96
+batch_size: 128
 num_workers: 12
 max_aois: null
-# amp: false
+amp: false
 
 num_feat: 196
 num_block: 24
