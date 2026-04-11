@@ -195,12 +195,15 @@ def main():
     if args.resume:
         ckpt = torch.load(args.resume, map_location='cpu')
         model.load_state_dict(ckpt['params'])
-        ema.load_state_dict(ckpt['params_ema'])
-        optimizer.load_state_dict(ckpt['optimizer'])
-        scheduler.load_state_dict(ckpt['scheduler'])
-        start_iter = ckpt['iter']
-        best_psnr = ckpt.get('best_psnr', 0.0)
-        print(f'Resumed from iter {start_iter}, best PSNR={best_psnr:.2f}')
+        ema.load_state_dict(ckpt.get('params_ema', ckpt['params']))
+        if 'optimizer' in ckpt:
+            optimizer.load_state_dict(ckpt['optimizer'])
+            scheduler.load_state_dict(ckpt['scheduler'])
+            start_iter = ckpt['iter']
+            best_psnr = ckpt.get('best_psnr', 0.0)
+            print(f'Resumed from iter {start_iter}, best PSNR={best_psnr:.2f}')
+        else:
+            print(f'Loaded weights from {args.resume} (no optimizer state, starting fresh)')
 
     wandb.init(
         project=cfg['wandb']['project'],
