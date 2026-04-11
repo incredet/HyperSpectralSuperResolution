@@ -8,9 +8,10 @@ seed: 42
 num_bands: 32
 scale: 6
 gt_size: 96
-batch_size: 64
-num_workers: 12
+batch_size: 192
+num_workers: 16
 max_aois: null
+# amp: false
 
 num_feat: 196
 num_block: 24
@@ -19,9 +20,9 @@ channel_attention: false
 
 lr: 0.0002
 betas: [0.9, 0.99]
-milestones: [30000, 80000, 150000, 250000, 400000]
+milestones: [80000, 150000, 250000, 400000]
 gamma: 0.5
-total_iter: 100000
+total_iter: 100_000
 grad_clip: 5.0
 ema_decay: 0.999
 

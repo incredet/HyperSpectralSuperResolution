@@ -113,12 +113,13 @@ def validate(net, dataset, cfg, device, step, do_vis=False):
     return mean_psnr
 
 
-def save_ckpt(model, ema, optimizer, scheduler, step, best_psnr, path):
+def save_ckpt(model, ema, optimizer, scheduler, scaler, step, best_psnr, path):
     torch.save({
         'params': model.state_dict(),
         'params_ema': ema.state_dict(),
         'optimizer': optimizer.state_dict(),
         'scheduler': scheduler.state_dict(),
+        'scaler': scaler.state_dict(),
         'iter': step,
         'best_psnr': best_psnr,
     }, path)
@@ -191,6 +192,7 @@ def main():
 
     start_iter = 0
     best_psnr = 0.0
+    _scaler_state = None
 
     if args.resume:
         ckpt = torch.load(args.resume, map_location='cpu')
@@ -204,6 +206,7 @@ def main():
             print(f'Resumed from iter {start_iter}, best PSNR={best_psnr:.2f}')
         else:
             print(f'Loaded weights from {args.resume} (no optimizer state, starting fresh)')
+        _scaler_state = ckpt.get('scaler')
 
     wandb.init(
         project=cfg['wandb']['project'],
@@ -214,6 +217,10 @@ def main():
     )
 
     # --- training loop ---
+    use_amp = cfg.get('amp', True) and device.type == 'cuda'
+    scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
+    if args.resume and _scaler_state:
+        scaler.load_state_dict(_scaler_state)
     model.train()
     loader_iter = iter(train_loader)
     ema_decay = cfg['ema_decay']
@@ -229,18 +236,20 @@ def main():
 
         lq = batch['lq'].to(device)
         gt = batch['gt'].to(device)
-        sr = model(lq)
 
-        loss = torch.tensor(0.0, device=device)
-        for name, (fn, weight) in loss_fns.items():
-            loss = loss + weight * fn(sr, gt)
-
+        with torch.amp.autocast('cuda', enabled=use_amp):
+            sr = model(lq)
+            loss = torch.tensor(0.0, device=device)
+            for name, (fn, weight) in loss_fns.items():
+                loss = loss + weight * fn(sr, gt)
 
         optimizer.zero_grad()
-        loss.backward()
+        scaler.scale(loss).backward()
         if cfg.get('grad_clip', 0) > 0:
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg['grad_clip'])
-        optimizer.step()
+        scaler.step(optimizer)
+        scaler.update()
         scheduler.step()
 
         with torch.no_grad():
@@ -270,7 +279,7 @@ def main():
             model.train()
             if psnr > best_psnr:
                 best_psnr = psnr
-                save_ckpt(model, ema, optimizer, scheduler, step + 1, best_psnr,
+                save_ckpt(model, ema, optimizer, scheduler, scaler, step + 1, best_psnr,
                           out_dir / 'models' / 'best.pth')
                 print(f'  * new best: {best_psnr:.2f} dB')
             if cfg.get('abort_psnr_floor') and psnr < cfg['abort_psnr_floor']:
@@ -278,7 +287,7 @@ def main():
                 break
 
         if (step + 1) % cfg['save_freq'] == 0:
-            save_ckpt(model, ema, optimizer, scheduler, step + 1, best_psnr,
+            save_ckpt(model, ema, optimizer, scheduler, scaler, step + 1, best_psnr,
                       out_dir / 'models' / f'iter_{step + 1}.pth')
 
     wandb.finish()
