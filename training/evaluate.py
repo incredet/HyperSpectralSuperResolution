@@ -12,6 +12,8 @@ from tqdm import tqdm
 
 from dataset import build_index, split_aois, read_tif_from_zip, EMIT_SCALE, EMIT_NODATA
 from model import RRDBNet6x
+from essaformer import ESSAformer
+from mambahsisr import MambaHSISR
 from viz import (compute_psnr, compute_sam, compute_ergas, compute_all_metrics,
                  compute_per_band_correlation, to_rgb,
                  make_main_figure, make_perband_figure, make_zoom_figure)
@@ -38,10 +40,23 @@ def main():
     target_aois = test_aois if args.split == 'test' else val_aois
     index = build_index(zip_dir, cfg['gt_source'], target_aois)
 
-    net = RRDBNet6x(cfg['num_bands'], cfg['num_bands'],
-                    cfg['num_feat'], cfg['num_block'], cfg['num_grow_ch'],
-                    channel_attention=cfg.get('channel_attention', False))
-    state = torch.load(args.checkpoint, map_location='cpu')
+    model_type = cfg.get('model_type', 'rrdbnet6x')
+    bands = cfg['num_bands']
+    if model_type == 'rrdbnet6x':
+        net = RRDBNet6x(bands, bands,
+                        cfg['num_feat'], cfg['num_block'], cfg['num_grow_ch'],
+                        channel_attention=cfg.get('channel_attention', False))
+    elif model_type == 'essaformer':
+        net = ESSAformer(bands, bands, dim=cfg.get('dim', 252), upscale=cfg['scale'])
+    elif model_type == 'mambahsisr':
+        net = MambaHSISR(bands, bands,
+                         img_size=cfg['gt_size'] // cfg['scale'],
+                         embed_dim=cfg.get('embed_dim', 180),
+                         depths=tuple(cfg.get('depths', [5, 5, 5])),
+                         upscale=cfg['scale'])
+    else:
+        raise ValueError(f'Unknown model_type: {model_type}')
+    state = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
     key = 'params_ema' if 'params_ema' in state else 'params' if 'params' in state else None
     net.load_state_dict(state[key] if key else state)
     net = net.to(device).eval()

@@ -16,7 +16,44 @@ import matplotlib.pyplot as plt
 
 from dataset import PairedZipDataset, build_index, split_aois
 from model import RRDBNet6x
+from essaformer import ESSAformer
+from mambahsisr import MambaHSISR
 from losses import build_losses
+
+
+def build_model(cfg, device):
+    model_type = cfg.get('model_type', 'rrdbnet6x')
+    bands = cfg['num_bands']
+
+    if model_type == 'rrdbnet6x':
+        model = RRDBNet6x(
+            bands, bands,
+            cfg['num_feat'], cfg['num_block'], cfg['num_grow_ch'],
+            channel_attention=cfg.get('channel_attention', False),
+        )
+        tag = f'RRDBNet6x {cfg["num_feat"]}f/{cfg["num_block"]}b'
+    elif model_type == 'essaformer':
+        model = ESSAformer(
+            bands, bands,
+            dim=cfg.get('dim', 252), upscale=cfg['scale'],
+        )
+        tag = f'ESSAformer dim={cfg.get("dim", 252)}'
+    elif model_type == 'mambahsisr':
+        model = MambaHSISR(
+            bands, bands,
+            img_size=cfg['gt_size'] // cfg['scale'],
+            embed_dim=cfg.get('embed_dim', 180),
+            depths=tuple(cfg.get('depths', [5, 5, 5])),
+            upscale=cfg['scale'],
+        )
+        tag = f'MambaHSISR dim={cfg.get("embed_dim", 180)} d={cfg.get("depths", [5,5,5])}'
+    else:
+        raise ValueError(f'Unknown model_type: {model_type}')
+
+    model = model.to(device)
+    n_params = sum(p.numel() for p in model.parameters()) / 1e6
+    print(f'Model:      {tag}  ({n_params:.1f}M params)')
+    return model
 from viz import (compute_all_metrics, compute_per_band_correlation,
                  make_main_figure, make_perband_figure, make_zoom_figure,
                  select_vis_indices)
@@ -146,7 +183,11 @@ def main():
 
     exp_name = cfg.get('exp_name')
     if not exp_name:
-        exp_name = f"{cfg['gt_source']}-{cfg['num_feat']}x{cfg['num_block']}-{datetime.now():%m%d}"
+        model_type = cfg.get('model_type', 'rrdbnet6x')
+        if model_type == 'rrdbnet6x':
+            exp_name = f"{cfg['gt_source']}-{cfg['num_feat']}x{cfg['num_block']}-{datetime.now():%m%d}"
+        else:
+            exp_name = f"{cfg['gt_source']}-{model_type}-{datetime.now():%m%d}"
     out_dir = Path(cfg['out_dir']) / exp_name
     (out_dir / 'models').mkdir(parents=True, exist_ok=True)
     shutil.copy2(args.config, out_dir / 'config.yaml')
@@ -173,15 +214,8 @@ def main():
     )
 
     # --- model ---
-    model = RRDBNet6x(
-        cfg['num_bands'], cfg['num_bands'],
-        cfg['num_feat'], cfg['num_block'], cfg['num_grow_ch'],
-        channel_attention=cfg.get('channel_attention', False),
-    ).to(device)
+    model = build_model(cfg, device)
     ema = copy.deepcopy(model).eval()
-
-    n_params = sum(p.numel() for p in model.parameters()) / 1e6
-    print(f'Model:      RRDBNet6x {cfg["num_feat"]}f/{cfg["num_block"]}b  ({n_params:.1f}M params)')
 
     # --- losses ---
     loss_fns = build_losses(cfg['loss'], device)
@@ -195,7 +229,7 @@ def main():
     _scaler_state = None
 
     if args.resume:
-        ckpt = torch.load(args.resume, map_location='cpu')
+        ckpt = torch.load(args.resume, map_location='cpu', weights_only=False)
         model.load_state_dict(ckpt['params'])
         ema.load_state_dict(ckpt.get('params_ema', ckpt['params']))
         if 'optimizer' in ckpt:
@@ -227,12 +261,15 @@ def main():
     print_freq = cfg.get('print_freq', 100)
     t0 = time.time()
 
+    data_time = 0.0
     for step in range(start_iter, cfg['total_iter']):
+        t_data = time.time()
         try:
             batch = next(loader_iter)
         except StopIteration:
             loader_iter = iter(train_loader)
             batch = next(loader_iter)
+        data_time += time.time() - t_data
 
         lq = batch['lq'].to(device)
         gt = batch['gt'].to(device)
@@ -269,8 +306,9 @@ def main():
             })
             print(f'[{step + 1}/{cfg["total_iter"]}]  '
                   f'loss={loss.item():.4f}  lr={optimizer.param_groups[0]["lr"]:.2e}  '
-                  f'{print_freq / elapsed:.1f} it/s')
+                  f'{print_freq / elapsed:.1f} it/s  data={data_time:.1f}s/{elapsed:.1f}s')
             t0 = time.time()
+            data_time = 0.0
 
         if (step + 1) % cfg['val_freq'] == 0:
             vis_freq = cfg.get('vis_freq', cfg['val_freq'] * 5)
