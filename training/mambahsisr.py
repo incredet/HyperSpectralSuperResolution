@@ -3,7 +3,7 @@
 # Adapted for 6× scale, device-agnostic, standalone (no BasicSR).
 #
 # Requires: mamba-ssm, einops, timm
-#   pip install mamba-ssm==1.0.1 causal-conv1d==1.0.0 einops timm
+#   pip install mamba-ssm causal-conv1d einops timm
 #
 # SS2D spectral block assumes spatial_dim = img_size² (default 16²=256 for
 # our 16×16 LR tiles). Change img_size if your LR spatial size differs.
