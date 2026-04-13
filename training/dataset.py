@@ -41,8 +41,6 @@ def split_aois(all_aois, seed=42, max_aois=None):
     return train_aois, val_aois, test_aois
 
 
-# ── index building (works with both tif and npy zips) ───────────
-
 def build_index(zip_dir, gt_source, aoi_filter=None):
     gt_stem = GT_SUFFIXES[gt_source]
     index = []
@@ -80,113 +78,18 @@ def build_index(zip_dir, gt_source, aoi_filter=None):
     return index
 
 
-# ── npy cache extraction (zip → flat files on local SSD) ───────
-
-def extract_npy_cache(zip_dir, cache_dir):
-    """Extract npy zips to flat files. Returns number of files written."""
-    zip_dir, cache_dir = Path(zip_dir), Path(cache_dir)
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    written = 0
-    zips = sorted(zip_dir.glob('*.zip'))
-    for zp in zips:
-        scene_dir = cache_dir / zp.stem
-        scene_dir.mkdir(exist_ok=True)
-        with zipfile.ZipFile(zp, 'r') as zf:
-            for name in zf.namelist():
-                if not name.endswith('.npy'):
-                    continue
-                dst = scene_dir / name
-                if dst.exists():
-                    continue
-                dst.write_bytes(zf.read(name))
-                written += 1
-    print(f'[extract_npy_cache] {written} new files -> {cache_dir}')
-    return written
-
-
-def build_cache_index(cache_dir, gt_source, aoi_filter=None):
-    """Build index from flat npy cache directory."""
-    gt_stem = GT_SUFFIXES[gt_source]
-    cache_dir = Path(cache_dir)
-    index = []
-
-    for scene_dir in sorted(cache_dir.iterdir()):
-        if not scene_dir.is_dir():
-            continue
-        aoi = scene_dir.name.split('__')[0]
-        if aoi_filter is not None and aoi not in aoi_filter:
-            continue
-        for lr_path in sorted(scene_dir.glob('*__emit_b32.npy')):
-            gt_path = lr_path.parent / lr_path.name.replace('__emit_b32.npy', gt_stem + '.npy')
-            if not gt_path.exists():
-                continue
-            index.append((str(lr_path), str(gt_path), scene_dir.name))
-
-    print(f'Cache index: {len(index)} tiles from {cache_dir}')
-    return index
-
-
-# ── dataset: flat npy cache (fast) ──────────────────────────────
-
-class PairedCacheDataset(Dataset):
-
-    def __init__(self, index, scale=6, gt_size=96, augment=True):
-        self.index = index
-        self.scale = scale
-        self.gt_size = gt_size
-        self.augment = augment
-        print(f'[PairedCacheDataset] {len(index)} pairs, scale={scale}, gt_size={gt_size}, augment={augment}')
-
-    def __len__(self):
-        return len(self.index)
-
-    def __getitem__(self, idx):
-        lr_path, gt_path, _ = self.index[idx]
-        try:
-            gt = np.load(gt_path).astype(np.float32)
-        except Exception:
-            return self.__getitem__((idx + 1) % len(self))
-        lq = np.load(lr_path).astype(np.float32)
-
-        mask = lq == EMIT_NODATA
-        lq /= EMIT_SCALE
-        lq[mask] = 0.0
-        gt /= EMIT_SCALE
-        gt = np.clip(np.nan_to_num(gt, nan=0.0), 0.0, 1.5)
-
-        if self.gt_size:
-            _, H_gt, W_gt = gt.shape
-            lq_size = self.gt_size // self.scale
-            top_lq = random.randint(0, max(0, H_gt // self.scale - lq_size))
-            left_lq = random.randint(0, max(0, W_gt // self.scale - lq_size))
-            top_gt, left_gt = top_lq * self.scale, left_lq * self.scale
-            gt = gt[:, top_gt:top_gt + self.gt_size, left_gt:left_gt + self.gt_size]
-            lq = lq[:, top_lq:top_lq + lq_size, left_lq:left_lq + lq_size]
-
-        if self.augment:
-            if random.random() > 0.5:
-                gt = np.flip(gt, axis=2).copy()
-                lq = np.flip(lq, axis=2).copy()
-            if random.random() > 0.5:
-                gt = np.flip(gt, axis=1).copy()
-                lq = np.flip(lq, axis=1).copy()
-            if random.random() > 0.5:
-                gt = np.rot90(gt, k=1, axes=(1, 2)).copy()
-                lq = np.rot90(lq, k=1, axes=(1, 2)).copy()
-
-        return {
-            'lq': torch.from_numpy(lq.copy()).float(),
-            'gt': torch.from_numpy(gt.copy()).float(),
-            'lq_path': lr_path,
-            'gt_path': gt_path,
-        }
-
-
-# ── dataset: zip-based (legacy fallback) ───────────────────────
-
 def read_tif_from_zip(zip_path, filename):
     with zipfile.ZipFile(zip_path, 'r') as zf:
         raw = zf.read(filename)
+    if filename.endswith('.npy'):
+        return np.load(io.BytesIO(raw)).astype(np.float32)
+    with MemoryFile(raw) as mf:
+        with mf.open() as ds:
+            return ds.read().astype(np.float32)
+
+
+def _read_from_handle(zf, filename):
+    raw = zf.read(filename)
     if filename.endswith('.npy'):
         return np.load(io.BytesIO(raw)).astype(np.float32)
     with MemoryFile(raw) as mf:
@@ -202,6 +105,7 @@ class PairedZipDataset(Dataset):
         self.gt_size = gt_size
         self.augment = augment
         self.cache = None
+        self._zip_handles = {}
 
         if preload:
             import time
@@ -223,6 +127,15 @@ class PairedZipDataset(Dataset):
         else:
             print(f'[PairedZipDataset] {len(index)} pairs, scale={scale}, gt_size={gt_size}, augment={augment}')
 
+    def _get_handle(self, zip_path):
+        if zip_path not in self._zip_handles:
+            self._zip_handles[zip_path] = zipfile.ZipFile(zip_path, 'r')
+        return self._zip_handles[zip_path]
+
+    def open_handles(self):
+        """Open persistent zip handles (call in worker_init_fn)."""
+        self._zip_handles = {}
+
     def __len__(self):
         return len(self.index)
 
@@ -234,11 +147,12 @@ class PairedZipDataset(Dataset):
             lq, gt = entry[0].copy(), entry[1].copy()
         else:
             zip_path, lr_name, gt_name, _ = self.index[idx]
+            zf = self._get_handle(zip_path)
             try:
-                gt = read_tif_from_zip(zip_path, gt_name)
+                gt = _read_from_handle(zf, gt_name)
             except Exception:
                 return self.__getitem__((idx + 1) % len(self))
-            lq = read_tif_from_zip(zip_path, lr_name)
+            lq = _read_from_handle(zf, lr_name)
 
         mask = lq == EMIT_NODATA
         lq /= EMIT_SCALE
@@ -274,3 +188,10 @@ class PairedZipDataset(Dataset):
             'lq_path': f'{zip_path}::{lr_name}',
             'gt_path': f'{zip_path}::{gt_name}',
         }
+
+
+def worker_init_fn(worker_id):
+    """DataLoader worker_init_fn: open fresh zip handles per worker."""
+    ds = torch.utils.data.get_worker_info().dataset
+    if hasattr(ds, 'open_handles'):
+        ds.open_handles()
