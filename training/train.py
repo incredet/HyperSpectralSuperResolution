@@ -207,7 +207,7 @@ def main():
     train_set = PairedZipDataset(train_index, cfg['scale'], cfg['gt_size'], preload=preload)
     val_set = PairedZipDataset(val_index, cfg['scale'], gt_size=None, augment=False, preload=preload)
 
-    nw = cfg.get('num_workers', 4)
+    nw = 2 if preload else cfg.get('num_workers', 4)
     train_loader = torch.utils.data.DataLoader(
         train_set, batch_size=cfg['batch_size'], shuffle=True,
         num_workers=nw, pin_memory=True, drop_last=True,
