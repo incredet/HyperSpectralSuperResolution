@@ -3,7 +3,7 @@
 exp_name: essaformer-L1
 model_type: essaformer
 gt_source: cnmf
-zip_dir: /content/data/zips_cnmf_npy
+zip_dir: /content/data/zips_cnmf_patched
 out_dir: /content/drive/Shareddrives/HyperResData/EMIT_S-2_Matches/experiments
 
 seed: 42

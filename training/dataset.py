@@ -41,6 +41,8 @@ def split_aois(all_aois, seed=42, max_aois=None):
     return train_aois, val_aois, test_aois
 
 
+# ── index building ──────────────────────────────────────────────
+
 def build_index(zip_dir, gt_source, aoi_filter=None):
     gt_stem = GT_SUFFIXES[gt_source]
     index = []
@@ -78,6 +80,8 @@ def build_index(zip_dir, gt_source, aoi_filter=None):
     return index
 
 
+# ── reading helpers ─────────────────────────────────────────────
+
 def read_tif_from_zip(zip_path, filename):
     with zipfile.ZipFile(zip_path, 'r') as zf:
         raw = zf.read(filename)
@@ -97,6 +101,8 @@ def _read_from_handle(zf, filename):
             return ds.read().astype(np.float32)
 
 
+# ── dataset ─────────────────────────────────────────────────────
+
 class PairedZipDataset(Dataset):
 
     def __init__(self, index, scale=6, gt_size=96, augment=True, preload=False):
@@ -106,6 +112,11 @@ class PairedZipDataset(Dataset):
         self.augment = augment
         self.cache = None
         self._zip_handles = {}
+
+        # check if tiles are pre-patched (already gt_size x gt_size)
+        self.patched = False
+        if len(index) > 0 and '_p' in index[0][1]:
+            self.patched = True
 
         if preload:
             import time
@@ -125,7 +136,8 @@ class PairedZipDataset(Dataset):
             mb = sum(c[0].nbytes + c[1].nbytes for c in self.cache if c) / 1e6
             print(f'  Done: {mb:.0f} MB in {elapsed:.1f}s')
         else:
-            print(f'[PairedZipDataset] {len(index)} pairs, scale={scale}, gt_size={gt_size}, augment={augment}')
+            tag = 'patched' if self.patched else 'full-tile'
+            print(f'[PairedZipDataset] {len(index)} pairs ({tag}), scale={scale}, gt_size={gt_size}, augment={augment}')
 
     def _get_handle(self, zip_path):
         if zip_path not in self._zip_handles:
@@ -133,7 +145,6 @@ class PairedZipDataset(Dataset):
         return self._zip_handles[zip_path]
 
     def open_handles(self):
-        """Open persistent zip handles (call in worker_init_fn)."""
         self._zip_handles = {}
 
     def __len__(self):
@@ -160,7 +171,8 @@ class PairedZipDataset(Dataset):
         gt /= EMIT_SCALE
         gt = np.clip(np.nan_to_num(gt, nan=0.0), 0.0, 1.5)
 
-        if self.gt_size:
+        # skip cropping for pre-patched tiles (already the right size)
+        if not self.patched and self.gt_size:
             _, H_gt, W_gt = gt.shape
             lq_size = self.gt_size // self.scale
 
@@ -191,7 +203,6 @@ class PairedZipDataset(Dataset):
 
 
 def worker_init_fn(worker_id):
-    """DataLoader worker_init_fn: open fresh zip handles per worker."""
     ds = torch.utils.data.get_worker_info().dataset
     if hasattr(ds, 'open_handles'):
         ds.open_handles()
