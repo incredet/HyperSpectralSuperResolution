@@ -82,24 +82,49 @@ def read_tif_from_zip(zip_path, filename):
 
 class PairedZipDataset(Dataset):
 
-    def __init__(self, index, scale=6, gt_size=96, augment=True):
+    def __init__(self, index, scale=6, gt_size=96, augment=True, preload=False):
         self.index = index
         self.scale = scale
         self.gt_size = gt_size
         self.augment = augment
-        print(f'[PairedZipDataset] {len(index)} pairs, scale={scale}, gt_size={gt_size}, augment={augment}')
+        self.cache = None
+
+        if preload:
+            import time
+            t0 = time.time()
+            print(f'[PairedZipDataset] Preloading {len(index)} pairs into RAM...')
+            self.cache = []
+            for i, (zip_path, lr_name, gt_name, _) in enumerate(index):
+                try:
+                    lq = read_tif_from_zip(zip_path, lr_name)
+                    gt = read_tif_from_zip(zip_path, gt_name)
+                    self.cache.append((lq, gt))
+                except Exception:
+                    self.cache.append(None)
+                if (i + 1) % 1000 == 0:
+                    print(f'  {i+1}/{len(index)}...')
+            elapsed = time.time() - t0
+            mb = sum(c[0].nbytes + c[1].nbytes for c in self.cache if c) / 1e6
+            print(f'  Done: {mb:.0f} MB in {elapsed:.1f}s')
+        else:
+            print(f'[PairedZipDataset] {len(index)} pairs, scale={scale}, gt_size={gt_size}, augment={augment}')
 
     def __len__(self):
         return len(self.index)
 
     def __getitem__(self, idx):
-        zip_path, lr_name, gt_name, _ = self.index[idx]
-
-        try:
-            gt = read_tif_from_zip(zip_path, gt_name)
-        except rasterio.errors.RasterioIOError:
-            return self.__getitem__((idx + 1) % len(self))
-        lq = read_tif_from_zip(zip_path, lr_name)
+        if self.cache is not None:
+            entry = self.cache[idx]
+            if entry is None:
+                return self.__getitem__((idx + 1) % len(self))
+            lq, gt = entry[0].copy(), entry[1].copy()
+        else:
+            zip_path, lr_name, gt_name, _ = self.index[idx]
+            try:
+                gt = read_tif_from_zip(zip_path, gt_name)
+            except rasterio.errors.RasterioIOError:
+                return self.__getitem__((idx + 1) % len(self))
+            lq = read_tif_from_zip(zip_path, lr_name)
 
         mask = lq == EMIT_NODATA
         lq /= EMIT_SCALE

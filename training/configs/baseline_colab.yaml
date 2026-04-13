@@ -12,6 +12,7 @@ batch_size: 64
 num_workers: 12
 max_aois: null
 amp: false
+preload: true
 
 num_feat: 196
 num_block: 24

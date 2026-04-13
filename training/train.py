@@ -203,8 +203,9 @@ def main():
     train_index = build_index(zip_dir, cfg['gt_source'], train_aois)
     val_index = build_index(zip_dir, cfg['gt_source'], val_aois)
 
-    train_set = PairedZipDataset(train_index, cfg['scale'], cfg['gt_size'])
-    val_set = PairedZipDataset(val_index, cfg['scale'], gt_size=None, augment=False)
+    preload = cfg.get('preload', False)
+    train_set = PairedZipDataset(train_index, cfg['scale'], cfg['gt_size'], preload=preload)
+    val_set = PairedZipDataset(val_index, cfg['scale'], gt_size=None, augment=False, preload=preload)
 
     nw = cfg.get('num_workers', 4)
     train_loader = torch.utils.data.DataLoader(

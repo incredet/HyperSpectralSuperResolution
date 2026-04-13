@@ -14,6 +14,7 @@ batch_size: 64
 num_workers: 12
 max_aois: null
 amp: false
+preload: true
 
 # ESSAformer params
 dim: 252
