@@ -10,7 +10,8 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from tqdm import tqdm
 
-from dataset import build_index, split_aois, read_tif_from_zip, EMIT_SCALE, EMIT_NODATA
+from dataset import (build_index, build_cache_index, split_aois,
+                     read_tif_from_zip, EMIT_SCALE, EMIT_NODATA)
 from model import RRDBNet6x
 from essaformer import ESSAformer
 from mambahsisr import MambaHSISR
@@ -34,11 +35,21 @@ def main():
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    zip_dir = Path(cfg['zip_dir'])
-    all_aois = {zp.stem.split('__')[0] for zp in zip_dir.glob('*.zip')}
+    cache_dir = cfg.get('cache_dir')
+    use_cache = cache_dir and Path(cache_dir).is_dir()
+
+    if use_cache:
+        cache_dir = Path(cache_dir)
+        all_aois = {d.name.split('__')[0] for d in cache_dir.iterdir() if d.is_dir()}
+    else:
+        zip_dir = Path(cfg['zip_dir'])
+        all_aois = {zp.stem.split('__')[0] for zp in zip_dir.glob('*.zip')}
     train_aois, val_aois, test_aois = split_aois(all_aois, cfg['seed'], cfg.get('max_aois'))
     target_aois = test_aois if args.split == 'test' else val_aois
-    index = build_index(zip_dir, cfg['gt_source'], target_aois)
+    if use_cache:
+        index = build_cache_index(cache_dir, cfg['gt_source'], target_aois)
+    else:
+        index = build_index(zip_dir, cfg['gt_source'], target_aois)
 
     model_type = cfg.get('model_type', 'rrdbnet6x')
     bands = cfg['num_bands']
@@ -79,9 +90,15 @@ def main():
     rows = []
     all_sr_corr, all_bic_corr = [], []
 
-    for i, (zip_path, lr_name, gt_name, _) in enumerate(tqdm(index, desc=args.split)):
-        lq = read_tif_from_zip(zip_path, lr_name)
-        gt = read_tif_from_zip(zip_path, gt_name)
+    for i, entry in enumerate(tqdm(index, desc=args.split)):
+        if use_cache:
+            lr_path, gt_path, _ = entry
+            lq = np.load(lr_path).astype(np.float32)
+            gt = np.load(gt_path).astype(np.float32)
+        else:
+            zip_path, lr_name, gt_name, _ = entry
+            lq = read_tif_from_zip(zip_path, lr_name)
+            gt = read_tif_from_zip(zip_path, gt_name)
 
         mask = lq == EMIT_NODATA
         lq /= EMIT_SCALE

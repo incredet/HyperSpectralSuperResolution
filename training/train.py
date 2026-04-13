@@ -14,7 +14,8 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from dataset import PairedZipDataset, build_index, split_aois
+from dataset import (PairedZipDataset, PairedCacheDataset, build_index,
+                     build_cache_index, extract_npy_cache, split_aois)
 from model import RRDBNet6x
 from essaformer import ESSAformer
 from mambahsisr import MambaHSISR
@@ -168,6 +169,7 @@ def main():
     parser.add_argument('--resume')
     parser.add_argument('--zip-dir')
     parser.add_argument('--out-dir')
+    parser.add_argument('--cache-dir', help='flat npy cache directory (skips zip I/O)')
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -176,6 +178,8 @@ def main():
         cfg['zip_dir'] = args.zip_dir
     if args.out_dir:
         cfg['out_dir'] = args.out_dir
+    if args.cache_dir:
+        cfg['cache_dir'] = args.cache_dir
 
     torch.manual_seed(cfg['seed'])
     np.random.seed(cfg['seed'])
@@ -196,18 +200,36 @@ def main():
     print(f'Output:     {out_dir}')
 
     # --- data ---
-    zip_dir = Path(cfg['zip_dir'])
-    all_aois = {zp.stem.split('__')[0] for zp in zip_dir.glob('*.zip')}
-    train_aois, val_aois, _ = split_aois(all_aois, cfg['seed'], cfg.get('max_aois'))
+    cache_dir = cfg.get('cache_dir')
+    use_cache = cache_dir and Path(cache_dir).is_dir()
 
-    train_index = build_index(zip_dir, cfg['gt_source'], train_aois)
-    val_index = build_index(zip_dir, cfg['gt_source'], val_aois)
+    if use_cache:
+        # flat npy cache on local SSD — fast path
+        cache_dir = Path(cache_dir)
+        all_aois = {d.name.split('__')[0] for d in cache_dir.iterdir() if d.is_dir()}
+        train_aois, val_aois, _ = split_aois(all_aois, cfg['seed'], cfg.get('max_aois'))
 
-    preload = cfg.get('preload', False)
-    train_set = PairedZipDataset(train_index, cfg['scale'], cfg['gt_size'], preload=preload)
-    val_set = PairedZipDataset(val_index, cfg['scale'], gt_size=None, augment=False, preload=preload)
+        train_index = build_cache_index(cache_dir, cfg['gt_source'], train_aois)
+        val_index = build_cache_index(cache_dir, cfg['gt_source'], val_aois)
 
-    nw = 2 if preload else cfg.get('num_workers', 4)
+        train_set = PairedCacheDataset(train_index, cfg['scale'], cfg['gt_size'])
+        val_set = PairedCacheDataset(val_index, cfg['scale'], gt_size=None, augment=False)
+    else:
+        # zip-based fallback
+        zip_dir = Path(cfg['zip_dir'])
+        all_aois = {zp.stem.split('__')[0] for zp in zip_dir.glob('*.zip')}
+        train_aois, val_aois, _ = split_aois(all_aois, cfg['seed'], cfg.get('max_aois'))
+
+        train_index = build_index(zip_dir, cfg['gt_source'], train_aois)
+        val_index = build_index(zip_dir, cfg['gt_source'], val_aois)
+
+        preload = cfg.get('preload', False)
+        train_set = PairedZipDataset(train_index, cfg['scale'], cfg['gt_size'], preload=preload)
+        val_set = PairedZipDataset(val_index, cfg['scale'], gt_size=None, augment=False, preload=preload)
+
+    nw = cfg.get('num_workers', 4)
+    if not use_cache and cfg.get('preload', False):
+        nw = 2
     train_loader = torch.utils.data.DataLoader(
         train_set, batch_size=cfg['batch_size'], shuffle=True,
         num_workers=nw, pin_memory=True, drop_last=True,

@@ -2,7 +2,8 @@
 exp_name: mambahsisr-L1
 model_type: mambahsisr
 gt_source: cnmf
-zip_dir: /content/data/zips_cnmf
+zip_dir: /content/data/zips_cnmf_npy
+cache_dir: /content/data/npy_cache
 out_dir: /content/drive/Shareddrives/HyperResData/EMIT_S-2_Matches/experiments
 
 seed: 42
@@ -13,7 +14,6 @@ batch_size: 64
 num_workers: 12
 max_aois: null
 amp: false
-preload: true
 
 # MambaHSISR params
 embed_dim: 180
