@@ -220,12 +220,6 @@ def main() -> None:
     pair_dates = pd.read_csv(FIG_DIR / "pair_dates.csv")
     postqc_aoi = pd.read_csv(FIG_DIR / "aoi_postqc_counts.csv")
 
-    # join land_cover onto pair_dates via aoi_postqc_counts
-    pair_dates = pair_dates.merge(
-        postqc_aoi[["name", "land_cover"]].rename(columns={"name": "aoi_name"}),
-        on="aoi_name", how="left",
-    )
-
     df_postqc = postqc_pair_dates(pair_dates, clean)
     print(f"post-QC pairs: {len(df_postqc)} of {len(pair_dates)}")
 
