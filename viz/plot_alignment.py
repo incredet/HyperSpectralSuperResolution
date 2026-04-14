@@ -5,12 +5,12 @@ Each EMIT pipeline stage is its own single-panel file (no titles) so you can
 freely arrange and caption them in Overleaf:
 
   fig_emit_stage1_raw.{pdf,png}         raw sensor swath
-  fig_emit_stage2_ortho_wgs84.{pdf,png} orthorectified to WGS84, no DEM
-  fig_emit_stage3_dem_wgs84.{pdf,png}   orthorectified to WGS84, with DEM
-  fig_emit_stage4_utm.{pdf,png}         final UTM 60 m
+  fig_emit_stage2_wgs84.{pdf,png}       orthorectified to WGS84 geographic
+  fig_emit_stage3_utm_no_dem.{pdf,png}  UTM 60 m, no DEM correction
+  fig_emit_stage4_utm_dem.{pdf,png}     UTM 60 m, with DEM correction
 
 Difference / comparison figures (minimal chrome):
-  fig_emit_diff_dem.{pdf,png}           |post-DEM − pre-DEM| (WGS84 domain)
+  fig_emit_diff_dem.{pdf,png}           |post-DEM − pre-DEM| (UTM domain)
   fig_arosics_fullscene.{pdf,png}       S2 pre | EMIT | S2 post (full extent)
   fig_arosics_zoom.{pdf,png}            same, centre crop (or ZOOM_EXTENT_UTM)
   fig_arosics_diff_fullscene.{pdf,png}  |S2 post − S2 pre| (full)
@@ -27,7 +27,13 @@ Usage (Colab):
 from __future__ import annotations
 
 import os
+import warnings
 from pathlib import Path
+
+warnings.filterwarnings("ignore", category=RuntimeWarning,
+                        message="Mean of empty slice")
+warnings.filterwarnings("ignore", category=RuntimeWarning,
+                        message="All-NaN slice encountered")
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -168,29 +174,32 @@ def single_panel(img: np.ndarray, out_path: Path) -> None:
 # ── EMIT pipeline stages ─────────────────────────────────────────────────────
 
 def fig_emit_stages(pair_dir: Path) -> None:
+    # stage 1: raw sensor swath (from saved .npy)
     raw_rgb = np.load(pair_dir / "emit_raw_rgb.npy").astype(np.float32)
     single_panel(pct_stretch(raw_rgb), FIG_DIR / "fig_emit_stage1_raw")
 
-    for stage, fname in [
-        ("emit_ortho_wgs84_rgb.tif", "fig_emit_stage2_ortho_wgs84"),
-        ("emit_dem_wgs84_rgb.tif",   "fig_emit_stage3_dem_wgs84"),
-        ("emit_post_dem_utm.tif",    "fig_emit_stage4_utm"),
+    # stages 2–4: orthorectified to WGS84, then UTM without DEM, then UTM with DEM
+    for src_name, out_name in [
+        ("emit_ortho_wgs84_rgb.tif", "fig_emit_stage2_wgs84"),
+        ("emit_pre_dem_utm.tif",     "fig_emit_stage3_utm_no_dem"),
+        ("emit_post_dem_utm.tif",    "fig_emit_stage4_utm_dem"),
     ]:
-        p = pair_dir / stage
+        p = pair_dir / src_name
         if not p.exists():
-            print(f"  skip {fname}: missing {p.name}")
+            print(f"  skip {out_name}: missing {p.name}")
             continue
         arr, _, _ = read_emit_rgb(p)
-        single_panel(pct_stretch(arr), FIG_DIR / fname)
+        single_panel(pct_stretch(arr), FIG_DIR / out_name)
 
 
 # ── EMIT DEM difference (minimal colorbar) ───────────────────────────────────
 
 def fig_emit_diff_dem(pair_dir: Path, out_path: Path) -> None:
-    pre  = pair_dir / "emit_ortho_wgs84_rgb.tif"
-    post = pair_dir / "emit_dem_wgs84_rgb.tif"
+    # DEM effect in the real UTM pipeline output — both files exist on disk
+    pre  = pair_dir / "emit_pre_dem_utm.tif"
+    post = pair_dir / "emit_post_dem_utm.tif"
     if not (pre.exists() and post.exists()):
-        print(f"  skip {out_path.name}: missing WGS84 pre/post-DEM tifs")
+        print(f"  skip {out_path.name}: missing pre/post-DEM UTM tifs")
         return
 
     pre_arr,  _, _ = read_emit_rgb(pre)
