@@ -1,16 +1,10 @@
 """
-Band-selection figure.
+Band-selection figure — three stacked panels on a shared wavelength axis.
 
-Shows on a single wavelength axis:
-  - the 32 selected EMIT bands as vertical ticks, coloured by role
-      S2  — matches an S2 band centre
-      DX  — spectral diagnostic feature
-      FL  — filler for spectral span
-  - 10 Sentinel-2 bands as filled Gaussian SRFs
-  - major atmospheric absorption windows shaded
-  - a top strip reminding the reader EMIT is 285 bands @ 7.4 nm FWHM
-
-Role tags come from the comments in pipeline_config.yaml (S2 / DX / FL).
+Top    — Sentinel-2 spectral response functions (10 bands, B02-B12)
+Middle — EMIT: all 285 bands as faint ticks, 32 selected highlighted
+Bottom — schematic atmospheric transmittance (synthetic, band centres and
+         widths from standard H$_2$O / O$_2$ / CO$_2$ features)
 
 Writes {DRIVE_ROOT}/figures/fig_band_selection.{pdf,png}
 Usage (Colab):
@@ -23,7 +17,6 @@ import os
 import re
 from pathlib import Path
 
-import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -55,8 +48,9 @@ plt.rcParams.update({
     "ps.fonttype": 42,
 })
 
+WL_MIN, WL_MAX = 380, 2500
+
 # --- Sentinel-2A band specs (centre nm, FWHM nm) ----------------------------
-# Public ESA specs; B10 (cirrus) and B9 (water vapour) excluded — not used.
 S2_BANDS = [
     ("B02", 492.4,  66.0),
     ("B03", 559.8,  36.0),
@@ -70,36 +64,53 @@ S2_BANDS = [
     ("B12", 2202.4, 175.0),
 ]
 
-# --- atmospheric absorption windows (hard-coded, major features) ------------
-ATMO = [
-    (755, 770,  "O$_2$"),       # O2 A-band
-    (1340, 1460, "H$_2$O"),     # strong water vapour
-    (1790, 1970, "H$_2$O"),     # strong water vapour
+# --- EMIT context -----------------------------------------------------------
+EMIT_RANGE = (381.0, 2493.0)
+EMIT_N_BANDS = 285
+EMIT_FWHM = 7.4
+
+# --- atmospheric absorber features (schematic) -----------------------------
+# (centre_nm, sigma_nm, depth) — depth is max absorption (1 = fully opaque)
+ATMO_FEATURES = [
+    (760,  3,  0.88),   # O2 A-band
+    (820,  15, 0.20),   # H2O
+    (940,  25, 0.40),   # H2O
+    (1130, 25, 0.30),   # H2O
+    (1380, 40, 0.97),   # H2O (strong)
+    (1880, 60, 0.98),   # H2O (strong)
+    (2040, 15, 0.15),   # CO2
+    (2700, 50, 0.60),   # H2O (edge of range)
 ]
 
-# --- EMIT sensor context ----------------------------------------------------
-EMIT_RANGE = (381.0, 2493.0)   # nm
-EMIT_N_BANDS = 285
-EMIT_FWHM = 7.4                # nm
+COLOR_S2         = "#4477AA"
+COLOR_S2_EDGE    = "#1F4E79"
+COLOR_EMIT_ALL   = "#CFCFCF"
+COLOR_EMIT_SEL   = "#CC3311"
+COLOR_ATMO_LINE  = "#2F5A84"
+COLOR_ATMO_FILL  = "#A6C5E2"
+COLOR_GUIDE      = "#E6E6E6"    # shared vertical shading for absorption
 
-# --- role palette -----------------------------------------------------------
-ROLE_COLOR = {"S2": "#1F77B4", "DX": "#D55E00", "FL": "#888888"}
-ROLE_LABEL = {
-    "S2": "S2-aligned",
-    "DX": "diagnostic feature",
-    "FL": "spectral filler",
-}
+
+def gaussian(x, mu, fwhm):
+    sigma = fwhm / (2 * np.sqrt(2 * np.log(2)))
+    return np.exp(-0.5 * ((x - mu) / sigma) ** 2)
+
+
+def atmo_transmittance(wl):
+    t = np.ones_like(wl, dtype=float)
+    for mu, sig, depth in ATMO_FEATURES:
+        t *= (1.0 - depth * np.exp(-0.5 * ((wl - mu) / sig) ** 2))
+    return t
 
 
 # --- parse config -----------------------------------------------------------
 _ROW_RE = re.compile(
-    r"-\s*(?P<wl>\d+(?:\.\d+)?)\s*#\s*(?P<role>S2|DX|FL)\b\s*(?P<desc>.*)"
+    r"-\s*(?P<wl>\d+(?:\.\d+)?)\s*#\s*(?P<role>S2|DX|FL)?"
 )
 
 
-def parse_selected_bands(config: Path):
-    """Returns list of (wavelength_nm, role, description) from the YAML."""
-    out: list[tuple[float, str, str]] = []
+def parse_selected_bands(config: Path) -> list[float]:
+    wls: list[float] = []
     inside = False
     for line in config.read_text().splitlines():
         if "emit_target_wavelengths_nm:" in line:
@@ -107,106 +118,124 @@ def parse_selected_bands(config: Path):
             continue
         if not inside:
             continue
-        if line.strip() == "" or (line.strip() and not line.lstrip().startswith("-")):
-            # end of list reached
-            if out:
+        if line.strip() and not line.lstrip().startswith("-"):
+            if wls:
                 break
             continue
         m = _ROW_RE.search(line)
         if m:
-            out.append((float(m["wl"]), m["role"], m["desc"].strip()))
-    return out
+            wls.append(float(m["wl"]))
+    return wls
+
+
+def emit_band_centres():
+    # EMIT covers ~381-2493 nm over 285 bands at ~7.4 nm spacing
+    return np.linspace(EMIT_RANGE[0], EMIT_RANGE[1], EMIT_N_BANDS)
 
 
 # --- plot -------------------------------------------------------------------
-def gaussian(x: np.ndarray, mu: float, fwhm: float) -> np.ndarray:
-    sigma = fwhm / (2 * np.sqrt(2 * np.log(2)))
-    return np.exp(-0.5 * ((x - mu) / sigma) ** 2)
+def plot(selected: list[float], out_path: Path) -> None:
+    fig = plt.figure(figsize=(FIG_W_CM * CM, FIG_W_CM * CM * 0.65))
+    gs = fig.add_gridspec(
+        nrows=3, ncols=1,
+        height_ratios=[1.0, 0.38, 0.95],
+        hspace=0.08,
+    )
+    ax_s2   = fig.add_subplot(gs[0, 0])
+    ax_emit = fig.add_subplot(gs[1, 0], sharex=ax_s2)
+    ax_atm  = fig.add_subplot(gs[2, 0], sharex=ax_s2)
 
+    # shared vertical absorption shading (on S2 + EMIT panels)
+    guide_spans = [(755, 765), (1340, 1450), (1790, 1970)]
+    for a in (ax_s2, ax_emit):
+        for lo, hi in guide_spans:
+            a.axvspan(lo, hi, color=COLOR_GUIDE, alpha=1.0, zorder=0)
 
-def plot(bands: list[tuple[float, str, str]], out_path: Path) -> None:
-    fig, ax = plt.subplots(figsize=(FIG_W_CM * CM, FIG_W_CM * CM * 0.45))
-    wl = np.linspace(380, 2500, 4000)
-
-    # atmospheric shading (full vertical)
-    for lo, hi, lbl in ATMO:
-        ax.axvspan(lo, hi, color="#B0B0B0", alpha=0.22, zorder=0)
-        ax.text(
-            (lo + hi) / 2, 1.03, lbl,
-            ha="center", va="bottom",
-            fontsize=7.0, color="#555555",
-            transform=ax.get_xaxis_transform(),
-        )
-
-    # S2 SRFs (bottom half of y range)
+    # --- top: S2 SRFs -------------------------------------------------------
+    wl = np.linspace(WL_MIN, WL_MAX, 4000)
     for code, mu, fwhm in S2_BANDS:
-        y = gaussian(wl, mu, fwhm) * 0.55  # peak ~0.55 so ticks stay visible
-        ax.fill_between(
+        y = gaussian(wl, mu, fwhm)
+        ax_s2.fill_between(
             wl, 0, y,
-            color="#4477AA", alpha=0.22,
-            edgecolor="#2F5A84", linewidth=0.4,
+            color=COLOR_S2, alpha=0.28,
+            edgecolor=COLOR_S2_EDGE, linewidth=0.5,
             zorder=2,
         )
-        # label above each S2 peak
-        ax.text(
-            mu, gaussian(mu, mu, fwhm) * 0.55 + 0.02,
-            code, ha="center", va="bottom",
-            fontsize=6.5, color="#2F5A84",
+        ax_s2.text(
+            mu, 1.04, code,
+            ha="center", va="bottom",
+            fontsize=6.5, color=COLOR_S2_EDGE,
             zorder=3,
         )
 
-    # EMIT 32 selected bands — ticks at top
-    tick_top = 1.0
-    tick_bot = 0.82
-    for w, role, _desc in bands:
-        ax.plot(
-            [w, w], [tick_bot, tick_top],
-            color=ROLE_COLOR[role], linewidth=1.2,
-            solid_capstyle="butt", zorder=4,
+    ax_s2.set_ylim(0, 1.18)
+    ax_s2.set_yticks([0, 0.5, 1.0])
+    ax_s2.set_ylabel("S2 response")
+    ax_s2.tick_params(axis="x", labelbottom=False)
+    for spine in ("top", "right"):
+        ax_s2.spines[spine].set_visible(False)
+
+    # --- middle: EMIT 285 with 32 highlighted ------------------------------
+    emit_all = emit_band_centres()
+    # all 285 as thin grey lines
+    ax_emit.vlines(
+        emit_all, 0.30, 0.70,
+        colors=COLOR_EMIT_ALL, linewidths=0.5, zorder=1,
+    )
+    # 32 highlighted — full height, accent colour
+    ax_emit.vlines(
+        selected, 0.05, 0.95,
+        colors=COLOR_EMIT_SEL, linewidths=1.4, zorder=3,
+    )
+
+    ax_emit.set_ylim(0, 1.0)
+    ax_emit.set_yticks([])
+    ax_emit.set_ylabel("EMIT")
+    ax_emit.tick_params(axis="x", labelbottom=False)
+    for spine in ("top", "right", "left"):
+        ax_emit.spines[spine].set_visible(False)
+
+    # annotate selected count inside the panel
+    ax_emit.text(
+        0.995, 0.92,
+        f"{EMIT_N_BANDS} bands total  ·  {len(selected)} selected",
+        transform=ax_emit.transAxes,
+        ha="right", va="top",
+        fontsize=7.0, color="#444444", style="italic",
+    )
+
+    # --- bottom: atmospheric transmittance ---------------------------------
+    t = atmo_transmittance(wl)
+    ax_atm.fill_between(wl, 0, t, color=COLOR_ATMO_FILL, alpha=0.55, zorder=1)
+    ax_atm.plot(wl, t, color=COLOR_ATMO_LINE, linewidth=0.9, zorder=2)
+
+    # label the dominant absorbers
+    abs_labels = [(760, "O$_2$"), (940, "H$_2$O"), (1380, "H$_2$O"),
+                  (1880, "H$_2$O"), (2040, "CO$_2$")]
+    for x, lbl in abs_labels:
+        ty = atmo_transmittance(np.array([x]))[0]
+        ax_atm.text(
+            x, ty - 0.05, lbl,
+            ha="center", va="top",
+            fontsize=7.0, color="#333333",
         )
 
-    # top strip (above the ticks) describing EMIT context
-    ax.text(
-        0.5, 1.10,
-        f"EMIT: {EMIT_N_BANDS} contiguous bands, "
-        f"{EMIT_RANGE[0]:.0f}–{EMIT_RANGE[1]:.0f}\u2009nm, "
-        f"{EMIT_FWHM:.1f}\u2009nm FWHM",
-        ha="center", va="bottom",
-        fontsize=7.5, color="#333333", style="italic",
-        transform=ax.transAxes,
-    )
-
-    # axis cosmetics
-    ax.set_xlim(380, 2500)
-    ax.set_ylim(0, 1.08)
-    ax.set_xlabel("wavelength (nm)")
-    ax.set_ylabel("S2 spectral response", color="#2F5A84")
-    ax.tick_params(axis="y", colors="#2F5A84")
+    ax_atm.set_ylim(0, 1.1)
+    ax_atm.set_yticks([0, 0.5, 1.0])
+    ax_atm.set_ylabel("transmittance")
+    ax_atm.set_xlabel("wavelength (nm)")
     for spine in ("top", "right"):
-        ax.spines[spine].set_visible(False)
+        ax_atm.spines[spine].set_visible(False)
 
-    # hide y ticks above 0.8 so they don't clash with the EMIT tick strip
-    ax.set_yticks([0, 0.2, 0.4, 0.55])
-    ax.set_yticklabels(["0", "0.36", "0.73", "1.0"])
-
-    # legend — roles + atmospheric + S2
-    legend_handles = [
-        mpatches.Patch(color=ROLE_COLOR["S2"], label=f"32-band: {ROLE_LABEL['S2']} "
-                        f"(n={sum(1 for _,r,_ in bands if r=='S2')})"),
-        mpatches.Patch(color=ROLE_COLOR["DX"], label=f"32-band: {ROLE_LABEL['DX']} "
-                        f"(n={sum(1 for _,r,_ in bands if r=='DX')})"),
-        mpatches.Patch(color=ROLE_COLOR["FL"], label=f"32-band: {ROLE_LABEL['FL']} "
-                        f"(n={sum(1 for _,r,_ in bands if r=='FL')})"),
-        mpatches.Patch(facecolor="#4477AA", alpha=0.22, edgecolor="#2F5A84",
-                       label="S2 SRF (B02–B12)"),
-        mpatches.Patch(color="#B0B0B0", alpha=0.35, label="atmospheric absorption"),
-    ]
-    ax.legend(
-        handles=legend_handles,
-        loc="upper center", bbox_to_anchor=(0.5, -0.22),
-        ncol=3, frameon=False,
-        handletextpad=0.5, columnspacing=1.2,
+    ax_atm.text(
+        0.995, 0.05,
+        "schematic — see caption",
+        transform=ax_atm.transAxes,
+        ha="right", va="bottom",
+        fontsize=6.5, color="#777777", style="italic",
     )
+
+    ax_s2.set_xlim(WL_MIN, WL_MAX)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path.with_suffix(".pdf"), dpi=DPI, bbox_inches="tight")
@@ -216,15 +245,11 @@ def plot(bands: list[tuple[float, str, str]], out_path: Path) -> None:
 
 
 def main() -> None:
-    bands = parse_selected_bands(CONFIG_PATH)
-    print(f"parsed {len(bands)} bands from {CONFIG_PATH.name}")
-    counts = {r: sum(1 for _, rr, _ in bands if rr == r) for r in ("S2", "DX", "FL")}
-    print(f"  S2={counts['S2']} DX={counts['DX']} FL={counts['FL']}")
-
-    if len(bands) != 32:
-        print(f"!! expected 32 bands, got {len(bands)} — parse may be off")
-
-    plot(bands, FIG_DIR / "fig_band_selection")
+    selected = parse_selected_bands(CONFIG_PATH)
+    print(f"parsed {len(selected)} selected bands from {CONFIG_PATH.name}")
+    if len(selected) != 32:
+        print(f"!! expected 32, got {len(selected)}")
+    plot(selected, FIG_DIR / "fig_band_selection")
 
 
 if __name__ == "__main__":
