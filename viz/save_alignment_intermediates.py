@@ -259,11 +259,10 @@ def main() -> None:
     }
     for name, src in links.items():
         dst = out_root / name
-        if dst.exists() or dst.is_symlink():
-            dst.unlink()
         if src and src.exists():
-            dst.symlink_to(src)
-            print(f"  linked {name} → {src.name}")
+            if not dst.exists():
+                shutil.copy2(src, dst)
+            print(f"  copied {name} ← {src.name}")
         else:
             print(f"  warning: {name} source not found ({src})")
 
