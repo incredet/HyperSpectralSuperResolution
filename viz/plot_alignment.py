@@ -1,15 +1,24 @@
 """
 Alignment diagnostic figures for thesis.
 
-Produces:
-  fig_emit_pipeline.{pdf,png}      3-panel: raw | pre-DEM UTM | post-DEM UTM
-  fig_emit_diff.{pdf,png}          difference: post-DEM minus pre-DEM
-  fig_arosics_fullscene.{pdf,png}  3-panel full scene: S2 before | EMIT | S2 after
-  fig_arosics_zoom.{pdf,png}       same, cropped (set ZOOM_EXTENT_UTM below)
-  fig_arosics_diff.{pdf,png}       S2 after minus S2 before AROSICS
+Each EMIT pipeline stage is its own single-panel file (no titles) so you can
+freely arrange and caption them in Overleaf:
 
-Reads from {DRIVE_ROOT}/viz_intermediates/{AOI_SLUG}/{pair_id}/.
-Writes to  {DRIVE_ROOT}/figures/.
+  fig_emit_stage1_raw.{pdf,png}         raw sensor swath
+  fig_emit_stage2_ortho_wgs84.{pdf,png} orthorectified to WGS84, no DEM
+  fig_emit_stage3_dem_wgs84.{pdf,png}   orthorectified to WGS84, with DEM
+  fig_emit_stage4_utm.{pdf,png}         final UTM 60 m
+
+Difference / comparison figures (minimal chrome):
+  fig_emit_diff_dem.{pdf,png}           |post-DEM − pre-DEM| (WGS84 domain)
+  fig_arosics_fullscene.{pdf,png}       S2 pre | EMIT | S2 post (full extent)
+  fig_arosics_zoom.{pdf,png}            same, centre crop (or ZOOM_EXTENT_UTM)
+  fig_arosics_diff_fullscene.{pdf,png}  |S2 post − S2 pre| (full)
+  fig_arosics_diff_zoom.{pdf,png}       |S2 post − S2 pre| (zoom)
+  fig_final_pair.{pdf,png}              final EMIT 60 m | final S2 10 m
+
+Reads  {DRIVE_ROOT}/viz_intermediates/{AOI_SLUG}/{pair_id}/
+Writes {DRIVE_ROOT}/figures/
 
 Usage (Colab):
     !python viz/plot_alignment.py
@@ -21,7 +30,6 @@ import os
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
 import numpy as np
 import rasterio
 from rasterio.plot import reshape_as_image
@@ -29,9 +37,8 @@ from rasterio.plot import reshape_as_image
 # ── config ──────────────────────────────────────────────────────────────────
 AOI_SLUG = "aoi_lat49.0_lon34.0"
 
-# Set to (left, bottom, right, top) in EPSG:32636 for a tight zoom figure.
-# Example based on this scene's bounds (499980–588780 E, 5390220–5493780 N):
-#   ZOOM_EXTENT_UTM = (530000, 5430000, 560000, 5460000)
+# Set to (left, bottom, right, top) in EPSG:32636 for a manual zoom;
+# otherwise the centre 30 % of the S2 scene is used automatically.
 ZOOM_EXTENT_UTM: tuple[float, float, float, float] | None = None
 
 DRIVE_ROOT = Path(os.environ.get(
@@ -45,17 +52,18 @@ EMIT_WL = np.linspace(381.0, 2493.0, 285)
 RGB_NM  = (665.0, 560.0, 490.0)
 
 FIG_W_CM = 16.0
+PANEL_CM = 7.0     # single-panel figure size
 CM = 1 / 2.54
 DPI = 300
 
 plt.rcParams.update({
     "font.family": "DejaVu Sans",
-    "font.size": 8.5,
-    "axes.titlesize": 8.5,
-    "axes.labelsize": 8.0,
-    "xtick.labelsize": 7.5,
-    "ytick.labelsize": 7.5,
-    "axes.linewidth": 0.6,
+    "font.size": 8.0,
+    "axes.titlesize": 8.0,
+    "axes.labelsize": 7.5,
+    "xtick.labelsize": 7.0,
+    "ytick.labelsize": 7.0,
+    "axes.linewidth": 0.5,
     "pdf.fonttype": 42,
     "ps.fonttype": 42,
 })
@@ -84,12 +92,10 @@ def pct_stretch(arr: np.ndarray, plo: float = 2.0, phi: float = 98.0) -> np.ndar
 
 
 def read_emit_rgb(tif_path: Path) -> tuple[np.ndarray, rasterio.transform.Affine, object]:
-    """Read EMIT TIF → float32 RGB.
-    Handles both 285-band UTM TIF and 3-band WGS84 RGB TIF."""
+    """Handles both 285-band UTM TIF and 3-band WGS84 RGB TIF."""
     with rasterio.open(tif_path) as src:
-        n = src.count
-        if n == 3:
-            bands_1b = [1, 2, 3]          # already RGB (WGS84 intermediate)
+        if src.count == 3:
+            bands_1b = [1, 2, 3]
         else:
             bands_1b = [int(np.argmin(np.abs(EMIT_WL - nm))) + 1 for nm in RGB_NM]
         data = src.read(bands_1b).astype(np.float32)
@@ -125,6 +131,14 @@ def crop_arr(arr: np.ndarray, t: rasterio.transform.Affine,
     return arr[r0:r1, c0:c1]
 
 
+def default_zoom(bounds) -> tuple[float, float, float, float]:
+    cx = (bounds.left  + bounds.right)  / 2
+    cy = (bounds.bottom + bounds.top)   / 2
+    hw = (bounds.right  - bounds.left)  * 0.15
+    hh = (bounds.top    - bounds.bottom) * 0.15
+    return (cx - hw, cy - hh, cx + hw, cy + hh)
+
+
 def clean_axes(axes) -> None:
     for ax in np.ravel(axes):
         ax.set_xticks([])
@@ -141,141 +155,120 @@ def _save(fig, out_path: Path) -> None:
     print(f"  saved {out_path.with_suffix('.pdf').name}")
 
 
-# ── figure 1: EMIT pipeline steps ────────────────────────────────────────────
+# ── single-panel figures (no titles) ─────────────────────────────────────────
 
-def fig_emit_pipeline(pair_dir: Path, out_path: Path) -> None:
-    # Stage 1: raw sensor domain
-    raw_rgb = np.load(pair_dir / "emit_raw_rgb.npy").astype(np.float32)
-
-    # Stage 2: orthorectified in WGS84, no DEM correction
-    wgs84_pre = pair_dir / "emit_ortho_wgs84_rgb.tif"
-    # Stage 3: orthorectified in WGS84, with DEM correction
-    wgs84_dem = pair_dir / "emit_dem_wgs84_rgb.tif"
-    # Stage 4: final UTM 60m grid (same data as stage 3, projected to UTM)
-    post_dem, _, _ = read_emit_rgb(pair_dir / "emit_post_dem_utm.tif")
-
-    def _load_or_warn(tif: Path, fallback: np.ndarray) -> np.ndarray:
-        if tif.exists():
-            arr, _, _ = read_emit_rgb(tif)
-            return arr
-        print(f"  {tif.name} not found — re-run save_alignment_intermediates.py")
-        return fallback
-
-    s2 = _load_or_warn(wgs84_pre, post_dem)
-    s3 = _load_or_warn(wgs84_dem, post_dem)
-
-    panels = [
-        (pct_stretch(raw_rgb),  "Raw swath\n(sensor domain)"),
-        (pct_stretch(s2),       "After orthorectification\n(WGS84, no DEM)"),
-        (pct_stretch(s3),       "After DEM correction\n(WGS84)"),
-        (pct_stretch(post_dem), "After UTM reprojection\n(EPSG:32636, 60 m)"),
-    ]
-
-    fig, axes = plt.subplots(1, 4, figsize=(FIG_W_CM * CM, FIG_W_CM * CM * 0.35))
-    for ax, (img, title) in zip(axes, panels):
-        ax.imshow(img, interpolation="bilinear")
-        ax.set_title(title, fontsize=7.5)
-    clean_axes(axes)
-    axes[0].set_xlabel("along-track →", fontsize=6.5, color="#888888")
-    axes[0].set_ylabel("↑ cross-track", fontsize=6.5, color="#888888")
-
-    fig.tight_layout(pad=0.5, w_pad=0.8)
-    _save(fig, out_path)
-
-
-# ── figure 2: EMIT step differences ─────────────────────────────────────────
-
-def fig_emit_diff(pair_dir: Path, out_path: Path) -> None:
-    pre_dem,  _, _  = read_emit_rgb(pair_dir / "emit_pre_dem_utm.tif")
-    post_dem, _, _  = read_emit_rgb(pair_dir / "emit_post_dem_utm.tif")
-
-    # Mean-absolute difference across RGB channels
-    diff = np.nanmean(np.abs(post_dem - pre_dem), axis=2)
-
-    fig, ax = plt.subplots(1, 1, figsize=(FIG_W_CM * CM * 0.45, FIG_W_CM * CM * 0.42))
-    im = ax.imshow(diff, cmap="inferno", interpolation="bilinear",
-                   vmin=0, vmax=np.nanpercentile(diff, 99))
-    ax.set_title("DEM correction effect\n|post-DEM − pre-DEM| (reflectance)")
+def single_panel(img: np.ndarray, out_path: Path) -> None:
+    fig, ax = plt.subplots(figsize=(PANEL_CM * CM, PANEL_CM * CM))
+    ax.imshow(img, interpolation="bilinear")
     clean_axes([ax])
-    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04,
-                 label="mean |Δreflectance|")
-    fig.tight_layout(pad=0.5)
+    fig.tight_layout(pad=0.1)
     _save(fig, out_path)
 
 
-# ── figure 3: AROSICS full scene ─────────────────────────────────────────────
+# ── EMIT pipeline stages ─────────────────────────────────────────────────────
 
-def fig_arosics_fullscene(pair_dir: Path, out_path: Path) -> None:
-    emit_rgb, emit_t, _   = read_emit_rgb(pair_dir / "emit_post_dem_utm.tif")
-    s2_pre,  t_pre,  _    = read_s2_rgb(pair_dir  / "s2_pre_coreg.tif")
-    s2_post, t_post, _    = read_s2_rgb(pair_dir  / "s2_post_coreg.tif")
+def fig_emit_stages(pair_dir: Path) -> None:
+    raw_rgb = np.load(pair_dir / "emit_raw_rgb.npy").astype(np.float32)
+    single_panel(pct_stretch(raw_rgb), FIG_DIR / "fig_emit_stage1_raw")
 
-    panels = [
-        (pct_stretch(s2_pre),   "S2 before AROSICS"),
-        (pct_stretch(emit_rgb), "EMIT reference (60 m)"),
-        (pct_stretch(s2_post),  "S2 after AROSICS"),
-    ]
+    for stage, fname in [
+        ("emit_ortho_wgs84_rgb.tif", "fig_emit_stage2_ortho_wgs84"),
+        ("emit_dem_wgs84_rgb.tif",   "fig_emit_stage3_dem_wgs84"),
+        ("emit_post_dem_utm.tif",    "fig_emit_stage4_utm"),
+    ]:
+        p = pair_dir / stage
+        if not p.exists():
+            print(f"  skip {fname}: missing {p.name}")
+            continue
+        arr, _, _ = read_emit_rgb(p)
+        single_panel(pct_stretch(arr), FIG_DIR / fname)
 
-    fig, axes = plt.subplots(1, 3, figsize=(FIG_W_CM * CM, FIG_W_CM * CM * 0.42))
-    for ax, (img, title) in zip(axes, panels):
+
+# ── EMIT DEM difference (minimal colorbar) ───────────────────────────────────
+
+def fig_emit_diff_dem(pair_dir: Path, out_path: Path) -> None:
+    pre  = pair_dir / "emit_ortho_wgs84_rgb.tif"
+    post = pair_dir / "emit_dem_wgs84_rgb.tif"
+    if not (pre.exists() and post.exists()):
+        print(f"  skip {out_path.name}: missing WGS84 pre/post-DEM tifs")
+        return
+
+    pre_arr,  _, _ = read_emit_rgb(pre)
+    post_arr, _, _ = read_emit_rgb(post)
+    h = min(pre_arr.shape[0], post_arr.shape[0])
+    w = min(pre_arr.shape[1], post_arr.shape[1])
+    diff = np.nanmean(np.abs(post_arr[:h, :w] - pre_arr[:h, :w]), axis=2)
+
+    fig, ax = plt.subplots(figsize=(PANEL_CM * CM, PANEL_CM * CM))
+    vmax = float(np.nanpercentile(diff, 99))
+    im = ax.imshow(diff, cmap="inferno", vmin=0, vmax=vmax, interpolation="bilinear")
+    clean_axes([ax])
+    cb = fig.colorbar(im, ax=ax, fraction=0.035, pad=0.02)
+    cb.ax.tick_params(labelsize=6.5, length=2)
+    cb.ax.yaxis.set_major_formatter(plt.FormatStrFormatter("%.3f"))
+    cb.outline.set_linewidth(0.4)
+    fig.tight_layout(pad=0.2)
+    _save(fig, out_path)
+
+
+# ── AROSICS comparison (minimal subplot labels) ──────────────────────────────
+
+def fig_arosics_compare(pair_dir: Path, out_path: Path,
+                        zoom_ext: tuple[float, float, float, float] | None) -> None:
+    emit, emit_t, _    = read_emit_rgb(pair_dir / "emit_post_dem_utm.tif")
+    s2_pre,  t_pre,  _ = read_s2_rgb(pair_dir / "s2_pre_coreg.tif")
+    s2_post, t_post, _ = read_s2_rgb(pair_dir / "s2_post_coreg.tif")
+
+    if zoom_ext is not None:
+        emit    = crop_arr(emit,    emit_t, zoom_ext)
+        s2_pre  = crop_arr(s2_pre,  t_pre,  zoom_ext)
+        s2_post = crop_arr(s2_post, t_post, zoom_ext)
+
+    panels = [pct_stretch(s2_pre), pct_stretch(emit), pct_stretch(s2_post)]
+    fig, axes = plt.subplots(1, 3, figsize=(FIG_W_CM * CM, FIG_W_CM * CM * 0.35))
+    for ax, img in zip(axes, panels):
         ax.imshow(img, interpolation="bilinear")
-        ax.set_title(title)
     clean_axes(axes)
-    fig.tight_layout(pad=0.5, w_pad=1.2)
+    fig.tight_layout(pad=0.3, w_pad=0.8)
     _save(fig, out_path)
 
-
-# ── figure 4: AROSICS zoom ───────────────────────────────────────────────────
-
-def fig_arosics_zoom(pair_dir: Path, out_path: Path,
-                     zoom_ext: tuple[float, float, float, float]) -> None:
-    emit_rgb, emit_t, _   = read_emit_rgb(pair_dir / "emit_post_dem_utm.tif")
-    s2_pre,  t_pre,  _    = read_s2_rgb(pair_dir  / "s2_pre_coreg.tif")
-    s2_post, t_post, _    = read_s2_rgb(pair_dir  / "s2_post_coreg.tif")
-
-    panels = [
-        (pct_stretch(crop_arr(s2_pre,  t_pre,  zoom_ext)), "S2 before AROSICS"),
-        (pct_stretch(crop_arr(emit_rgb, emit_t, zoom_ext)), "EMIT reference (60 m)"),
-        (pct_stretch(crop_arr(s2_post, t_post, zoom_ext)), "S2 after AROSICS"),
-    ]
-    w_km = (zoom_ext[2] - zoom_ext[0]) / 1000
-    h_km = (zoom_ext[3] - zoom_ext[1]) / 1000
-
-    fig, axes = plt.subplots(1, 3, figsize=(FIG_W_CM * CM, FIG_W_CM * CM * 0.42))
-    for ax, (img, title) in zip(axes, panels):
-        ax.imshow(img, interpolation="bilinear")
-        ax.set_title(title)
-    clean_axes(axes)
-    fig.text(0.5, -0.01, f"{w_km:.0f} × {h_km:.0f} km",
-             ha="center", fontsize=7.5, color="#777777")
-    fig.tight_layout(pad=0.5, w_pad=1.2)
-    _save(fig, out_path)
-
-
-# ── figure 5: AROSICS difference ─────────────────────────────────────────────
 
 def fig_arosics_diff(pair_dir: Path, out_path: Path,
-                     zoom_ext: tuple[float, float, float, float] | None = None) -> None:
-    s2_pre,  t_pre,  _  = read_s2_rgb(pair_dir / "s2_pre_coreg.tif")
-    s2_post, t_post, b  = read_s2_rgb(pair_dir / "s2_post_coreg.tif")
-
+                     zoom_ext: tuple[float, float, float, float] | None) -> None:
+    s2_pre,  t_pre,  _ = read_s2_rgb(pair_dir / "s2_pre_coreg.tif")
+    s2_post, t_post, _ = read_s2_rgb(pair_dir / "s2_post_coreg.tif")
     if zoom_ext is not None:
         s2_pre  = crop_arr(s2_pre,  t_pre,  zoom_ext)
         s2_post = crop_arr(s2_post, t_post, zoom_ext)
 
-    # align sizes (post-AROSICS may differ by a pixel due to resampling)
     h = min(s2_pre.shape[0], s2_post.shape[0])
     w = min(s2_pre.shape[1], s2_post.shape[1])
     diff = np.nanmean(np.abs(s2_post[:h, :w] - s2_pre[:h, :w]), axis=2)
 
-    fig, ax = plt.subplots(1, 1, figsize=(FIG_W_CM * CM * 0.45, FIG_W_CM * CM * 0.42))
-    im = ax.imshow(diff, cmap="inferno", interpolation="bilinear",
-                   vmin=0, vmax=np.nanpercentile(diff, 99))
-    ax.set_title("AROSICS correction effect\n|S2 after − S2 before| (reflectance)")
+    fig, ax = plt.subplots(figsize=(PANEL_CM * CM, PANEL_CM * CM))
+    vmax = float(np.nanpercentile(diff, 99))
+    im = ax.imshow(diff, cmap="inferno", vmin=0, vmax=vmax, interpolation="bilinear")
     clean_axes([ax])
-    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04,
-                 label="mean |Δreflectance|")
-    fig.tight_layout(pad=0.5)
+    cb = fig.colorbar(im, ax=ax, fraction=0.035, pad=0.02)
+    cb.ax.tick_params(labelsize=6.5, length=2)
+    cb.ax.yaxis.set_major_formatter(plt.FormatStrFormatter("%.3f"))
+    cb.outline.set_linewidth(0.4)
+    fig.tight_layout(pad=0.2)
+    _save(fig, out_path)
+
+
+# ── final EMIT + S2 pair ─────────────────────────────────────────────────────
+
+def fig_final_pair(pair_dir: Path, out_path: Path) -> None:
+    emit,    _, _ = read_emit_rgb(pair_dir / "emit_post_dem_utm.tif")
+    s2_post, _, _ = read_s2_rgb(pair_dir / "s2_post_coreg.tif")
+
+    panels = [pct_stretch(emit), pct_stretch(s2_post)]
+    fig, axes = plt.subplots(1, 2, figsize=(FIG_W_CM * CM, FIG_W_CM * CM * 0.5))
+    for ax, img in zip(axes, panels):
+        ax.imshow(img, interpolation="bilinear")
+    clean_axes(axes)
+    fig.tight_layout(pad=0.3, w_pad=0.8)
     _save(fig, out_path)
 
 
@@ -285,18 +278,24 @@ def main() -> None:
     pair_dir = find_pair_dir(INTERM_DIR)
     print(f"pair: {pair_dir.name}")
 
-    fig_emit_pipeline(pair_dir, FIG_DIR / "fig_emit_pipeline")
-    fig_emit_diff(pair_dir,     FIG_DIR / "fig_emit_diff")
+    # EMIT pipeline stages (separate single-panel plots)
+    fig_emit_stages(pair_dir)
+    fig_emit_diff_dem(pair_dir, FIG_DIR / "fig_emit_diff_dem")
 
-    fig_arosics_fullscene(pair_dir, FIG_DIR / "fig_arosics_fullscene")
-    fig_arosics_diff(pair_dir,      FIG_DIR / "fig_arosics_diff_fullscene")
+    # AROSICS — always generate full scene + zoom
+    fig_arosics_compare(pair_dir, FIG_DIR / "fig_arosics_fullscene", zoom_ext=None)
+    fig_arosics_diff(pair_dir,    FIG_DIR / "fig_arosics_diff_fullscene", zoom_ext=None)
 
-    if ZOOM_EXTENT_UTM is not None:
-        fig_arosics_zoom(pair_dir, FIG_DIR / "fig_arosics_zoom", ZOOM_EXTENT_UTM)
-        fig_arosics_diff(pair_dir, FIG_DIR / "fig_arosics_diff_zoom", ZOOM_EXTENT_UTM)
-    else:
-        print("  ZOOM_EXTENT_UTM not set — zoom figures skipped")
-        print("  set ZOOM_EXTENT_UTM = (left, bottom, right, top) in EPSG:32636")
+    # auto-compute zoom extent from S2 bounds if not overridden
+    with rasterio.open(pair_dir / "s2_post_coreg.tif") as src:
+        zoom = ZOOM_EXTENT_UTM if ZOOM_EXTENT_UTM else default_zoom(src.bounds)
+    print(f"  zoom extent (EPSG:32636): {tuple(round(v) for v in zoom)}")
+
+    fig_arosics_compare(pair_dir, FIG_DIR / "fig_arosics_zoom", zoom_ext=zoom)
+    fig_arosics_diff(pair_dir,    FIG_DIR / "fig_arosics_diff_zoom", zoom_ext=zoom)
+
+    # final pair side-by-side
+    fig_final_pair(pair_dir, FIG_DIR / "fig_final_pair")
 
 
 if __name__ == "__main__":
