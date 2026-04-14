@@ -89,9 +89,9 @@ def download_emit_nc(granule_ur: str, local_dir: Path) -> tuple[Path, Path | Non
     results = earthaccess.search_data(short_name="EMITL2ARFL", granule_ur=granule_ur)
     if not results:
         raise RuntimeError(f"no EMIT granule found for UR: {granule_ur}")
-    rfl_files = earthaccess.download(results, str(local_dir))
+    rfl_files = [Path(f) for f in earthaccess.download(results, str(local_dir))]
     rfl_nc = next(
-        (Path(f) for f in rfl_files if f.endswith(".nc") and "RFLUNCERT" not in f),
+        (f for f in rfl_files if f.suffix == ".nc" and "RFLUNCERT" not in f.name),
         None,
     )
     if rfl_nc is None:
@@ -105,9 +105,9 @@ def download_emit_nc(granule_ur: str, local_dir: Path) -> tuple[Path, Path | Non
             short_name="EMITL1BOBS", granule_ur=obs_ur
         )
         if obs_results:
-            obs_files = earthaccess.download(obs_results, str(local_dir))
+            obs_files = [Path(f) for f in earthaccess.download(obs_results, str(local_dir))]
             obs_nc = next(
-                (Path(f) for f in obs_files if f.endswith(".nc")), None
+                (f for f in obs_files if f.suffix == ".nc"), None
             )
     except Exception as e:
         print(f"  warning: could not download OBS file ({e}) — "
