@@ -1,15 +1,3 @@
-"""
-Band-selection figure — three stacked panels on a shared wavelength axis.
-
-Top    — Sentinel-2 spectral response functions (10 bands, wavelength-coloured)
-Middle — EMIT: all 285 bands as faint ticks, 32 selected highlighted
-Bottom — schematic atmospheric transmittance (synthetic; H$_2$O / O$_2$ / CO$_2$)
-
-Writes {DRIVE_ROOT}/figures/fig_band_selection.{pdf,png}
-Usage (Colab):
-    !python viz/plot_band_selection.py
-"""
-
 from __future__ import annotations
 
 import os
@@ -29,8 +17,8 @@ DRIVE_ROOT = Path(os.environ.get(
 FIG_DIR = DRIVE_ROOT / "figures"
 
 # taller, wider than before so each panel has room to breathe
-FIG_W_CM = 17.0
-FIG_H_CM = 13.0
+FIG_W_CM = 20.0
+FIG_H_CM = 15.0
 CM = 1 / 2.54
 DPI = 300
 
@@ -51,20 +39,18 @@ plt.rcParams.update({
 
 WL_MIN, WL_MAX = 380, 2500
 
-# --- Sentinel-2A band specs (name, centre nm, FWHM nm, colour) --------------
-# Colours roughly track apparent wavelength in the VNIR, then warm earth
-# tones through the NIR/SWIR.
+
 S2_BANDS = [
-    ("B02",  492.4,  66.0, "#2C5CAD"),   # blue
-    ("B03",  559.8,  36.0, "#2E8B57"),   # sea green
-    ("B04",  664.6,  31.0, "#D1341B"),   # red
-    ("B05",  704.1,  15.0, "#A52222"),   # darker red
-    ("B06",  740.5,  15.0, "#7A1C1C"),   # deep red
-    ("B07",  782.8,  20.0, "#5B1515"),   # maroon / NIR transition
+    ("B02",  492.4,  66.0, "#0B44A5"),   # blue
+    ("B03",  559.8,  36.0, "#0F8341"),   # sea green
+    ("B04",  664.6,  31.0, "#D9270B"),   # red
+    ("B05",  704.1,  15.0, "#A00D0D"),   # darker red
+    ("B06",  740.5,  15.0, "#820A0A"),   # deep red
+    ("B07",  782.8,  20.0, "#5F1818"),   # maroon / NIR transition
     ("B08",  832.8, 106.0, "#8B4A1F"),   # NIR brown (broad band)
     ("B8A",  864.7,  21.0, "#5A2E13"),   # dark NIR brown
-    ("B11", 1613.7,  91.0, "#D08730"),   # SWIR1 amber
-    ("B12", 2202.4, 175.0, "#7B3B11"),   # SWIR2 saddle
+    ("B11", 1613.7,  91.0, "#E48E25"),   # SWIR1 amber
+    ("B12", 2202.4, 175.0, "#7E3606"),   # SWIR2 saddle
 ]
 
 # --- EMIT context -----------------------------------------------------------
@@ -85,10 +71,10 @@ ATMO_FEATURES = [
     (2700, 50, 0.60),
 ]
 
-COLOR_EMIT_ALL  = "#D6D6D6"
-COLOR_EMIT_SEL  = "#4B0082"          # indigo — distinct from every S2 hue
-COLOR_ATMO_LINE = "#2F5A84"
-COLOR_ATMO_FILL = "#8EB6D9"
+COLOR_EMIT_ALL  = "#BABABA"
+COLOR_EMIT_SEL  = "#C50505"          # indigo — distinct from every S2 hue
+COLOR_ATMO_LINE = "#024383"
+COLOR_ATMO_FILL = "#80BBEE"
 COLOR_GUIDE     = "#EFEFEF"
 
 
@@ -163,60 +149,47 @@ def plot(selected: list[float], out_path: Path) -> None:
             rotation=90, rotation_mode="anchor",
             ha="left", va="bottom",
             fontsize=7.5, color=col, weight="bold",
-            zorder=3,
+            zorder=3, 
         )
 
-    ax_s2.set_ylim(0, 1.45)
+    ax_s2.set_ylim(0, 1.55)           # headroom for rotated labels
     ax_s2.set_yticks([0, 0.5, 1.0])
     ax_s2.set_ylabel("S2 response")
     ax_s2.tick_params(axis="x", labelbottom=False)
     for spine in ("top", "right"):
         ax_s2.spines[spine].set_visible(False)
-    ax_s2.text(
-        0.005, 0.97, "Sentinel-2 bands",
-        transform=ax_s2.transAxes,
-        ha="left", va="top",
-        fontsize=8.5, color="#333333", style="italic",
-    )
 
     # --- middle: EMIT 285 with 32 highlighted ------------------------------
     emit_all = emit_band_centres()
     ax_emit.vlines(
-        emit_all, 0.25, 0.75,
+        emit_all, 0.05, 0.95,
         colors=COLOR_EMIT_ALL, linewidths=0.55, zorder=1,
     )
     ax_emit.vlines(
-        selected, 0.00, 1.00,
-        colors=COLOR_EMIT_SEL, linewidths=1.6, zorder=3,
+        selected, 0.05, 0.95,
+        colors=COLOR_EMIT_SEL, linewidths=1.5, zorder=3,
     )
-    ax_emit.set_ylim(-0.05, 1.05)
+    ax_emit.set_ylim(0, 1.0)
     ax_emit.set_yticks([])
-    ax_emit.set_ylabel("EMIT")
+    ax_emit.set_ylabel("EMIT", labelpad=6)
     ax_emit.tick_params(axis="x", labelbottom=False)
-    for spine in ("top", "right", "left"):
+    for spine in ("top", "right", "left", "bottom"):
         ax_emit.spines[spine].set_visible(False)
-    ax_emit.text(
-        0.005, 1.1,
-        f"EMIT: {EMIT_N_BANDS} contiguous bands, {EMIT_FWHM:.1f}\u2009nm FWHM"
-        f"   ·   {len(selected)} selected (purple)",
-        transform=ax_emit.transAxes,
-        ha="left", va="bottom",
-        fontsize=8.0, color="#333333", style="italic",
-    )
 
     # --- bottom: atmospheric transmittance ---------------------------------
     t = atmo_transmittance(wl)
     ax_atm.fill_between(wl, 0, t, color=COLOR_ATMO_FILL, alpha=0.45, zorder=1)
     ax_atm.plot(wl, t, color=COLOR_ATMO_LINE, linewidth=1.2, zorder=2)
 
+    # labels at fixed top of panel — no dependency on curve value
     abs_labels = [(760, "O$_2$"), (940, "H$_2$O"), (1380, "H$_2$O"),
                   (1880, "H$_2$O"), (2040, "CO$_2$")]
     for x, lbl in abs_labels:
-        ty = float(atmo_transmittance(np.array([x]))[0])
-        ax_atm.annotate(
-            lbl, xy=(x, ty), xytext=(x, ty - 0.12),
-            ha="center", va="top",
-            fontsize=7.5, color="#222222", weight="bold",
+        ax_atm.text(
+            x, 1.02, lbl,
+            transform=ax_atm.get_xaxis_transform(),
+            ha="center", va="bottom",
+            fontsize=7.5, color="#333333", weight="bold",
         )
 
     ax_atm.set_ylim(0, 1.08)
@@ -225,12 +198,6 @@ def plot(selected: list[float], out_path: Path) -> None:
     ax_atm.set_xlabel("wavelength (nm)")
     for spine in ("top", "right"):
         ax_atm.spines[spine].set_visible(False)
-    ax_atm.text(
-        0.005, 0.97, "atmospheric transmittance (schematic)",
-        transform=ax_atm.transAxes,
-        ha="left", va="top",
-        fontsize=8.5, color="#333333", style="italic",
-    )
 
     ax_s2.set_xlim(WL_MIN, WL_MAX)
     ax_s2.set_xticks([400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400])
