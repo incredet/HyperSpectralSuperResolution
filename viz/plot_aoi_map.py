@@ -86,8 +86,16 @@ def plot_world_map(df: pd.DataFrame, out_path: Path) -> None:
     covered = df[df["pairs_completed"] > 0]
     uncovered = df[df["pairs_completed"] == 0]
 
-    fig = plt.figure(figsize=(FIG_W_CM * CM, FIG_W_CM * CM * 0.55))
-    ax = fig.add_subplot(1, 1, 1, projection=ccrs.Robinson())
+    # taller figure — legend sits in its own row below the map
+    fig = plt.figure(figsize=(FIG_W_CM * CM, FIG_W_CM * CM * 0.62))
+    gs = fig.add_gridspec(
+        nrows=2, ncols=1,
+        height_ratios=[1.0, 0.14], hspace=0.02,
+    )
+    ax = fig.add_subplot(gs[0, 0], projection=ccrs.Robinson())
+    lax = fig.add_subplot(gs[1, 0])
+    lax.axis("off")
+
     ax.set_global()
     ax.add_feature(cfeature.LAND, facecolor="#EFEFEF", edgecolor="none", zorder=0)
     ax.add_feature(cfeature.OCEAN, facecolor="white", edgecolor="none", zorder=0)
@@ -102,31 +110,32 @@ def plot_world_map(df: pd.DataFrame, out_path: Path) -> None:
             color="#A0A0A0", alpha=0.9, zorder=2,
         )
 
+    handles, labels = [], []
     for grp in GROUP_ORDER:
         sub = covered[covered["group"] == grp]
         if not len(sub):
             continue
-        ax.scatter(
+        h = ax.scatter(
             sub["lon"], sub["lat"],
             transform=ccrs.PlateCarree(),
             marker="o", s=16, linewidths=0.3,
             facecolor=GROUP_COLOR[grp], edgecolor="white",
-            zorder=3, label=f"{grp} (n={len(sub)})",
+            zorder=3,
         )
+        handles.append(h)
+        labels.append(f"{grp} (n={len(sub)})")
 
-    handles, labels = ax.get_legend_handles_labels()
     uncov_handle = plt.Line2D(
         [], [], color="#A0A0A0", marker="x", linestyle="None",
         markersize=5, markeredgewidth=0.8,
-        label=f"no pair (n={len(uncovered)})",
     )
     handles.append(uncov_handle)
-    labels.append(uncov_handle.get_label())
-    ax.legend(
+    labels.append(f"no pair (n={len(uncovered)})")
+
+    lax.legend(
         handles, labels,
-        loc="lower left", bbox_to_anchor=(0.0, -0.05),
-        ncol=3, frameon=False,
-        handletextpad=0.4, columnspacing=0.9,
+        loc="center", ncol=5, frameon=False,
+        handletextpad=0.4, columnspacing=1.2,
     )
 
     n_total = len(df)
@@ -148,7 +157,6 @@ def plot_world_map(df: pd.DataFrame, out_path: Path) -> None:
         zorder=5,
     )
 
-    fig.tight_layout()
     fig.savefig(out_path.with_suffix(".pdf"), dpi=DPI, bbox_inches="tight")
     fig.savefig(out_path.with_suffix(".png"), dpi=DPI, bbox_inches="tight")
     plt.close(fig)
@@ -169,10 +177,9 @@ def plot_landcover_distribution(df: pd.DataFrame, out_path: Path) -> None:
     unc = uncov.loc[order].values
     colors = [GROUP_COLOR[g] for g in order]
 
-    ax.barh(y, cov, color=colors, edgecolor="white", linewidth=0.4,
-            label="with ≥1 pair")
+    ax.barh(y, cov, color=colors, edgecolor="white", linewidth=0.4)
     ax.barh(y, unc, left=cov, color="#D6D6D6", edgecolor="white",
-            linewidth=0.4, label="no pair")
+            linewidth=0.4)
 
     for i, (c, u) in enumerate(zip(cov, unc)):
         if c + u == 0:
@@ -187,7 +194,15 @@ def plot_landcover_distribution(df: pd.DataFrame, out_path: Path) -> None:
     ax.tick_params(axis="y", length=0)
     for spine in ("top", "right"):
         ax.spines[spine].set_visible(False)
-    ax.legend(loc="lower right", frameon=False)
+
+    # honest per-segment annotation (no misleading "dark grey" patch)
+    ax.text(
+        0.99, 0.02,
+        "coloured: AOIs with ≥1 pair     grey: no pair",
+        transform=ax.transAxes,
+        ha="right", va="bottom",
+        fontsize=7.5, color="#555555",
+    )
 
     fig.tight_layout()
     fig.savefig(out_path.with_suffix(".pdf"), dpi=DPI, bbox_inches="tight")
