@@ -67,9 +67,23 @@ def load_pair_meta(pair_dir: Path) -> tuple[dict, dict]:
 
 
 def download_emit_nc(granule_ur: str, local_dir: Path) -> tuple[Path, Path | None]:
-    """Download EMIT L2A RFL + L1B OBS .nc files, return (rfl_path, obs_path)."""
+    """Download EMIT L2A RFL + L1B OBS .nc files, return (rfl_path, obs_path).
+
+    Authentication (non-interactive) — set before running:
+        import os
+        from google.colab import userdata
+        os.environ["EARTHDATA_USERNAME"] = userdata.get("EARTHDATA_USERNAME")
+        os.environ["EARTHDATA_PASSWORD"] = userdata.get("EARTHDATA_PASSWORD")
+    Or export them in the shell:
+        export EARTHDATA_USERNAME=...
+        export EARTHDATA_PASSWORD=...
+    """
     local_dir.mkdir(parents=True, exist_ok=True)
-    earthaccess.login(strategy="interactive")
+    # try netrc first (persisted from a previous login), then env vars
+    try:
+        earthaccess.login(strategy="netrc")
+    except Exception:
+        earthaccess.login(strategy="environment")
 
     # download reflectance
     results = earthaccess.search_data(short_name="EMITL2ARFL", granule_ur=granule_ur)
