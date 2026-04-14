@@ -138,7 +138,7 @@ def main() -> None:
     viz_pair = find_pair_dir_viz(INTERM_DIR)
     s2_scene = viz_pair / "s2_post_coreg.tif"
     drv_pair = find_pair_dir_drive(AOI_DIR)
-    manifest = pd.read_csv(drv_pair / "global_manifest.csv")
+    manifest = pd.read_csv(drv_pair / "manifest.csv")
 
     # S2 shift magnitude in S2 pixels
     manifest["shift_mag_s2_px"] = np.sqrt(
