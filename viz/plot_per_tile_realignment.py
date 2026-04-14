@@ -1,21 +1,3 @@
-"""
-Per-tile realignment figure.
-
-Picks the N tiles with the largest per-tile S2 realignment shift from this
-AOI's global_manifest.csv, then plots each as a 4-column row:
-
-  EMIT (60 m)  |  S2 before fine-alignment  |  S2 after fine-alignment  |  |after − before|
-
-"S2 before" is the scene-level AROSICS output cropped to the tile extent;
-"S2 after" is the stored per-tile TIF (includes the sub-pixel fine shift).
-
-Reads from the AOI's pair folder on Drive + viz_intermediates s2_post_coreg.tif.
-Writes {DRIVE_ROOT}/figures/fig_per_tile_realignment.{pdf,png}
-
-Usage (Colab):
-    !python viz/plot_per_tile_realignment.py
-"""
-
 from __future__ import annotations
 
 import os
@@ -68,8 +50,8 @@ plt.rcParams.update({
 
 def find_pair_dir_drive(aoi_dir: Path) -> Path:
     for p in aoi_dir.iterdir():
-        if p.is_dir() and (p / "global_manifest.csv").exists() or (p / "tiles").is_dir():
-            if (p / "global_manifest.csv").exists() or (p / "tiles").is_dir():
+        if p.is_dir() and (p / "manifest.csv").exists() or (p / "tiles").is_dir():
+            if (p / "manifest.csv").exists() or (p / "tiles").is_dir():
                 return p
     raise FileNotFoundError(f"no pair dir under {aoi_dir}")
 
