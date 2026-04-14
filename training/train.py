@@ -197,11 +197,13 @@ def main():
 
     # --- data ---
     zip_dir = Path(cfg['zip_dir'])
+    zip_dir_full = Path(cfg.get('zip_dir_full', cfg['zip_dir']))
+
     all_aois = {zp.stem.split('__')[0] for zp in zip_dir.glob('*.zip')}
     train_aois, val_aois, _ = split_aois(all_aois, cfg['seed'], cfg.get('max_aois'))
 
     train_index = build_index(zip_dir, cfg['gt_source'], train_aois)
-    val_index = build_index(zip_dir, cfg['gt_source'], val_aois)
+    val_index = build_index(zip_dir_full, cfg['gt_source'], val_aois)
 
     preload = cfg.get('preload', False)
     train_set = PairedZipDataset(train_index, cfg['scale'], cfg['gt_size'], preload=preload)

@@ -151,7 +151,7 @@ Drive: EMIT_S-2_Matches/{date}/zips_{gt_source}/
 |-------|--------|-----------|------------|
 | RRDBNet6x | 62.9M | `rrdbnet6x` | nearest-neighbor 2×→3× |
 | ESSAformer | 13.6M | `essaformer` | PixelShuffle 2×→3× |
-| MambaHSISR | ~1.8M | `mambahsisr` | PixelShuffle 2×→3× |
+| MambaHSISR | 29.8M | `mambahsisr` | PixelShuffle 2×→3× |
 
 ### RRDBNet6x Architecture (model.py)
 
@@ -181,7 +181,7 @@ Drive: EMIT_S-2_Matches/{date}/zips_{gt_source}/
 - PixelShuffle 2×→3× for 6× upsampling (same chain as ESSAformer)
 - Overlapping tile inference for inputs larger than `n_subs`; direct path for our 16×16 tiles
 - Device-agnostic: original `.cuda()` calls replaced with `register_buffer`/`device=x.device`
-- ~1.8M params with embed_dim=180, depths=[5,5,5]
+- 29.8M params with embed_dim=180, depths=[5,5,5] (MSFE module dominates: 5×5 conv per block)
 - Config keys: `embed_dim` (default 180), `depths` (default [5,5,5])
 
 ### PairedZipDataset
