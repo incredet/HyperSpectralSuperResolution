@@ -1,3 +1,18 @@
+"""
+AOI world map and land-cover distribution — pre- and post-QC versions.
+
+Reads  {DRIVE_ROOT}/figures/aoi_pair_counts.csv     (from ingest_aoi_counts.py)
+       {DRIVE_ROOT}/figures/aoi_postqc_counts.csv   (from ingest_postqc.py)
+Writes {DRIVE_ROOT}/figures/fig_aoi_map_preqc.{pdf,png}
+       {DRIVE_ROOT}/figures/fig_aoi_landcover_preqc.{pdf,png}
+       {DRIVE_ROOT}/figures/fig_aoi_map_postqc.{pdf,png}      (if postqc CSV exists)
+       {DRIVE_ROOT}/figures/fig_aoi_landcover_postqc.{pdf,png} (if postqc CSV exists)
+
+Usage (Colab):
+    !pip -q install cartopy
+    !python viz/plot_aoi_map.py
+"""
+
 from __future__ import annotations
 
 import os
@@ -15,7 +30,6 @@ DRIVE_ROOT = Path(os.environ.get(
     "/content/drive/Shareddrives/HyperResData/EMIT_S-2_Matches/2026-04-02",
 ))
 FIG_DIR = DRIVE_ROOT / "figures"
-CSV_PATH = FIG_DIR / "aoi_pair_counts.csv"
 
 FIG_W_CM = 16.0
 CM = 1 / 2.54
@@ -82,23 +96,27 @@ def assign_group(lc: str) -> str:
     return "other"
 
 
-def plot_world_map(df: pd.DataFrame, out_path: Path) -> None:
-    covered = df[df["pairs_completed"] > 0]
-    uncovered = df[df["pairs_completed"] == 0]
+# --- shared plot functions --------------------------------------------------
 
-    # taller figure — legend sits in its own row below the map
+def plot_world_map(
+    df: pd.DataFrame,
+    out_path: Path,
+    covered_col: str,
+    no_pair_label: str,
+    summary: str,
+) -> None:
+    covered   = df[df[covered_col] > 0]
+    uncovered = df[df[covered_col] == 0]
+
     fig = plt.figure(figsize=(FIG_W_CM * CM, FIG_W_CM * CM * 0.62))
-    gs = fig.add_gridspec(
-        nrows=2, ncols=1,
-        height_ratios=[1.0, 0.14], hspace=0.02,
-    )
-    ax = fig.add_subplot(gs[0, 0], projection=ccrs.Robinson())
+    gs = fig.add_gridspec(nrows=2, ncols=1, height_ratios=[1.0, 0.14], hspace=0.02)
+    ax  = fig.add_subplot(gs[0, 0], projection=ccrs.Robinson())
     lax = fig.add_subplot(gs[1, 0])
     lax.axis("off")
 
     ax.set_global()
-    ax.add_feature(cfeature.LAND, facecolor="#EFEFEF", edgecolor="none", zorder=0)
-    ax.add_feature(cfeature.OCEAN, facecolor="white", edgecolor="none", zorder=0)
+    ax.add_feature(cfeature.LAND,    facecolor="#EFEFEF", edgecolor="none", zorder=0)
+    ax.add_feature(cfeature.OCEAN,   facecolor="white",   edgecolor="none", zorder=0)
     ax.coastlines(linewidth=0.3, color="#666666", zorder=1)
     ax.add_feature(cfeature.BORDERS, linewidth=0.2, edgecolor="#AAAAAA", zorder=1)
 
@@ -119,8 +137,7 @@ def plot_world_map(df: pd.DataFrame, out_path: Path) -> None:
             sub["lon"], sub["lat"],
             transform=ccrs.PlateCarree(),
             marker="o", s=16, linewidths=0.3,
-            facecolor=GROUP_COLOR[grp], edgecolor="white",
-            zorder=3,
+            facecolor=GROUP_COLOR[grp], edgecolor="white", zorder=3,
         )
         handles.append(h)
         labels.append(f"{grp} (n={len(sub)})")
@@ -130,7 +147,7 @@ def plot_world_map(df: pd.DataFrame, out_path: Path) -> None:
         markersize=5, markeredgewidth=0.8,
     )
     handles.append(uncov_handle)
-    labels.append(f"no pair (n={len(uncovered)})")
+    labels.append(f"{no_pair_label} (n={len(uncovered)})")
 
     lax.legend(
         handles, labels,
@@ -138,16 +155,6 @@ def plot_world_map(df: pd.DataFrame, out_path: Path) -> None:
         handletextpad=0.4, columnspacing=1.2,
     )
 
-    n_total = len(df)
-    n_folder = int(df["folder_exists"].sum())
-    n_pairs = int((df["pairs_completed"] > 0).sum())
-    n_tiles = int(df["tiles_produced"].sum())
-    summary = (
-        f"AOIs defined: {n_total}\n"
-        f"folders on drive: {n_folder}\n"
-        f"AOIs with ≥1 pair: {n_pairs}\n"
-        f"tiles produced: {n_tiles:,}"
-    )
     ax.text(
         0.995, 0.98, summary,
         transform=ax.transAxes, ha="right", va="top",
@@ -163,23 +170,27 @@ def plot_world_map(df: pd.DataFrame, out_path: Path) -> None:
     print(f"  saved {out_path.with_suffix('.pdf').name}")
 
 
-def plot_landcover_distribution(df: pd.DataFrame, out_path: Path) -> None:
-    covered = (df[df["pairs_completed"] > 0]
+def plot_landcover_distribution(
+    df: pd.DataFrame,
+    out_path: Path,
+    covered_col: str,
+    annotation: str,
+) -> None:
+    covered = (df[df[covered_col] > 0]
                .groupby("group").size().reindex(GROUP_ORDER).fillna(0).astype(int))
-    uncov = (df[df["pairs_completed"] == 0]
-             .groupby("group").size().reindex(GROUP_ORDER).fillna(0).astype(int))
-    totals = covered + uncov
-    order = totals.sort_values(ascending=True).index.tolist()
+    uncov   = (df[df[covered_col] == 0]
+               .groupby("group").size().reindex(GROUP_ORDER).fillna(0).astype(int))
+    totals  = covered + uncov
+    order   = totals.sort_values(ascending=True).index.tolist()
 
     fig, ax = plt.subplots(figsize=(FIG_W_CM * CM, FIG_W_CM * CM * 0.55))
-    y = np.arange(len(order))
-    cov = covered.loc[order].values
-    unc = uncov.loc[order].values
+    y      = np.arange(len(order))
+    cov    = covered.loc[order].values
+    unc    = uncov.loc[order].values
     colors = [GROUP_COLOR[g] for g in order]
 
     ax.barh(y, cov, color=colors, edgecolor="white", linewidth=0.4)
-    ax.barh(y, unc, left=cov, color="#D6D6D6", edgecolor="white",
-            linewidth=0.4)
+    ax.barh(y, unc, left=cov, color="#D6D6D6", edgecolor="white", linewidth=0.4)
 
     for i, (c, u) in enumerate(zip(cov, unc)):
         if c + u == 0:
@@ -195,14 +206,8 @@ def plot_landcover_distribution(df: pd.DataFrame, out_path: Path) -> None:
     for spine in ("top", "right"):
         ax.spines[spine].set_visible(False)
 
-    # honest per-segment annotation (no misleading "dark grey" patch)
-    ax.text(
-        0.99, 0.02,
-        "coloured: AOIs with ≥1 pair     grey: no pair",
-        transform=ax.transAxes,
-        ha="right", va="bottom",
-        fontsize=7.5, color="#555555",
-    )
+    ax.text(0.99, 0.02, annotation, transform=ax.transAxes,
+            ha="right", va="bottom", fontsize=7.5, color="#555555")
 
     fig.tight_layout()
     fig.savefig(out_path.with_suffix(".pdf"), dpi=DPI, bbox_inches="tight")
@@ -211,17 +216,73 @@ def plot_landcover_distribution(df: pd.DataFrame, out_path: Path) -> None:
     print(f"  saved {out_path.with_suffix('.pdf').name}")
 
 
+# --- main -------------------------------------------------------------------
+
 def main() -> None:
     FIG_DIR.mkdir(parents=True, exist_ok=True)
-    df = pd.read_csv(CSV_PATH)
-    df["group"] = df["land_cover"].map(assign_group)
 
-    others = sorted(df[df["group"] == "other"]["land_cover"].unique())
-    if others:
-        print(f"  {len(others)} land_cover labels mapped to 'other': {others}")
+    # --- pre-QC -------------------------------------------------------------
+    pre_csv = FIG_DIR / "aoi_pair_counts.csv"
+    df_pre = pd.read_csv(pre_csv)
+    df_pre["group"] = df_pre["land_cover"].map(assign_group)
 
-    plot_world_map(df, FIG_DIR / "fig_aoi_map_preqc")
-    plot_landcover_distribution(df, FIG_DIR / "fig_aoi_landcover_preqc")
+    n_total  = len(df_pre)
+    n_folder = int(df_pre["folder_exists"].sum())
+    n_pairs  = int((df_pre["pairs_completed"] > 0).sum())
+    n_tiles  = int(df_pre["tiles_produced"].sum())
+
+    plot_world_map(
+        df_pre,
+        FIG_DIR / "fig_aoi_map_preqc",
+        covered_col="pairs_completed",
+        no_pair_label="no pair",
+        summary=(
+            f"AOIs defined:      {n_total}\n"
+            f"folders on drive:  {n_folder}\n"
+            f"AOIs with ≥1 pair: {n_pairs}\n"
+            f"tiles produced:    {n_tiles:,}"
+        ),
+    )
+    plot_landcover_distribution(
+        df_pre,
+        FIG_DIR / "fig_aoi_landcover_preqc",
+        covered_col="pairs_completed",
+        annotation="coloured: AOIs with ≥1 pair     grey: no pair",
+    )
+
+    # --- post-QC ------------------------------------------------------------
+    post_csv = FIG_DIR / "aoi_postqc_counts.csv"
+    if not post_csv.exists():
+        print(f"  post-QC CSV not found ({post_csv.name}), skipping post-QC figures")
+        return
+
+    # merge postqc counts into the full 500-AOI frame so grey × still shows
+    # for AOIs that never had a pair
+    df_post = pd.read_csv(post_csv)[["lat", "lon", "tiles_passed"]]
+    df_all  = df_pre.merge(df_post, on=["lat", "lon"], how="left")
+    df_all["tiles_passed"] = df_all["tiles_passed"].fillna(0).astype(int)
+    df_all["group"] = df_all["land_cover"].map(assign_group)
+
+    n_aoi_post  = int((df_all["tiles_passed"] > 0).sum())
+    n_tiles_post = int(df_all["tiles_passed"].sum())
+
+    plot_world_map(
+        df_all,
+        FIG_DIR / "fig_aoi_map_postqc",
+        covered_col="tiles_passed",
+        no_pair_label="no tiles",
+        summary=(
+            f"AOIs defined:       {n_total}\n"
+            f"AOIs with ≥1 tile:  {n_aoi_post}\n"
+            f"tiles post-QC:      {n_tiles_post:,}"
+        ),
+    )
+    plot_landcover_distribution(
+        df_all,
+        FIG_DIR / "fig_aoi_landcover_postqc",
+        covered_col="tiles_passed",
+        annotation="coloured: AOIs with ≥1 tile post-QC     grey: no tiles",
+    )
 
 
 if __name__ == "__main__":
