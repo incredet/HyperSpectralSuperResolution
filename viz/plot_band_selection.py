@@ -181,15 +181,21 @@ def plot(selected: list[float], out_path: Path) -> None:
     ax_atm.fill_between(wl, 0, t, color=COLOR_ATMO_FILL, alpha=0.45, zorder=1)
     ax_atm.plot(wl, t, color=COLOR_ATMO_LINE, linewidth=1.2, zorder=2)
 
-    # labels at fixed top of panel — no dependency on curve value
-    abs_labels = [(760, "O$_2$"), (940, "H$_2$O"), (1380, "H$_2$O"),
-                  (1880, "H$_2$O"), (2040, "CO$_2$")]
+    # labels sit inside each dip at a fixed low y — visually anchored to the feature
+    abs_labels = [
+        (760,  "O$_2$"),
+        (820,  "H$_2$O"),
+        (940,  "H$_2$O"),
+        (1130, "H$_2$O"),
+        (1380, "H$_2$O"),
+        (1880, "H$_2$O"),
+        (2040, "CO$_2$"),
+    ]
     for x, lbl in abs_labels:
         ax_atm.text(
-            x, 1.02, lbl,
-            transform=ax_atm.get_xaxis_transform(),
+            x, 0.04, lbl,
             ha="center", va="bottom",
-            fontsize=7.5, color="#333333", weight="bold",
+            fontsize=7.0, color="#333333",
         )
 
     ax_atm.set_ylim(0, 1.08)
@@ -201,6 +207,8 @@ def plot(selected: list[float], out_path: Path) -> None:
 
     ax_s2.set_xlim(WL_MIN, WL_MAX)
     ax_s2.set_xticks([400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400])
+
+    fig.align_ylabels([ax_s2, ax_emit, ax_atm])
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path.with_suffix(".pdf"), dpi=DPI, bbox_inches="tight")
