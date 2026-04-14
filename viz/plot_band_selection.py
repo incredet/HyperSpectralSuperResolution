@@ -193,15 +193,15 @@ def plot(selected: list[float], out_path: Path) -> None:
     ]
     for x, lbl in abs_labels:
         ax_atm.text(
-            x, 0.04, lbl,
+            x, 0.1, lbl,
             ha="center", va="bottom",
-            fontsize=7.0, color="#333333",
+            fontsize=7.0, color="#333333", weight="semibold"
         )
 
     ax_atm.set_ylim(0, 1.08)
     ax_atm.set_yticks([0, 0.5, 1.0])
-    ax_atm.set_ylabel("transmittance")
-    ax_atm.set_xlabel("wavelength (nm)")
+    ax_atm.set_ylabel("Transmittance")
+    ax_atm.set_xlabel("Wavelength (nm)")
     for spine in ("top", "right"):
         ax_atm.spines[spine].set_visible(False)
 
