@@ -84,15 +84,19 @@ def pct_stretch(arr: np.ndarray, plo: float = 2.0, phi: float = 98.0) -> np.ndar
     return out
 
 
-def read_emit_rgb(tif_path: Path) -> np.ndarray:
-    """Read EMIT UTM TIF (uint16, nodata=65535) as float32 RGB."""
+def read_emit_rgb(
+    tif_path: Path,
+) -> tuple[np.ndarray, rasterio.transform.Affine, dict]:
+    """Read EMIT UTM TIF (285 bands, uint16, nodata=65535) → RGB + transform."""
     bands_1b = [int(np.argmin(np.abs(EMIT_WL - nm))) + 1 for nm in RGB_NM]
     with rasterio.open(tif_path) as src:
         data = src.read(bands_1b).astype(np.float32)
         nodata = src.nodata or 65535.0
+        transform = src.transform
+        meta = {"crs": src.crs, "bounds": src.bounds, "res": src.res}
     data[data == nodata] = np.nan
     data /= 10000.0
-    return reshape_as_image(data)          # (H, W, 3)
+    return reshape_as_image(data), transform, meta   # (H, W, 3)
 
 
 def read_s2_rgb(tif_path: Path) -> tuple[np.ndarray, rasterio.transform.Affine, dict]:
@@ -141,8 +145,8 @@ def label_ax(ax, text: str, loc: str = "tl") -> None:
 
 def fig_emit_pipeline(pair_dir: Path, out_path: Path) -> None:
     raw_rgb = np.load(pair_dir / "emit_raw_rgb.npy")          # (H, W, 3)
-    pre_dem = read_emit_rgb(pair_dir / "emit_pre_dem_utm.tif")
-    post_dem = read_emit_rgb(pair_dir / "emit_post_dem_utm.tif")
+    pre_dem,  _, _ = read_emit_rgb(pair_dir / "emit_pre_dem_utm.tif")
+    post_dem, _, _ = read_emit_rgb(pair_dir / "emit_post_dem_utm.tif")
 
     raw_rgb  = pct_stretch(raw_rgb.astype(np.float32))
     pre_dem  = pct_stretch(pre_dem)
@@ -174,32 +178,64 @@ def fig_emit_pipeline(pair_dir: Path, out_path: Path) -> None:
 
 # ── figure 2 & 3: AROSICS comparison ─────────────────────────────────────────
 
+def _default_zoom(bounds) -> tuple[float, float, float, float]:
+    """Return the centre 30 % of the scene as a default zoom extent."""
+    cx = (bounds.left  + bounds.right)  / 2
+    cy = (bounds.bottom + bounds.top)   / 2
+    hw = (bounds.right  - bounds.left)  * 0.15
+    hh = (bounds.top    - bounds.bottom) * 0.15
+    return (cx - hw, cy - hh, cx + hw, cy + hh)
+
+
+def _load_dem_stats(pair_dir: Path) -> dict | None:
+    """Try to find emit_conversion.json in the original alignment folder."""
+    # viz_intermediates/<aoi>/<pair>/ → walk up and find original pair on Drive
+    aoi_slug = pair_dir.parent.parent.name          # e.g. aoi_lat49.0_lon34.0
+    pair_id  = pair_dir.name
+    # Drive root is three levels up from viz_intermediates/<aoi>/<pair>
+    drive_root = pair_dir.parent.parent.parent.parent
+    candidates = [
+        drive_root / aoi_slug / pair_id / "alignment" / "emit_utm" / "emit_conversion.json",
+        drive_root / aoi_slug / pair_id / "alignment" / "emit_conversion.json",
+    ]
+    import json
+    for p in candidates:
+        if p.exists():
+            data = json.loads(p.read_text())
+            return data.get("dem_correction", {}).get("correction_stats")
+    return None
+
+
 def fig_arosics(
     pair_dir: Path,
     out_path: Path,
     zoom_extent: tuple[float, float, float, float] | None = None,
 ) -> None:
-    emit_rgb, emit_transform, emit_meta = read_s2_rgb(pair_dir / "emit_post_dem_utm.tif")
-    # use EMIT true-colour instead of S2 for the EMIT reference panel;
-    # it's at 60m so shows same geography without 10m detail confusion
-    emit_panel = pct_stretch(emit_rgb)
-
-    s2_pre,  t_pre,  _  = read_s2_rgb(pair_dir / "s2_pre_coreg.tif")
+    # EMIT: use read_emit_rgb (285-band EMIT TIF, not S2)
+    emit_rgb, emit_transform, emit_meta = read_emit_rgb(
+        pair_dir / "emit_post_dem_utm.tif"
+    )
+    s2_pre,  t_pre,  _      = read_s2_rgb(pair_dir / "s2_pre_coreg.tif")
     s2_post, t_post, m_post = read_s2_rgb(pair_dir / "s2_post_coreg.tif")
-    s2_pre  = pct_stretch(s2_pre)
-    s2_post = pct_stretch(s2_post)
 
-    if zoom_extent is not None:
-        emit_panel = crop_to_extent(emit_panel, emit_transform, zoom_extent)
-        s2_pre   = crop_to_extent(s2_pre,   t_pre,   zoom_extent)
-        s2_post  = crop_to_extent(s2_post,  t_post,  zoom_extent)
+    # auto-compute default zoom from S2 post-coreg bounds
+    if zoom_extent is None:
+        zoom_extent = _default_zoom(m_post["bounds"])
+        print(f"  auto zoom extent: {tuple(round(v) for v in zoom_extent)}")
+
+    emit_panel = pct_stretch(
+        crop_to_extent(emit_rgb, emit_transform, zoom_extent)
+        if zoom_extent else emit_rgb
+    )
+    s2_pre_show  = pct_stretch(crop_to_extent(s2_pre,  t_pre,  zoom_extent))
+    s2_post_show = pct_stretch(crop_to_extent(s2_post, t_post, zoom_extent))
 
     labels = [
         "(a) S2 before AROSICS",
         "(b) EMIT reference (60 m)",
         "(c) S2 after AROSICS",
     ]
-    images = [s2_pre, emit_panel, s2_post]
+    images = [s2_pre_show, emit_panel, s2_post_show]
 
     fig, axes = plt.subplots(1, 3, figsize=(FIG_W_CM * CM, FIG_W_CM * CM * 0.42))
     for ax, img, lbl in zip(axes, images, labels):
@@ -210,11 +246,20 @@ def fig_arosics(
         for spine in ax.spines.values():
             spine.set_visible(False)
 
-    if zoom_extent:
-        w_km = (zoom_extent[2] - zoom_extent[0]) / 1000
-        h_km = (zoom_extent[3] - zoom_extent[1]) / 1000
-        fig.suptitle(f"zoom region  {w_km:.0f} × {h_km:.0f} km",
-                     fontsize=7.5, color="#555555", y=0.02, va="bottom")
+    # DEM correction stats annotation on EMIT panel
+    stats = _load_dem_stats(pair_dir)
+    if stats:
+        mean_m = stats.get("mean_dh_m", 0)
+        max_m  = stats.get("max_abs_dh_m", 0)
+        axes[1].set_xlabel(
+            f"DEM correction: mean Δh = {mean_m:.1f} m, max = {max_m:.0f} m",
+            fontsize=6.5, color="#AAAAAA",
+        )
+
+    w_km = (zoom_extent[2] - zoom_extent[0]) / 1000
+    h_km = (zoom_extent[3] - zoom_extent[1]) / 1000
+    fig.text(0.5, 0.01, f"{w_km:.0f} × {h_km:.0f} km",
+             ha="center", fontsize=7.0, color="#777777")
 
     fig.tight_layout(pad=0.5, w_pad=1.0)
     _save(fig, out_path)
@@ -236,22 +281,15 @@ def main() -> None:
 
     fig_emit_pipeline(pair_dir, FIG_DIR / "fig_emit_pipeline")
 
-    fig_arosics(
-        pair_dir,
-        FIG_DIR / "fig_arosics_fullscene",
-        zoom_extent=None,
-    )
+    # full-scene: use auto-zoom (centre 30 %) so you get SOMETHING to look at
+    fig_arosics(pair_dir, FIG_DIR / "fig_arosics_fullscene", zoom_extent=None)
+
+    # manual zoom: set ZOOM_EXTENT_UTM at the top of this file for a tighter crop
     if ZOOM_EXTENT_UTM is not None:
-        fig_arosics(
-            pair_dir,
-            FIG_DIR / "fig_arosics_zoom",
-            zoom_extent=ZOOM_EXTENT_UTM,
-        )
+        fig_arosics(pair_dir, FIG_DIR / "fig_arosics_zoom", zoom_extent=ZOOM_EXTENT_UTM)
     else:
-        print("  ZOOM_EXTENT_UTM not set — skipping zoom figure")
-        print("  → after viewing fig_arosics_fullscene.png, set ZOOM_EXTENT_UTM")
-        print("    to a UTM extent (left, bottom, right, top) in EPSG:32636")
-        print("    that shows a visible shift at a field edge or road")
+        print("  tip: set ZOOM_EXTENT_UTM = (left, bottom, right, top) in EPSG:32636")
+        print("       to generate a tighter zoom on a specific feature (road, field edge)")
 
 
 if __name__ == "__main__":
