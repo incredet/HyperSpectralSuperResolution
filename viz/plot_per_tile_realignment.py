@@ -64,16 +64,12 @@ def find_pair_dir_viz(interm_dir: Path) -> Path:
 
 
 def pct_stretch(arr: np.ndarray, plo: float = 2.0, phi: float = 98.0) -> np.ndarray:
-    out = np.empty_like(arr, dtype=np.float32)
-    for i in range(arr.shape[2]):
-        ch = arr[:, :, i]
-        valid = ch[np.isfinite(ch)]
-        if not len(valid):
-            out[:, :, i] = 0.0
-            continue
-        lo, hi = np.percentile(valid, [plo, phi])
-        out[:, :, i] = np.clip((ch - lo) / max(hi - lo, 1e-9), 0.0, 1.0)
-    return out
+    """Shared percentile stretch across all channels — preserves colour ratios."""
+    valid = arr[np.isfinite(arr)]
+    if not len(valid):
+        return np.zeros_like(arr, dtype=np.float32)
+    lo, hi = np.percentile(valid, [plo, phi])
+    return np.clip((arr - lo) / max(hi - lo, 1e-9), 0.0, 1.0).astype(np.float32)
 
 
 def read_emit_tile_rgb(tif_path: Path) -> np.ndarray:
@@ -161,57 +157,50 @@ def main() -> None:
         print(f"  tile {int(r['idx']):3d}  |shift| = {r['shift_mag_s2_px']:.3f} S2 px"
               f"  (dy={r['realign_shift_s2_dy']:+.3f} dx={r['realign_shift_s2_dx']:+.3f})")
 
-    fig, axes = plt.subplots(
-        N_TILES, 4,
-        figsize=(FIG_W_CM * CM, FIG_W_CM * CM * 0.28 * N_TILES),
-    )
-    if N_TILES == 1:
-        axes = axes[np.newaxis, :]
+    FIG_DIR.mkdir(parents=True, exist_ok=True)
 
-    for i, (_, row) in enumerate(top.iterrows()):
+    for _, row in top.iterrows():
+        tile_idx  = int(row["idx"])
         emit_path = Path(row.get("emit_b32_tif") or row["emit_tif"])
         s2_path   = Path(row["s2_tif"])
+
         try:
-            emit_rgb              = read_emit_tile_rgb(emit_path)
-            s2_after, s2_bounds   = read_s2_tile_rgb(s2_path)
-            s2_before             = read_s2_from_scene(s2_scene, s2_bounds)
+            emit_rgb            = read_emit_tile_rgb(emit_path)
+            s2_after, s2_bounds = read_s2_tile_rgb(s2_path)
+            s2_before           = read_s2_from_scene(s2_scene, s2_bounds)
         except Exception as e:
-            print(f"  skip tile {int(row['idx'])}: {e}")
-            for ax in axes[i]:
-                clean_axes(ax)
+            print(f"  skip tile {tile_idx}: {e}")
             continue
 
-        # align shapes (crop from scene may be off by 1 px due to bounds snap)
+        # align shapes (crop from scene may differ by 1 px due to bounds snap)
         h = min(s2_before.shape[0], s2_after.shape[0])
         w = min(s2_before.shape[1], s2_after.shape[1])
         s2_before = s2_before[:h, :w]
         s2_after  = s2_after[:h, :w]
         diff = np.nanmean(np.abs(s2_after - s2_before), axis=2)
-
-        axes[i, 0].imshow(pct_stretch(emit_rgb),  interpolation="nearest")
-        axes[i, 1].imshow(pct_stretch(s2_before), interpolation="bilinear")
-        axes[i, 2].imshow(pct_stretch(s2_after),  interpolation="bilinear")
         vmax = float(np.nanpercentile(diff, 99)) if np.isfinite(diff).any() else 0.01
-        axes[i, 3].imshow(diff, cmap="inferno", vmin=0, vmax=vmax,
-                          interpolation="bilinear")
 
-        for ax in axes[i]:
+        panels = [
+            (pct_stretch(emit_rgb),  None,      None, "nearest"),
+            (pct_stretch(s2_before), None,      None, "bilinear"),
+            (pct_stretch(s2_after),  None,      None, "bilinear"),
+            (diff,                   "inferno", vmax, "bilinear"),
+        ]
+
+        fig, axes = plt.subplots(1, 4, figsize=(FIG_W_CM * CM, FIG_W_CM * CM * 0.28))
+        for ax, (img, cmap, vmx, interp) in zip(axes, panels):
+            if cmap:
+                ax.imshow(img, cmap=cmap, vmin=0, vmax=vmx, interpolation=interp)
+            else:
+                ax.imshow(img, interpolation=interp)
             clean_axes(ax)
 
-        # left-side annotation: tile index + shift magnitude (small, outside image)
-        axes[i, 0].set_ylabel(
-            f"tile {int(row['idx'])}\n|Δ|={row['shift_mag_s2_px']:.2f} px",
-            rotation=0, ha="right", va="center", labelpad=14,
-            fontsize=6.5, color="#555555",
-        )
-
-    fig.tight_layout(pad=0.3, w_pad=0.5, h_pad=0.5)
-    out = FIG_DIR / "fig_per_tile_realignment"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out.with_suffix(".pdf"), dpi=DPI, bbox_inches="tight")
-    fig.savefig(out.with_suffix(".png"), dpi=DPI, bbox_inches="tight")
-    plt.close(fig)
-    print(f"saved {out.with_suffix('.pdf').name}")
+        fig.tight_layout(pad=0.2, w_pad=0.4)
+        out = FIG_DIR / f"fig_per_tile_realignment_tile{tile_idx:03d}"
+        fig.savefig(out.with_suffix(".pdf"), dpi=DPI, bbox_inches="tight")
+        fig.savefig(out.with_suffix(".png"), dpi=DPI, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  saved {out.name}.pdf  (|Δ|={row['shift_mag_s2_px']:.2f} S2 px)")
 
 
 if __name__ == "__main__":

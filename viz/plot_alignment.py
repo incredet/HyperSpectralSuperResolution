@@ -85,16 +85,12 @@ def find_pair_dir(interm_dir: Path) -> Path:
 
 
 def pct_stretch(arr: np.ndarray, plo: float = 2.0, phi: float = 98.0) -> np.ndarray:
-    out = np.empty_like(arr, dtype=np.float32)
-    for i in range(arr.shape[2]):
-        ch = arr[:, :, i]
-        valid = ch[np.isfinite(ch)]
-        if not len(valid):
-            out[:, :, i] = 0.0
-            continue
-        lo, hi = np.percentile(valid, [plo, phi])
-        out[:, :, i] = np.clip((ch - lo) / max(hi - lo, 1e-9), 0.0, 1.0)
-    return out
+    """Shared percentile stretch across all channels — preserves colour ratios."""
+    valid = arr[np.isfinite(arr)]
+    if not len(valid):
+        return np.zeros_like(arr, dtype=np.float32)
+    lo, hi = np.percentile(valid, [plo, phi])
+    return np.clip((arr - lo) / max(hi - lo, 1e-9), 0.0, 1.0).astype(np.float32)
 
 
 def read_emit_rgb(tif_path: Path) -> tuple[np.ndarray, rasterio.transform.Affine, object]:
