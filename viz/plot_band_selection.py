@@ -193,7 +193,7 @@ def plot(selected: list[float], out_path: Path) -> None:
     ]
     for x, lbl in abs_labels:
         ax_atm.text(
-            x, 1.0, lbl,
+            x, 1.03, lbl,
             ha="center", va="bottom",
             fontsize=7.0, color="#333333", weight="semibold"
         )
