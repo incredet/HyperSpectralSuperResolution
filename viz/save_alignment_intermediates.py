@@ -159,6 +159,47 @@ def find_alignment_files(pair_dir: Path) -> dict[str, Path | None]:
     return out
 
 
+def save_wgs84_rgb(src_utm_tif: Path, dst_tif: Path) -> Path | None:
+    """Extract RGB bands from 285-band EMIT UTM TIF and warp to WGS84.
+
+    Produces a small 3-band uint16 GeoTIFF in EPSG:4326 — the 'orthorectified
+    in geographic coordinates' stage for the thesis pipeline figure.
+    """
+    try:
+        from rasterio.crs import CRS
+        from rasterio.warp import calculate_default_transform, reproject, Resampling
+    except ImportError:
+        print("  rasterio.warp not available — skipping WGS84 step")
+        return None
+
+    emit_wl   = np.linspace(381.0, 2493.0, 285)
+    bands_1b  = [int(np.argmin(np.abs(emit_wl - nm))) + 1 for nm in RGB_WL_NM]
+    dst_crs   = CRS.from_epsg(4326)
+    dst_tif.parent.mkdir(parents=True, exist_ok=True)
+
+    with rasterio.open(src_utm_tif) as src:
+        transform, width, height = calculate_default_transform(
+            src.crs, dst_crs, src.width, src.height, *src.bounds
+        )
+        profile = src.profile.copy()
+        profile.update({
+            "crs": dst_crs, "transform": transform,
+            "width": width, "height": height, "count": 3,
+        })
+        with rasterio.open(dst_tif, "w", **profile) as dst:
+            for dst_idx, src_band in enumerate(bands_1b, 1):
+                reproject(
+                    source=rasterio.band(src, src_band),
+                    destination=rasterio.band(dst, dst_idx),
+                    src_transform=src.transform,
+                    src_crs=src.crs,
+                    dst_transform=transform,
+                    dst_crs=dst_crs,
+                    resampling=Resampling.cubic,
+                )
+    return dst_tif
+
+
 def run_pre_dem_ortho(
     rfl_nc: Path,
     obs_nc: Path | None,
@@ -244,14 +285,38 @@ def main() -> None:
         rfl_nc, obs_nc, s2_ref,
         out_dir=out_root / "_ortho_predem",
     )
+    pre_dem_dest = out_root / "emit_pre_dem_utm.tif"
     if pre_dem_tif and pre_dem_tif.exists():
-        dest = out_root / "emit_pre_dem_utm.tif"
-        shutil.copy2(pre_dem_tif, dest)
-        print(f"  pre-DEM TIF saved → {dest.name}")
+        if not pre_dem_dest.exists():
+            shutil.copy2(pre_dem_tif, pre_dem_dest)
+        print(f"  pre-DEM TIF saved → {pre_dem_dest.name}")
+
+        # WGS84 RGB intermediate (3-band, ~15 MB)
+        wgs84_dest = out_root / "emit_ortho_wgs84_rgb.tif"
+        if not wgs84_dest.exists():
+            print("  warping pre-DEM RGB to WGS84 …")
+            result = save_wgs84_rgb(pre_dem_dest, wgs84_dest)
+            if result:
+                print(f"  WGS84 TIF saved → {wgs84_dest.name}")
+            else:
+                print("  warning: WGS84 warp failed")
+        else:
+            print(f"  WGS84 TIF already exists → {wgs84_dest.name}")
     else:
         print("  warning: pre-DEM orthorectification produced no output")
 
-    # 4. symlink existing alignment files ----------------------------------------
+    # 3b. WGS84 of post-DEM (for 4-stage EMIT pipeline figure) -------------------
+    post_dem_dest = out_root / "emit_post_dem_utm.tif"   # copied in step 4 below
+    dem_wgs84_dest = out_root / "emit_dem_wgs84_rgb.tif"
+    # post-DEM source is the archived alignment file
+    post_dem_src = find_alignment_files(pair_dir).get("emit_utm")
+    if post_dem_src and post_dem_src.exists() and not dem_wgs84_dest.exists():
+        print("  warping post-DEM RGB to WGS84 …")
+        result = save_wgs84_rgb(post_dem_src, dem_wgs84_dest)
+        if result:
+            print(f"  post-DEM WGS84 TIF saved → {dem_wgs84_dest.name}")
+
+    # 4. copy existing alignment files -------------------------------------------
     links = {
         "emit_post_dem_utm.tif": aln_files.get("emit_utm"),
         "s2_pre_coreg.tif":      aln_files.get("s2_overlap"),
