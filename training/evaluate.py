@@ -35,10 +35,13 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     zip_dir = Path(cfg['zip_dir'])
+    zip_dir_full = Path(cfg.get('zip_dir_full', cfg['zip_dir']))
+
     all_aois = {zp.stem.split('__')[0] for zp in zip_dir.glob('*.zip')}
+    all_aois |= {zp.stem.split('__')[0] for zp in zip_dir_full.glob('*.zip')}
     train_aois, val_aois, test_aois = split_aois(all_aois, cfg['seed'], cfg.get('max_aois'))
     target_aois = test_aois if args.split == 'test' else val_aois
-    index = build_index(zip_dir, cfg['gt_source'], target_aois)
+    index = build_index(zip_dir_full, cfg['gt_source'], target_aois)
 
     model_type = cfg.get('model_type', 'rrdbnet6x')
     bands = cfg['num_bands']
