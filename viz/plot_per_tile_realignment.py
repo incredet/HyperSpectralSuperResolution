@@ -140,13 +140,23 @@ def main() -> None:
     drv_pair = find_pair_dir_drive(AOI_DIR)
     manifest = pd.read_csv(drv_pair / "manifest.csv")
 
+    # restrict to tiles that passed QC (cloud, r² forward + reverse, brightness)
+    clean = pd.read_csv(DRIVE_ROOT / "tiles_clean.csv")
+    clean = clean[clean["aoi_slug"] == AOI_SLUG]
+    kept = set(zip(clean["pair_id"], clean["tile_idx"]))
+    before_n = len(manifest)
+    manifest = manifest[manifest.apply(
+        lambda r: (r["pair_id"], int(r["idx"])) in kept, axis=1
+    )].reset_index(drop=True)
+    print(f"QC filter: {before_n} → {len(manifest)} tiles")
+
     # S2 shift magnitude in S2 pixels
     manifest["shift_mag_s2_px"] = np.sqrt(
         manifest["realign_shift_s2_dy"].fillna(0) ** 2
         + manifest["realign_shift_s2_dx"].fillna(0) ** 2
     )
     top = manifest.nlargest(N_TILES, "shift_mag_s2_px").reset_index(drop=True)
-    print(f"top {N_TILES} tiles by S2 realignment magnitude:")
+    print(f"top {N_TILES} tiles by S2 realignment magnitude (QC-passed only):")
     for _, r in top.iterrows():
         print(f"  tile {int(r['idx']):3d}  |shift| = {r['shift_mag_s2_px']:.3f} S2 px"
               f"  (dy={r['realign_shift_s2_dy']:+.3f} dx={r['realign_shift_s2_dx']:+.3f})")
