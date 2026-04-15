@@ -84,7 +84,7 @@ def merge_partial_csvs(drive_base: Path):
     ok = merged[merged["status"] == "OK"]
     print(f"Merged: {len(merged)} tiles → {out.name}")
     if len(ok):
-        print(f"  OK: {len(ok)}, R² mean={ok['r2_sfim_mean'].mean():.4f}, "
+        print(f"  OK: {len(ok)}, R²_wald mean={ok['r2_sfim_mean'].mean():.4f}, "
               f"median={ok['r2_sfim_mean'].median():.4f}")
 
 
@@ -95,11 +95,12 @@ def build_tile_list(drive_base: Path, clean_df: pd.DataFrame):
         pair_id  = row["pair_id"]
         tile_idx = int(row["tile_idx"])
         tile_name = f"{pair_id}_tile{tile_idx:03d}"
-        tiles_dir = drive_base / aoi_slug / pair_id / "tiles"
+        pair_dir  = drive_base / aoi_slug / pair_id
+        tiles_dir = pair_dir / "tiles"
         tiles.append({
             "hs_path":   tiles_dir / f"{tile_name}_emit_b32.tif",
             "ms_path":   tiles_dir / f"{tile_name}_s2.tif",
-            "out_path":  tiles_dir / f"{tile_name}_sfim.tif",
+            "out_path":  pair_dir / "SFIM" / f"{tile_name}_sfim.tif",
             "tile_name": tile_name,
             "aoi_slug":  aoi_slug,
             "pair_id":   pair_id,
@@ -178,15 +179,16 @@ def main():
         out_path  = tile["out_path"]
 
         row = {
-            "tile_name":     tile_name,
-            "aoi_slug":      tile["aoi_slug"],
-            "pair_id":       tile["pair_id"],
-            "tile_idx":      tile["tile_idx"],
-            "r2_regression": tile["r2_regression"],
-            "status":        None,
-            "r2_sfim_mean":  np.nan,
-            "time_s":        np.nan,
-            "out_path":      str(out_path),
+            "tile_name":         tile_name,
+            "aoi_slug":          tile["aoi_slug"],
+            "pair_id":           tile["pair_id"],
+            "tile_idx":          tile["tile_idx"],
+            "r2_regression":     tile["r2_regression"],
+            "status":            None,
+            "r2_sfim_mean":      np.nan,  # Wald self-consistency R²
+            "r2_sfim_nnls_mean": np.nan,  # NNLS fit R² (legacy, thesis reporting)
+            "time_s":            np.nan,
+            "out_path":          str(out_path),
         }
 
         # Skip existing
@@ -214,16 +216,17 @@ def main():
             )
             dt = time.time() - t0
 
-            row["status"]      = result["status"]
-            row["r2_sfim_mean"] = result["r2_mean"]
-            row["time_s"]      = round(dt, 3)
-            row["out_path"]    = result.get("out_path") or str(out_path)
+            row["status"]            = result["status"]
+            row["r2_sfim_mean"]      = result.get("r2_wald_mean", np.nan)
+            row["r2_sfim_nnls_mean"] = result.get("r2_nnls_mean", np.nan)
+            row["time_s"]            = round(dt, 3)
+            row["out_path"]          = result.get("out_path") or str(out_path)
 
-            # Per-band R²
-            r2_per_band = result.get("r2_per_band")
-            if r2_per_band:
-                for b, val in enumerate(r2_per_band):
-                    row[f"r2_sfim_band_{b:02d}"] = round(val, 6)
+            # Per-band R² (both Wald and NNLS)
+            for b, val in enumerate(result.get("r2_wald_per_band", [])):
+                row[f"r2_sfim_wald_band_{b:02d}"] = round(val, 6)
+            for b, val in enumerate(result.get("r2_nnls_per_band", [])):
+                row[f"r2_sfim_nnls_band_{b:02d}"] = round(val, 6)
 
             if result["status"] == "OK":
                 n_ok += 1
@@ -231,7 +234,8 @@ def main():
             # Verbose output for first N tiles
             if i < args.verbose_first:
                 print(f"  [{i}] {tile_name}: {result['status']}, "
-                      f"R²={result['r2_mean']:.4f}, {dt:.2f}s")
+                      f"R²_wald={row['r2_sfim_mean']:.4f}, "
+                      f"R²_nnls={row['r2_sfim_nnls_mean']:.4f}, {dt:.2f}s")
 
         except Exception as e:
             row["status"] = f"ERROR: {e}"
@@ -255,11 +259,14 @@ def main():
 
     if len(ok_df):
         times = ok_df["time_s"].dropna()
-        print(f"\nR² summary (OK tiles):")
+        print(f"\nR² Wald summary (OK tiles):")
         print(f"  Mean:   {ok_df['r2_sfim_mean'].mean():.4f}")
         print(f"  Median: {ok_df['r2_sfim_mean'].median():.4f}")
         print(f"  Min:    {ok_df['r2_sfim_mean'].min():.4f}")
         print(f"  Max:    {ok_df['r2_sfim_mean'].max():.4f}")
+        print(f"\nR² NNLS summary (OK tiles, for thesis):")
+        print(f"  Mean:   {ok_df['r2_sfim_nnls_mean'].mean():.4f}")
+        print(f"  Median: {ok_df['r2_sfim_nnls_mean'].median():.4f}")
         if len(times):
             print(f"\nTiming per tile:")
             print(f"  Mean:   {times.mean():.1f}s")

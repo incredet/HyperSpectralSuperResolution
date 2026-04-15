@@ -81,9 +81,11 @@ def _resize_3d_cv2(arr: np.ndarray, target_hw: tuple[int, int],
 
     src = arr
     if anti_alias and (h_out < h_in or w_out < w_in):
-        # Gaussian AA — sigma = 0.5 / zoom_factor per axis
-        sigma_h = 0.5 * h_in / h_out if h_out < h_in else 0.0
-        sigma_w = 0.5 * w_in / w_out if w_out < w_in else 0.0
+        # Gaussian AA — sigma = scale / 2.35482 (FWHM = scale), matches
+        # Wald protocol convention used in cnmf._gaussian_downsample and
+        # tif2mat_wald.py.
+        sigma_h = (h_in / h_out) / 2.35482 if h_out < h_in else 0.0
+        sigma_w = (w_in / w_out) / 2.35482 if w_out < w_in else 0.0
         # cv2.GaussianBlur needs odd kernel sizes (≥ 6σ+1)
         kh = max(int(np.ceil(sigma_h * 6)) | 1, 1)
         kw = max(int(np.ceil(sigma_w * 6)) | 1, 1)
@@ -112,8 +114,9 @@ def _resize_3d_scipy(arr: np.ndarray, target_hw: tuple[int, int],
 
     src = arr
     if anti_alias and (zoom_h < 1.0 or zoom_w < 1.0):
-        sigma_h = 0.5 / zoom_h if zoom_h < 1.0 else 0.0
-        sigma_w = 0.5 / zoom_w if zoom_w < 1.0 else 0.0
+        # sigma = scale / 2.35482, matches Wald convention
+        sigma_h = (1.0 / zoom_h) / 2.35482 if zoom_h < 1.0 else 0.0
+        sigma_w = (1.0 / zoom_w) / 2.35482 if zoom_w < 1.0 else 0.0
         src = gaussian_filter(src, sigma=(sigma_h, sigma_w, 0.0))
 
     return scipy_zoom(src, (zoom_h, zoom_w, 1.0), order=3)
@@ -302,13 +305,27 @@ def sfim_fuse_tile(
     ms_hwb = np.transpose(ms_refl, (1, 2, 0))  # (H_hr, W_hr, B_ms)
 
     # Run SFIM
-    fused_hwb, r2 = sfim_fuse(hs_hwb, ms_hwb, min_r2=min_r2)
+    fused_hwb, r2_nnls = sfim_fuse(hs_hwb, ms_hwb, min_r2=min_r2)
 
     if fused_hwb is None:
         return {
-            "fused": None, "r2": r2, "r2_mean": float(np.mean(r2)),
+            "fused": None,
+            "r2_nnls": r2_nnls, "r2_nnls_mean": float(np.mean(r2_nnls)),
+            "r2_wald": np.zeros_like(r2_nnls), "r2_wald_mean": 0.0,
             "status": "R2_FILTERED", "out_path": None,
         }
+
+    # ── Wald self-consistency R² (apples-to-apples with CNMF) ──
+    # Downsample fused HR output back to LR, compare to original HS.
+    from spectral.cnmf import _gaussian_downsample, _compute_r2
+    rows_lr, cols_lr, bands_hs = hs_hwb.shape
+    rows_hr, _, _ = ms_hwb.shape
+    scale_w = rows_hr // rows_lr
+    fused_lr = _gaussian_downsample(fused_hwb, scale_w)
+    r2_wald = _compute_r2(
+        hs_hwb.reshape(-1, bands_hs),
+        fused_lr.reshape(-1, bands_hs),
+    )
 
     # Convert back to (B, H, W) uint16
     fused_bwh = np.transpose(fused_hwb, (2, 0, 1))  # (B_hs, H_hr, W_hr)
@@ -355,9 +372,12 @@ def sfim_fuse_tile(
 
     return {
         "fused": fused_dn,
-        "r2": r2,
-        "r2_mean": float(np.mean(r2)),
-        "r2_per_band": r2.tolist(),
+        "r2_wald": r2_wald,
+        "r2_wald_mean": float(np.mean(r2_wald)),
+        "r2_wald_per_band": r2_wald.tolist(),
+        "r2_nnls": r2_nnls,
+        "r2_nnls_mean": float(np.mean(r2_nnls)),
+        "r2_nnls_per_band": r2_nnls.tolist(),
         "status": "OK",
         "out_path": out_str,
     }
