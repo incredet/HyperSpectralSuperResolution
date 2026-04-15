@@ -14,9 +14,11 @@ batch_size: 64
 num_workers: 4
 max_aois: null
 
-# MambaHSISR params
+# MambaHSISR params — matched to paper defaults (Xu et al. 2025)
 embed_dim: 180
 depths: [5, 5, 5]
+d_state: 32
+resi_connection: '3conv'
 
 lr: 0.0002
 betas: [0.9, 0.99]

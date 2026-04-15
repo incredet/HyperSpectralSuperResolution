@@ -44,9 +44,11 @@ def build_model(cfg, device):
             img_size=cfg['gt_size'] // cfg['scale'],
             embed_dim=cfg.get('embed_dim', 180),
             depths=tuple(cfg.get('depths', [5, 5, 5])),
+            d_state=cfg.get('d_state', 16),
+            resi_connection=cfg.get('resi_connection', '1conv'),
             upscale=cfg['scale'],
         )
-        tag = f'MambaHSISR dim={cfg.get("embed_dim", 180)} d={cfg.get("depths", [5,5,5])}'
+        tag = f'MambaHSISR dim={cfg.get("embed_dim", 180)} d={cfg.get("depths", [5,5,5])} d_state={cfg.get("d_state", 16)} resi={cfg.get("resi_connection", "1conv")}'
     else:
         raise ValueError(f'Unknown model_type: {model_type}')
 
