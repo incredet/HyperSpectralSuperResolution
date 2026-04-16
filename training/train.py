@@ -57,6 +57,7 @@ def build_model(cfg, device):
     print(f'Model:      {tag}  ({n_params:.1f}M params)')
     return model
 from viz import (compute_all_metrics, compute_per_band_correlation,
+                 compute_psnr, compute_sam, compute_ergas,
                  make_main_figure, make_perband_figure, make_zoom_figure,
                  select_vis_indices)
 
@@ -74,6 +75,11 @@ def validate(net, dataset, cfg, device, step, do_vis=False):
     else:
         vis_indices = set()
 
+    # Cache bicubic metrics per tile — they never change between val runs.
+    # Only the bic image itself is recomputed when needed for vis.
+    if not hasattr(validate, '_bic_cache'):
+        validate._bic_cache = {}
+
     all_metrics = []
     all_sr_corr, all_bic_corr = [], []
     cached = {}
@@ -84,15 +90,41 @@ def validate(net, dataset, cfg, device, step, do_vis=False):
         sr = net(lq).squeeze(0).cpu().numpy()
         lq_np = data['lq'].numpy()
         gt_np = data['gt'].numpy()
-        bic_np = F.interpolate(
-            torch.from_numpy(lq_np[None]), scale_factor=scale,
-            mode='bicubic', align_corners=False
-        ).squeeze(0).numpy()
 
-        m = compute_all_metrics(sr, gt_np, bic_np, scale, border)
+        bic_entry = validate._bic_cache.get(idx)
+        need_bic_image = idx in vis_indices
+
+        if bic_entry is None:
+            bic_np = F.interpolate(
+                torch.from_numpy(lq_np[None]), scale_factor=scale,
+                mode='bicubic', align_corners=False
+            ).squeeze(0).numpy()
+            bic_psnr = compute_psnr(bic_np, gt_np, border)
+            bic_sam = compute_sam(bic_np, gt_np, border)
+            bic_ergas = compute_ergas(bic_np, gt_np, scale, border)
+            bic_corr = compute_per_band_correlation(bic_np, gt_np, border)
+            validate._bic_cache[idx] = (bic_psnr, bic_sam, bic_ergas, bic_corr)
+        else:
+            bic_psnr, bic_sam, bic_ergas, bic_corr = bic_entry
+            if need_bic_image:
+                bic_np = F.interpolate(
+                    torch.from_numpy(lq_np[None]), scale_factor=scale,
+                    mode='bicubic', align_corners=False
+                ).squeeze(0).numpy()
+            else:
+                bic_np = None
+
+        m = {
+            'sr_psnr': compute_psnr(sr, gt_np, border),
+            'sr_sam': compute_sam(sr, gt_np, border),
+            'sr_ergas': compute_ergas(sr, gt_np, scale, border),
+            'bic_psnr': bic_psnr,
+            'bic_sam': bic_sam,
+            'bic_ergas': bic_ergas,
+        }
         all_metrics.append(m)
         all_sr_corr.append(compute_per_band_correlation(sr, gt_np, border))
-        all_bic_corr.append(compute_per_band_correlation(bic_np, gt_np, border))
+        all_bic_corr.append(bic_corr)
 
         if idx in vis_indices:
             cached[idx] = (sr, gt_np, bic_np, m)
