@@ -274,12 +274,14 @@ def main():
         ema.load_state_dict(ckpt.get('params_ema', ckpt['params']))
         if 'optimizer' in ckpt:
             optimizer.load_state_dict(ckpt['optimizer'])
-            scheduler.load_state_dict(ckpt['scheduler'])
             for pg in optimizer.param_groups:
                 pg['lr'] = cfg['lr']
+            scheduler = torch.optim.lr_scheduler.MultiStepLR(
+                optimizer, cfg['milestones'], cfg['gamma'], last_epoch=ckpt['iter'],
+            )
             start_iter = ckpt['iter']
             best_psnr = ckpt.get('best_psnr', 0.0)
-            print(f'Resumed from iter {start_iter}, best PSNR={best_psnr:.2f}, lr overridden to {cfg["lr"]:.1e}')
+            print(f'Resumed from iter {start_iter}, best PSNR={best_psnr:.2f}, lr={cfg["lr"]:.1e}')
         else:
             print(f'Loaded weights from {args.resume} (no optimizer state, starting fresh)')
         _scaler_state = ckpt.get('scaler')
