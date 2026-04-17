@@ -68,7 +68,7 @@ GROUP_RULES = [
         "volcanic", "barren", "mining", "fire_scar", "deforestation",
     }),
 ]
-GROUP_ORDER = [g for g, _ in GROUP_RULES] + ["other"]
+GROUP_ORDER = [g for g, _ in GROUP_RULES]
 
 GROUP_COLOR = {
     "forest":               "#117733",
