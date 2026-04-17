@@ -154,14 +154,14 @@ def plot_world_map(
         handletextpad=0.4, columnspacing=1.2,
     )
 
-    ax.text(
-        1.2, 0.98, summary,
-        transform=ax.transAxes, ha="right", va="top",
-        fontsize=7.5, family="monospace",
-        bbox=dict(boxstyle="round,pad=0.35", facecolor="white",
-                  edgecolor="#CCCCCC", linewidth=0.5),
-        zorder=5,
-    )
+    # ax.text(
+    #     1.2, 0.98, summary,
+    #     transform=ax.transAxes, ha="right", va="top",
+    #     fontsize=7.5, family="monospace",
+    #     bbox=dict(boxstyle="round,pad=0.35", facecolor="white",
+    #               edgecolor="#CCCCCC", linewidth=0.5),
+    #     zorder=5,
+    # )
 
     fig.savefig(out_path.with_suffix(".pdf"), dpi=DPI, bbox_inches="tight")
     fig.savefig(out_path.with_suffix(".png"), dpi=DPI, bbox_inches="tight")
