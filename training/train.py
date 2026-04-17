@@ -275,9 +275,11 @@ def main():
         if 'optimizer' in ckpt:
             optimizer.load_state_dict(ckpt['optimizer'])
             scheduler.load_state_dict(ckpt['scheduler'])
+            for pg in optimizer.param_groups:
+                pg['lr'] = cfg['lr']
             start_iter = ckpt['iter']
             best_psnr = ckpt.get('best_psnr', 0.0)
-            print(f'Resumed from iter {start_iter}, best PSNR={best_psnr:.2f}')
+            print(f'Resumed from iter {start_iter}, best PSNR={best_psnr:.2f}, lr overridden to {cfg["lr"]:.1e}')
         else:
             print(f'Loaded weights from {args.resume} (no optimizer state, starting fresh)')
         _scaler_state = ckpt.get('scaler')
