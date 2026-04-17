@@ -80,7 +80,6 @@ GROUP_COLOR = {
     "urban":                "#000000",
     "mediterranean":        "#CC6677",
     "barren / volcanic":    "#999933",
-    "other":                "#888888",
 }
 
 
@@ -140,14 +139,14 @@ def plot_world_map(
             facecolor=GROUP_COLOR[grp], edgecolor="white", zorder=3,
         )
         handles.append(h)
-        labels.append(f"{grp} (n={len(sub)})")
+        labels.append(f"{grp}")
 
     uncov_handle = plt.Line2D(
         [], [], color="#A0A0A0", marker="x", linestyle="None",
         markersize=5, markeredgewidth=0.8,
     )
     handles.append(uncov_handle)
-    labels.append(f"{no_pair_label} (n={len(uncovered)})")
+    labels.append(f"{no_pair_label}")
 
     lax.legend(
         handles, labels,
@@ -156,7 +155,7 @@ def plot_world_map(
     )
 
     ax.text(
-        0.995, 0.98, summary,
+        1.5, 0.98, summary,
         transform=ax.transAxes, ha="right", va="top",
         fontsize=7.5, family="monospace",
         bbox=dict(boxstyle="round,pad=0.35", facecolor="white",
@@ -272,9 +271,9 @@ def main() -> None:
         covered_col="tiles_passed",
         no_pair_label="no tiles",
         summary=(
-            f"AOIs defined:       {n_total}\n"
-            f"AOIs with ≥1 tile:  {n_aoi_post}\n"
-            f"tiles post-QC:      {n_tiles_post:,}"
+            f"AOIs defined: {n_total}\n"
+            f"AOIs with ≥1 tile: {n_aoi_post}\n"
+            f"tiles post-QC: {n_tiles_post:,}"
         ),
     )
     plot_landcover_distribution(
