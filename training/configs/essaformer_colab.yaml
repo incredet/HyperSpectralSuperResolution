@@ -10,8 +10,8 @@ out_dir: /content/drive/Shareddrives/HyperResData/EMIT_S-2_Matches/experiments
 seed: 42
 num_bands: 32
 scale: 6
-gt_size: 96
-batch_size: 64
+gt_size: 192
+batch_size: 24
 num_workers: 4
 max_aois: null
 amp: false
@@ -19,7 +19,7 @@ amp: false
 # ESSAformer params
 dim: 252
 
-lr: 0.0001
+lr: 0.0002
 betas: [0.9, 0.99]
 milestones: [15_000, 30_000, 45_000, 60_000, 75_000]
 gamma: 0.5
