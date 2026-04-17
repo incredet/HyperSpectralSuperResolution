@@ -16,6 +16,7 @@ GT_SUFFIXES = {
     'regression': '_regression_synth',
     'sfim': '_sfim',
     'cnmf': '_cnmf',
+    'synthetic': '_synthetic_gt',
 }
 
 

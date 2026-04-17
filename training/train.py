@@ -18,6 +18,7 @@ from dataset import PairedZipDataset, build_index, split_aois, worker_init_fn
 from model import RRDBNet6x
 from essaformer import ESSAformer
 from mambahsisr import MambaHSISR
+from cst import CST
 from losses import build_losses
 
 
@@ -49,6 +50,17 @@ def build_model(cfg, device):
             upscale=cfg['scale'],
         )
         tag = f'MambaHSISR dim={cfg.get("embed_dim", 180)} d={cfg.get("depths", [5,5,5])} d_state={cfg.get("d_state", 16)} resi={cfg.get("resi_connection", "1conv")}'
+    elif model_type == 'cst':
+        model = CST(
+            inp_channels=bands, out_channels=bands,
+            dim=cfg.get('dim', 90),
+            depths=tuple(cfg.get('depths', [6, 6, 6, 6, 6, 6])),
+            num_heads=tuple(cfg.get('num_heads', [6, 6, 6, 6, 6, 6])),
+            mlp_ratio=cfg.get('mlp_ratio', 2),
+            drop_path_rate=cfg.get('drop_path_rate', 0.1),
+            scale=cfg['scale'],
+        )
+        tag = f'CST dim={cfg.get("dim", 90)} depths={cfg.get("depths", [6,6,6,6,6,6])}'
     else:
         raise ValueError(f'Unknown model_type: {model_type}')
 
@@ -202,6 +214,7 @@ def main():
     parser.add_argument('--resume')
     parser.add_argument('--zip-dir')
     parser.add_argument('--out-dir')
+    parser.add_argument('--gt-source', help='override gt_source in config')
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -210,18 +223,23 @@ def main():
         cfg['zip_dir'] = args.zip_dir
     if args.out_dir:
         cfg['out_dir'] = args.out_dir
+    if args.gt_source:
+        cfg['gt_source'] = args.gt_source
 
     torch.manual_seed(cfg['seed'])
     np.random.seed(cfg['seed'])
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     exp_name = cfg.get('exp_name')
+    gt_tag = cfg.get('gt_source', 'cnmf')
     if not exp_name:
         model_type = cfg.get('model_type', 'rrdbnet6x')
         if model_type == 'rrdbnet6x':
-            exp_name = f"{cfg['gt_source']}-{cfg['num_feat']}x{cfg['num_block']}-{datetime.now():%m%d}"
+            exp_name = f"{gt_tag}-{cfg['num_feat']}x{cfg['num_block']}-{datetime.now():%m%d}"
         else:
-            exp_name = f"{cfg['gt_source']}-{model_type}-{datetime.now():%m%d}"
+            exp_name = f"{gt_tag}-{model_type}-{datetime.now():%m%d}"
+    else:
+        exp_name = f"{exp_name}-{gt_tag}"
     out_dir = Path(cfg['out_dir']) / exp_name
     (out_dir / 'models').mkdir(parents=True, exist_ok=True)
     shutil.copy2(args.config, out_dir / 'config.yaml')

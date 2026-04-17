@@ -1,24 +1,3 @@
-"""Convert tile zips to pre-patched npy zips for fast training I/O.
-
-Accepts either GeoTIFF or npy source zips. Splits each GT tile (576x576)
-into a 6x6 grid of 96x96 patches, and each LR tile (96x96) into a 6x6
-grid of 16x16 patches. Saves as uint16 .npy in ZIP_STORED zips.
-
-Each read during training is ~592 KB instead of ~21 MB.
-
-Usage:
-    # From GeoTIFF zips:
-    python convert_to_npy.py \
-        --src /path/to/zips_cnmf \
-        --dst /path/to/zips_cnmf_patched \
-        --gt-source cnmf
-
-    # From already-converted npy zips:
-    python convert_to_npy.py \
-        --src /path/to/zips_cnmf_npy \
-        --dst /path/to/zips_cnmf_patched \
-        --gt-source cnmf
-"""
 import argparse
 import zipfile
 from io import BytesIO
@@ -34,11 +13,12 @@ GT_SUFFIXES = {
     'regression': '_regression_synth',
     'sfim': '_sfim',
     'cnmf': '_cnmf',
+    'synthetic': '_synthetic_gt',
 }
 
 SCALE = 6
 GT_PATCH = 192
-LR_PATCH = GT_PATCH // SCALE  # 16
+LR_PATCH = GT_PATCH // SCALE 
 
 
 def read_array(zf, name):

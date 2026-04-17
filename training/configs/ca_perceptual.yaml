@@ -7,8 +7,8 @@ out_dir: ./experiments
 seed: 42
 num_bands: 32
 scale: 6
-gt_size: 96
-batch_size: 64
+gt_size: 192
+batch_size: 16
 num_workers: 4
 max_aois: null
 

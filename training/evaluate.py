@@ -14,6 +14,7 @@ from dataset import build_index, split_aois, read_tif_from_zip, EMIT_SCALE, EMIT
 from model import RRDBNet6x
 from essaformer import ESSAformer
 from mambahsisr import MambaHSISR
+from cst import CST
 from viz import (compute_psnr, compute_sam, compute_ergas, compute_all_metrics,
                  compute_per_band_correlation, to_rgb,
                  make_main_figure, make_perband_figure, make_zoom_figure)
@@ -27,10 +28,17 @@ def main():
     parser.add_argument('--out-dir', help='where to save figures and CSV (default: checkpoint dir)')
     parser.add_argument('--n-vis', type=int, default=8, help='number of tiles to visualize')
     parser.add_argument('--no-vis', action='store_true', help='skip figure generation')
+    parser.add_argument('--zip-dir', help='override zip_dir in config')
+    parser.add_argument('--gt-source', help='override gt_source in config')
     args = parser.parse_args()
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
+    if args.zip_dir:
+        cfg['zip_dir'] = args.zip_dir
+        cfg['zip_dir_full'] = args.zip_dir
+    if args.gt_source:
+        cfg['gt_source'] = args.gt_source
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -57,6 +65,14 @@ def main():
                          embed_dim=cfg.get('embed_dim', 180),
                          depths=tuple(cfg.get('depths', [5, 5, 5])),
                          upscale=cfg['scale'])
+    elif model_type == 'cst':
+        net = CST(inp_channels=bands, out_channels=bands,
+                  dim=cfg.get('dim', 90),
+                  depths=tuple(cfg.get('depths', [6, 6, 6, 6, 6, 6])),
+                  num_heads=tuple(cfg.get('num_heads', [6, 6, 6, 6, 6, 6])),
+                  mlp_ratio=cfg.get('mlp_ratio', 2),
+                  drop_path_rate=cfg.get('drop_path_rate', 0.1),
+                  scale=cfg['scale'])
     else:
         raise ValueError(f'Unknown model_type: {model_type}')
     state = torch.load(args.checkpoint, map_location='cpu', weights_only=False)

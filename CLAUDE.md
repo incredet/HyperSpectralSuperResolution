@@ -46,6 +46,7 @@ HyperSpectralSuperResolution/
 │   ├── model.py             # RRDBNet6x, RRDB, ResidualDenseBlock, ChannelAttention
 │   ├── essaformer.py        # ESSAformer (ICCV 2023) with 6× PixelShuffle fix
 │   ├── mambahsisr.py        # MambaHSISR (TGRS 2025) standalone port, needs mamba-ssm
+│   ├── cst.py               # CST (TIP 2024) standalone port, cross-scope spatial-spectral transformer
 │   ├── dataset.py           # PairedZipDataset, AOI splitting, zip-based data loading
 │   ├── losses.py            # SAMLoss, SSIMLoss, MultiTripletPerceptualLoss, build_losses()
 │   ├── viz.py               # Metrics (PSNR, SAM, ERGAS, correlation) + WandB figures
@@ -56,6 +57,7 @@ HyperSpectralSuperResolution/
 │   │   ├── sam_loss.yaml    # L1 + SAM loss
 │   │   ├── essaformer.yaml  # ESSAformer L1 baseline
 │   │   ├── mambahsisr.yaml  # MambaHSISR L1 baseline (requires mamba-ssm)
+│   │   ├── cst_colab.yaml   # CST L1 baseline (Colab A100)
 │   │   └── default.yaml     # Template
 │   └── requirements.txt
 ├── hif-benchmarking/        # Fusion method evaluation suite (see below)
@@ -136,7 +138,7 @@ Drive: EMIT_S-2_Matches/{date}/zips_{gt_source}/
   │   Normalize: uint16 / 10000 → float32 reflectance [0, ~1.0]
   │   Random crop in LR space → scale to GT space
   │
-  ▼  SR model: 16×16 → 96×96 (RRDBNet6x or ESSAformer, selected via model_type config)
+  ▼  SR model: 16×16 → 96×96 (RRDBNet6x, ESSAformer, or CST, selected via model_type config)
   │
   ▼  Super-resolved EMIT at 10m resolution
 ```
@@ -152,6 +154,7 @@ Drive: EMIT_S-2_Matches/{date}/zips_{gt_source}/
 | RRDBNet6x | 62.9M | `rrdbnet6x` | nearest-neighbor 2×→3× |
 | ESSAformer | 13.6M | `essaformer` | PixelShuffle 2×→3× |
 | MambaHSISR | 29.8M | `mambahsisr` | PixelShuffle 2×→3× |
+| CST | ~11M (dim=90) | `cst` | PixelShuffle 2×→3× |
 
 ### RRDBNet6x Architecture (model.py)
 
@@ -183,6 +186,20 @@ Drive: EMIT_S-2_Matches/{date}/zips_{gt_source}/
 - Device-agnostic: original `.cuda()` calls replaced with `register_buffer`/`device=x.device`
 - 29.8M params with embed_dim=180, depths=[5,5,5] (MSFE module dominates: 5×5 conv per block)
 - Config keys: `embed_dim` (default 180), `depths` (default [5,5,5])
+
+### CST Architecture (cst.py)
+
+- Ported from TIP 2024 paper (Chen et al.), adapted for 6× scale
+- Cross-scope spatial attention (CSA): dual H-Rwin and V-Rwin rectangle windows with shifted masking + locality complementary module (depthwise conv)
+- Global spectral attention (CSE): channel-wise attention with learnable temperature, BSConvU for spatial reduction
+- Forward takes single input `forward(lr)` — bicubic `lms` is computed internally via `F.interpolate`
+- PixelShuffle 2×→3× for 6× upsampling
+- ~11M params with dim=90, ~44M with dim=180 (paper default)
+- `dim` must be divisible by `num_heads` (default 6)
+- `split_size=(2,16)` in Cstage — window covers full width in one direction, 2-pixel strips in the other. Works with 16×16 LR input.
+- `input_resolution=(32,32)` is hardcoded for mask pre-computation but CSA handles dynamic resolution (recomputes masks when H,W differ)
+- Dependencies: `timm` (DropPath, trunc_normal_), `einops` — both pip-installable on Colab
+- Config keys: `dim` (default 90), `depths` (default [6,6,6,6,6,6]), `num_heads` (default [6,6,6,6,6,6]), `mlp_ratio` (default 2), `drop_path_rate` (default 0.1)
 
 ### PairedZipDataset
 
@@ -282,6 +299,7 @@ Experiment to demonstrate the value of the EMIT+S2 pairing pipeline over standar
 python train.py --config configs/baseline.yaml --zip-dir /path/to/zips_cnmf --out-dir ./experiments
 python train.py --config configs/essaformer.yaml --zip-dir /path/to/zips_cnmf --out-dir ./experiments
 python train.py --config configs/mambahsisr.yaml --zip-dir /path/to/zips_cnmf --out-dir ./experiments  # requires mamba-ssm
+python train.py --config configs/cst_colab.yaml --zip-dir /path/to/zips_cnmf --out-dir ./experiments
 
 # Resume from checkpoint
 python train.py --config configs/baseline.yaml --resume experiments/baseline-L1/models/iter_5000.pth --zip-dir /path/to/zips_cnmf
@@ -290,6 +308,7 @@ python train.py --config configs/baseline.yaml --resume experiments/baseline-L1/
 python evaluate.py --config configs/baseline.yaml --checkpoint experiments/baseline-L1/models/best.pth
 python evaluate.py --config configs/essaformer.yaml --checkpoint experiments/essaformer-L1/models/best.pth
 python evaluate.py --config configs/mambahsisr.yaml --checkpoint experiments/mambahsisr-L1/models/best.pth
+python evaluate.py --config configs/cst_colab.yaml --checkpoint experiments/cst-L1/models/best.pth
 python evaluate.py --config configs/baseline.yaml --checkpoint experiments/baseline-L1/models/best.pth --no-vis  # metrics only
 ```
 
@@ -322,7 +341,7 @@ python main/produce_sfim.py --dataset EMIT32_WALD --scale 6
 
 Most "single-image HSI SR" papers are NOT truly single-input. Code inspection of 8 repos revealed:
 - **Genuinely single-input** (`forward(self, x)` only): ESSAformer, Bi-3DQRNN, EigenSR, MambaHSISR
-- **Require auxiliary bicubic-upsampled input** (`forward(self, x, lms)`): SSPSR, MSDformer — these use bicubic skip connections
+- **Require auxiliary bicubic-upsampled input** (`forward(self, x, lms)`): SSPSR, MSDformer, CST — these use bicubic skip connections. CST's port computes lms internally so the training interface is single-input.
 - **Require RGB input**: CESST (hardcodes R/G/B channel extraction)
 - **Require spectral context**: SFCSR (`forward(self, x, y, localFeats, i)` — band-by-band with 3-band window)
 
