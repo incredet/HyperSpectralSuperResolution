@@ -155,7 +155,7 @@ def plot_world_map(
     )
 
     ax.text(
-        1.5, 0.98, summary,
+        1.2, 0.98, summary,
         transform=ax.transAxes, ha="right", va="top",
         fontsize=7.5, family="monospace",
         bbox=dict(boxstyle="round,pad=0.35", facecolor="white",
