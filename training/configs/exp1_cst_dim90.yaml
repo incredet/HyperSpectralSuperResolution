@@ -11,7 +11,7 @@ out_dir: /content/drive/Shareddrives/HyperResData/EMIT_S-2_Matches/experiments
 seed: 42
 num_bands: 32
 scale: 6
-gt_size: 96
+gt_size: 192
 batch_size: 48
 num_workers: 8
 max_aois: null
