@@ -230,75 +230,93 @@ def fig_main_text(cats):
 # ── appendix grid ───────────────────────────────────────────────────────
 
 def fig_appendix(cats, n_cols):
-    """3 category blocks, each block = [title row, S2 row, EMIT row], gap
-    rows between blocks. No left-side label column."""
+    """3 category rows stacked vertically. Each row holds n_cols horizontal
+    S2|EMIT pairs — S2 and EMIT sit shoulder to shoulder as a natural pair.
+    Italic subcaption above each row, R² labels under each pair. No headers,
+    minimal chrome — the tiles are the main event."""
     row_order = ["pass_all", "fail_forward", "fail_reverse"]
-    row_titles = {
-        "pass_all":      "Pass all filters",
-        "fail_forward":  f"Fail forward $R^2$ (< {QC_MIN_R2})",
-        "fail_reverse":  f"Fail reverse $R^2$ (< {QC_MIN_R2_REV})",
+    sub_labels = {
+        "pass_all":     "(a) Pass all filters",
+        "fail_forward": f"(b) Fail forward $R^2$ (< {QC_MIN_R2})",
+        "fail_reverse": f"(c) Fail reverse $R^2$ (< {QC_MIN_R2_REV})",
     }
     n_cats = len(row_order)
 
-    # grid rows: for each category: [title (0.25), S2 (1), EMIT (1)],
-    # then [gap (0.25)] between categories
-    hr = []
-    for i in range(n_cats):
-        hr.extend([0.25, 1.0, 1.0])
-        if i < n_cats - 1:
-            hr.append(0.25)
+    # columns: S2, EMIT (pair), small gap, S2, EMIT, small gap, S2, EMIT
+    col_widths, pair_cols = [], []
+    for p in range(n_cols):
+        c0 = len(col_widths)
+        col_widths.extend([1.0, 1.0])
+        pair_cols.append((c0, c0 + 1))
+        if p < n_cols - 1:
+            col_widths.append(0.22)   # small gap between pairs
+    n_grid_cols = len(col_widths)
+
+    # rows per category: caption (0.22) → images (1.0) → R² labels (0.16)
+    # gap (0.32) between categories
+    hr, cat_rows = [], []
+    for c in range(n_cats):
+        cap_r = len(hr); hr.append(0.22)
+        img_r = len(hr); hr.append(1.0)
+        r2_r  = len(hr); hr.append(0.16)
+        cat_rows.append((cap_r, img_r, r2_r))
+        if c < n_cats - 1:
+            hr.append(0.32)
     n_grid_rows = len(hr)
 
-    cell_cm = 4.2
-    fig_w = (n_cols * cell_cm) * CM
-    fig_h = (sum(hr) * cell_cm * 0.55) * CM
+    cell_cm = 3.6
+    fig_w = sum(col_widths) * cell_cm * CM
+    fig_h = sum(hr)         * cell_cm * CM
 
     fig = plt.figure(figsize=(fig_w, fig_h))
     gs = fig.add_gridspec(
-        nrows=n_grid_rows, ncols=n_cols,
-        height_ratios=hr,
-        hspace=0.15, wspace=0.04,
+        nrows=n_grid_rows, ncols=n_grid_cols,
+        height_ratios=hr, width_ratios=col_widths,
+        hspace=0.0, wspace=0.0,
     )
 
-    def _cat_rows(cat_idx):
-        base = cat_idx * 4  # each block is (title, S2, EMIT, gap)
-        return base, base + 1, base + 2  # title_r, s2_r, emit_r
-
     for cat_idx, cat_key in enumerate(row_order):
-        t_r, r_s2, r_em = _cat_rows(cat_idx)
+        cap_r, img_r, r2_r = cat_rows[cat_idx]
         tiles = cats.get(cat_key, [])
 
-        # category title spanning all columns
-        ax_title = fig.add_subplot(gs[t_r, :])
-        ax_title.text(
-            0.5, 0.35, row_titles[cat_key],
-            ha="center", va="center", fontsize=8, fontweight="bold",
-            transform=ax_title.transAxes,
+        ax_cap = fig.add_subplot(gs[cap_r, :])
+        ax_cap.text(
+            0.5, 0.5, sub_labels[cat_key],
+            ha="center", va="center", fontsize=7.5, style="italic",
+            transform=ax_cap.transAxes,
         )
-        ax_title.axis("off")
+        ax_cap.axis("off")
 
-        for col_idx in range(min(n_cols, len(tiles))):
-            t = tiles[col_idx]
+        for p, (c_s2, c_em) in enumerate(pair_cols):
+            if p >= len(tiles):
+                continue
+            t = tiles[p]
             s2_path = t["s2_tif"]
             em_path = str(emit_path_from_s2(s2_path))
-
-            s2_rgb = pct_stretch(read_s2_rgb(s2_path))
+            s2_rgb   = pct_stretch(read_s2_rgb(s2_path))
             emit_rgb = pct_stretch(read_emit_rgb(em_path))
 
-            ax_s2 = fig.add_subplot(gs[r_s2, col_idx])
-            ax_s2.imshow(s2_rgb, interpolation="bilinear")
+            ax_s2 = fig.add_subplot(gs[img_r, c_s2])
+            ax_s2.imshow(s2_rgb, interpolation="bilinear", aspect="equal")
             clean_axes([ax_s2])
 
-            ax_em = fig.add_subplot(gs[r_em, col_idx])
-            ax_em.imshow(emit_rgb, interpolation="bilinear")
+            ax_em = fig.add_subplot(gs[img_r, c_em])
+            ax_em.imshow(emit_rgb, interpolation="bilinear", aspect="equal")
             clean_axes([ax_em])
 
+            # R² label centered under the pair
+            ax_r2 = fig.add_subplot(gs[r2_r, c_s2:c_em + 1])
             r2f = t.get("r2_mean", np.nan)
             r2r = t.get("r2_reverse", np.nan)
             label = f"$R^2_f$ = {r2f:.2f}"
             if np.isfinite(r2r):
                 label += f"   $R^2_r$ = {r2r:.2f}"
-            ax_em.set_xlabel(label, fontsize=6, labelpad=2)
+            ax_r2.text(
+                0.5, 1.0, label,
+                ha="center", va="top", fontsize=6.5,
+                transform=ax_r2.transAxes,
+            )
+            ax_r2.axis("off")
 
     _save(fig, FIG_DIR / "fig_qc_grid_appendix")
 
