@@ -1,7 +1,7 @@
-# Exp 1 — Architecture comparison: CST dim=90 (~11M params)
+# Exp 1 — Architecture comparison: CST dim=96
 # LR 1e-4 per Chen et al. TIP 2024 (main_CST.py default).
-# dim must be divisible by num_heads (90 / 6 = 15).
-exp_name: exp1-cst-dim90
+# dim must be divisible by 2*num_heads (k=0.5 path in CSE): 96 / 12 = 8.
+exp_name: exp1-cst-dim96
 model_type: cst
 gt_source: cnmf
 zip_dir: /content/data/zips_cnmf_patched
@@ -17,7 +17,7 @@ num_workers: 8
 max_aois: null
 amp: false
 
-dim: 90
+dim: 96
 depths: [6, 6, 6, 6, 6, 6]
 num_heads: [6, 6, 6, 6, 6, 6]
 mlp_ratio: 2
