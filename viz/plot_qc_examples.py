@@ -171,10 +171,15 @@ def select_tiles(qc_df, clean_df, n):
             pool, sort_col, asc = fwd_fail, "r2_mean", True
     cats["fail_forward"] = _pick_diverse(pool, sort_col, asc, n)
 
-    # pass forward, fail reverse R² — sort by biggest gap
+    # pass forward, fail reverse R² — prefer tiles with visible cloud/cirrus
+    # (SCL combined_frac > 0.5%) so the visible failure cause matches the
+    # narrative. Fall back to full pool sorted by gap if not enough cloudy.
     rev_fail = df[(df["r2_mean"] >= QC_MIN_R2) & (df["r2_reverse"] < QC_MIN_R2_REV)].copy()
     rev_fail["_gap"] = rev_fail["r2_mean"] - rev_fail["r2_reverse"]
-    cats["fail_reverse"] = _pick_diverse(rev_fail, "_gap", ascending=False, n=n)
+    rev_fail["_cloud"] = rev_fail.get("combined_frac", 0).fillna(0)
+    cloudy = rev_fail[rev_fail["_cloud"] >= 0.005]
+    pool = cloudy if len(cloudy) >= n else rev_fail
+    cats["fail_reverse"] = _pick_diverse(pool, "_gap", ascending=False, n=n)
 
     return cats
 
