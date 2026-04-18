@@ -23,9 +23,9 @@ N_MAIN = 1
 N_APPENDIX = 3
 
 
-SKIP_TILES = set(
+SKIP_TILES = {
     ("aoi_lat29.3_lon30.8", "20250531T090534_T36RTT_20250530", 60)
-)
+}
 
 EMIT_B32_RGB = [6, 4, 2]
 
