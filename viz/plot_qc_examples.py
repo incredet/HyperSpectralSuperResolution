@@ -22,9 +22,10 @@ QC_MIN_R2_REV = 0.70
 N_MAIN = 1
 N_APPENDIX = 3
 
-# (aoi_slug, pair_id, tile_idx) tuples to exclude — look up in
-# qc_examples_meta.csv and add here to swap out a picked tile.
-SKIP_TILES: set[tuple[str, str, int]] = set()
+
+SKIP_TILES = set(
+    ("aoi_lat29.3_lon30.8", "20250531T090534_T36RTT_20250530", 60)
+)
 
 EMIT_B32_RGB = [6, 4, 2]
 
