@@ -10,7 +10,7 @@ out_dir: /content/drive/Shareddrives/HyperResData/EMIT_S-2_Matches/experiments
 seed: 42
 num_bands: 32
 scale: 6
-gt_size: 96
+gt_size: 192
 batch_size: 64
 num_workers: 12
 max_aois: null
@@ -23,9 +23,9 @@ channel_attention: false
 
 lr: 0.0002
 betas: [0.9, 0.99]
-milestones: [20_000, 35_000, 50_000]
+milestones: [15_000, 30_000, 45_000, 60_000, 75_000]
 gamma: 0.5
-total_iter: 60_000
+total_iter: 100_000
 grad_clip: 5.0
 ema_decay: 0.999
 
