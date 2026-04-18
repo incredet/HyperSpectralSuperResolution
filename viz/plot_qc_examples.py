@@ -47,20 +47,35 @@ plt.rcParams.update({
 
 
 
-def pct_stretch(arr, plo=2.0, phi=98.0):
-    """Shared percentile stretch. NaN pixels → black (0) so nodata does not
-    show as transparent white."""
-    valid = arr[np.isfinite(arr)]
-    if not len(valid):
-        return np.zeros_like(arr, dtype=np.float32)
-    lo, hi = np.percentile(valid, [plo, phi])
-    out = np.clip((arr - lo) / max(hi - lo, 1e-9), 0.0, 1.0).astype(np.float32)
+GAMMA = 1 / 2.2
+
+def pct_stretch(arr, plo=2.0, phi=98.0, gamma=GAMMA):
+    """Per-channel percentile stretch + gamma, matching
+    tiles_helpers/utils.py::plot_tile_pair_simple. NaN pixels → black."""
+    arr = arr.astype(np.float32, copy=False)
+    out = np.zeros_like(arr, dtype=np.float32)
 
     if arr.ndim == 3:
+        for c in range(arr.shape[-1]):
+            ch = arr[..., c]
+            fin = np.isfinite(ch)
+            if not fin.any():
+                continue
+            lo, hi = np.percentile(ch[fin], (plo, phi))
+            if hi > lo:
+                out[..., c] = np.clip((ch - lo) / (hi - lo), 0.0, 1.0)
         nan_mask = np.any(~np.isfinite(arr), axis=-1)
         out[nan_mask] = 0.0
     else:
+        fin = np.isfinite(arr)
+        if fin.any():
+            lo, hi = np.percentile(arr[fin], (plo, phi))
+            if hi > lo:
+                out = np.clip((arr - lo) / (hi - lo), 0.0, 1.0)
         out = np.nan_to_num(out, nan=0.0)
+
+    if gamma is not None:
+        out = np.clip(out, 0.0, 1.0) ** gamma
     return out
 
 
