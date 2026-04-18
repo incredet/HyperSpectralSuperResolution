@@ -2,6 +2,8 @@
 QC example figures for thesis.
 
 Main text (separate panels for subfigure composition in Overleaf):
+  fig_qc_pass_s2.{pdf,png}          S2 RGB  — tile passing all filters
+  fig_qc_pass_emit.{pdf,png}        EMIT RGB — same tile
   fig_qc_fail_fwd_s2.{pdf,png}      S2 RGB  — tile failing forward R²
   fig_qc_fail_fwd_emit.{pdf,png}    EMIT RGB — same tile
   fig_qc_fail_rev_s2.{pdf,png}      S2 RGB  — tile passing forward, failing reverse R²
@@ -28,7 +30,6 @@ import os
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
 import numpy as np
 import pandas as pd
 import rasterio
@@ -45,7 +46,7 @@ QC_MIN_R2 = 0.75
 QC_MIN_R2_REV = 0.70
 
 N_MAIN = 1          # examples per category in main-text figure
-N_APPENDIX = 4      # examples per category in appendix grid
+N_APPENDIX = 3      # examples per category in appendix grid
 
 # RGB bands in 32-band EMIT tiles (1-based): 665 nm, 560 nm, 490 nm
 EMIT_B32_RGB = [6, 4, 2]
@@ -70,11 +71,20 @@ plt.rcParams.update({
 # ── helpers ─────────────────────────────────────────────────────────────
 
 def pct_stretch(arr, plo=2.0, phi=98.0):
+    """Shared percentile stretch. NaN pixels → black (0) so nodata does not
+    show as transparent white."""
     valid = arr[np.isfinite(arr)]
     if not len(valid):
         return np.zeros_like(arr, dtype=np.float32)
     lo, hi = np.percentile(valid, [plo, phi])
-    return np.clip((arr - lo) / max(hi - lo, 1e-9), 0.0, 1.0).astype(np.float32)
+    out = np.clip((arr - lo) / max(hi - lo, 1e-9), 0.0, 1.0).astype(np.float32)
+
+    if arr.ndim == 3:
+        nan_mask = np.any(~np.isfinite(arr), axis=-1)
+        out[nan_mask] = 0.0
+    else:
+        out = np.nan_to_num(out, nan=0.0)
+    return out
 
 
 def read_s2_rgb(tif_path):
@@ -167,23 +177,32 @@ def select_tiles(qc_df, clean_df, n):
 
     cats = {}
 
-    # pass all
-    cats["pass_all"] = _pick_diverse(
-        df[df["_clean"]], "r2_mean", ascending=False, n=n,
-    )
+    # pass all filters — prefer moderately high R² (avoid trivially uniform tiles)
+    pass_pool = df[df["_clean"] & (df["r2_mean"] < 0.99)]
+    if len(pass_pool) < n:
+        pass_pool = df[df["_clean"]]
+    cats["pass_all"] = _pick_diverse(pass_pool, "r2_mean", ascending=False, n=n)
 
-    # fail forward R²
-    cats["fail_forward"] = _pick_diverse(
-        df[df["r2_mean"] < QC_MIN_R2], "r2_mean", ascending=True, n=n,
-    )
+    # fail forward R² — prefer tiles where reverse R² still passes (makes the
+    # point clearly that the two checks are independent). Fall back to reverse
+    # higher than forward, then to any fail-forward tile.
+    fwd_fail = df[df["r2_mean"] < QC_MIN_R2].copy()
+    strict = fwd_fail[fwd_fail["r2_reverse"] >= QC_MIN_R2_REV]
+    if len(strict) >= n:
+        pool, sort_col, asc = strict, "r2_mean", True
+    else:
+        fwd_fail["_gap_rev"] = fwd_fail["r2_reverse"] - fwd_fail["r2_mean"]
+        gap = fwd_fail[fwd_fail["_gap_rev"] > 0]
+        if len(gap) >= n:
+            pool, sort_col, asc = gap, "_gap_rev", False
+        else:
+            pool, sort_col, asc = fwd_fail, "r2_mean", True
+    cats["fail_forward"] = _pick_diverse(pool, sort_col, asc, n)
 
-    # pass forward, fail reverse R²  — sort by biggest gap
-    mask_rev = (df["r2_mean"] >= QC_MIN_R2) & (df["r2_reverse"] < QC_MIN_R2_REV)
-    rev = df[mask_rev].copy()
-    rev["_gap"] = rev["r2_mean"] - rev["r2_reverse"]
-    cats["fail_reverse"] = _pick_diverse(
-        rev, "_gap", ascending=False, n=n,
-    )
+    # pass forward, fail reverse R² — sort by biggest gap
+    rev_fail = df[(df["r2_mean"] >= QC_MIN_R2) & (df["r2_reverse"] < QC_MIN_R2_REV)].copy()
+    rev_fail["_gap"] = rev_fail["r2_mean"] - rev_fail["r2_reverse"]
+    cats["fail_reverse"] = _pick_diverse(rev_fail, "_gap", ascending=False, n=n)
 
     return cats
 
@@ -191,8 +210,12 @@ def select_tiles(qc_df, clean_df, n):
 # ── main-text panels ────────────────────────────────────────────────────
 
 def fig_main_text(cats):
-    for cat_key, prefix in [("fail_forward", "fig_qc_fail_fwd"),
-                             ("fail_reverse", "fig_qc_fail_rev")]:
+    mapping = [
+        ("pass_all",     "fig_qc_pass"),
+        ("fail_forward", "fig_qc_fail_fwd"),
+        ("fail_reverse", "fig_qc_fail_rev"),
+    ]
+    for cat_key, prefix in mapping:
         tiles = cats.get(cat_key, [])
         if not tiles:
             print(f"  skip {prefix}: no tiles found")
@@ -207,49 +230,52 @@ def fig_main_text(cats):
 # ── appendix grid ───────────────────────────────────────────────────────
 
 def fig_appendix(cats, n_cols):
+    """3 category blocks, each block = [title row, S2 row, EMIT row], gap
+    rows between blocks. No left-side label column."""
     row_order = ["pass_all", "fail_forward", "fail_reverse"]
-    row_labels = {
+    row_titles = {
         "pass_all":      "Pass all filters",
-        "fail_forward":  f"Fail forward R²\n(< {QC_MIN_R2})",
-        "fail_reverse":  f"Fail reverse R²\n(< {QC_MIN_R2_REV})",
+        "fail_forward":  f"Fail forward $R^2$ (< {QC_MIN_R2})",
+        "fail_reverse":  f"Fail reverse $R^2$ (< {QC_MIN_R2_REV})",
     }
     n_cats = len(row_order)
 
-    # layout: per category 2 image rows (S2 + EMIT), gap rows between categories
-    # height_ratios: [S2, EMIT, gap, S2, EMIT, gap, S2, EMIT]
+    # grid rows: for each category: [title (0.25), S2 (1), EMIT (1)],
+    # then [gap (0.25)] between categories
     hr = []
     for i in range(n_cats):
-        hr.extend([1, 1])
+        hr.extend([0.25, 1.0, 1.0])
         if i < n_cats - 1:
-            hr.append(0.15)
+            hr.append(0.25)
     n_grid_rows = len(hr)
 
-    cell_cm = 3.2
-    fig_w = (3.0 + n_cols * cell_cm) * CM
+    cell_cm = 4.2
+    fig_w = (n_cols * cell_cm) * CM
     fig_h = (sum(hr) * cell_cm * 0.55) * CM
 
     fig = plt.figure(figsize=(fig_w, fig_h))
     gs = fig.add_gridspec(
-        nrows=n_grid_rows, ncols=n_cols + 1,
-        width_ratios=[0.35] + [1] * n_cols,
+        nrows=n_grid_rows, ncols=n_cols,
         height_ratios=hr,
-        hspace=0.08, wspace=0.06,
+        hspace=0.15, wspace=0.04,
     )
 
-    for cat_idx, cat_key in enumerate(row_order):
-        tiles = cats.get(cat_key, [])
-        # grid row offset: each category uses 2 rows + 1 gap (except last)
-        r_s2 = cat_idx * 3
-        r_em = r_s2 + 1
+    def _cat_rows(cat_idx):
+        base = cat_idx * 4  # each block is (title, S2, EMIT, gap)
+        return base, base + 1, base + 2  # title_r, s2_r, emit_r
 
-        # row label spanning both S2 and EMIT rows
-        ax_lab = fig.add_subplot(gs[r_s2:r_em + 1, 0])
-        ax_lab.text(
-            0.95, 0.5, row_labels[cat_key],
-            ha="right", va="center", fontsize=7,
-            transform=ax_lab.transAxes,
+    for cat_idx, cat_key in enumerate(row_order):
+        t_r, r_s2, r_em = _cat_rows(cat_idx)
+        tiles = cats.get(cat_key, [])
+
+        # category title spanning all columns
+        ax_title = fig.add_subplot(gs[t_r, :])
+        ax_title.text(
+            0.5, 0.35, row_titles[cat_key],
+            ha="center", va="center", fontsize=8, fontweight="bold",
+            transform=ax_title.transAxes,
         )
-        ax_lab.axis("off")
+        ax_title.axis("off")
 
         for col_idx in range(min(n_cols, len(tiles))):
             t = tiles[col_idx]
@@ -259,47 +285,42 @@ def fig_appendix(cats, n_cols):
             s2_rgb = pct_stretch(read_s2_rgb(s2_path))
             emit_rgb = pct_stretch(read_emit_rgb(em_path))
 
-            gc = col_idx + 1  # grid column (0 is labels)
-
-            ax_s2 = fig.add_subplot(gs[r_s2, gc])
+            ax_s2 = fig.add_subplot(gs[r_s2, col_idx])
             ax_s2.imshow(s2_rgb, interpolation="bilinear")
             clean_axes([ax_s2])
 
-            ax_em = fig.add_subplot(gs[r_em, gc])
+            ax_em = fig.add_subplot(gs[r_em, col_idx])
             ax_em.imshow(emit_rgb, interpolation="bilinear")
             clean_axes([ax_em])
 
-            # R² annotation below EMIT panel
             r2f = t.get("r2_mean", np.nan)
             r2r = t.get("r2_reverse", np.nan)
-            label = f"R²={r2f:.2f}"
+            label = f"$R^2_f$ = {r2f:.2f}"
             if np.isfinite(r2r):
-                label += f"  rev={r2r:.2f}"
-            ax_em.set_xlabel(label, fontsize=5, labelpad=2)
-
-            # column header on first category row
-            if cat_idx == 0:
-                ax_s2.set_title("S2 / EMIT", fontsize=6, pad=3)
+                label += f"   $R^2_r$ = {r2r:.2f}"
+            ax_em.set_xlabel(label, fontsize=6, labelpad=2)
 
     _save(fig, FIG_DIR / "fig_qc_grid_appendix")
 
 
 # ── metadata CSV ────────────────────────────────────────────────────────
 
-def save_meta(cats):
+def save_meta(main_cats, appendix_cats):
     rows = []
-    for cat, tiles in cats.items():
-        for i, t in enumerate(tiles):
-            rows.append({
-                "category": cat,
-                "rank": i,
-                "aoi_slug": t["aoi_slug"],
-                "pair_id": t["pair_id"],
-                "tile_idx": t["tile_idx"],
-                "r2_mean": round(t.get("r2_mean", float("nan")), 4),
-                "r2_reverse": round(t.get("r2_reverse", float("nan")), 4),
-                "combined_frac": round(t.get("combined_frac", float("nan")), 4),
-            })
+    for which, group in [("main", main_cats), ("appendix", appendix_cats)]:
+        for cat, tiles in group.items():
+            for i, t in enumerate(tiles):
+                rows.append({
+                    "figure": which,
+                    "category": cat,
+                    "rank": i,
+                    "aoi_slug": t["aoi_slug"],
+                    "pair_id": t["pair_id"],
+                    "tile_idx": t["tile_idx"],
+                    "r2_mean": round(t.get("r2_mean", float("nan")), 4),
+                    "r2_reverse": round(t.get("r2_reverse", float("nan")), 4),
+                    "combined_frac": round(t.get("combined_frac", float("nan")), 4),
+                })
     out = FIG_DIR / "qc_examples_meta.csv"
     pd.DataFrame(rows).to_csv(out, index=False)
     print(f"  saved {out.name}")
@@ -314,19 +335,23 @@ def main():
     clean_df = pd.read_csv(DRIVE_ROOT / "tiles_clean.csv")
     print(f"Loaded {len(qc_df)} QC tiles, {len(clean_df)} clean tiles")
 
-    n = max(N_MAIN, N_APPENDIX)
-    cats = select_tiles(qc_df, clean_df, n=n)
+    # Pick enough tiles for both main and appendix, then split to avoid overlap
+    n_total = N_MAIN + N_APPENDIX
+    cats = select_tiles(qc_df, clean_df, n=n_total)
     for cat, tiles in cats.items():
         print(f"  {cat}: {len(tiles)} tiles selected")
 
+    main_cats = {k: v[:N_MAIN] for k, v in cats.items()}
+    appx_cats = {k: v[N_MAIN:N_MAIN + N_APPENDIX] for k, v in cats.items()}
+
     print("\n--- Main text panels ---")
-    fig_main_text(cats)
+    fig_main_text(main_cats)
 
     print("\n--- Appendix grid ---")
-    fig_appendix(cats, n_cols=N_APPENDIX)
+    fig_appendix(appx_cats, n_cols=N_APPENDIX)
 
     print("\n--- Metadata ---")
-    save_meta(cats)
+    save_meta(main_cats, appx_cats)
 
 
 if __name__ == "__main__":
