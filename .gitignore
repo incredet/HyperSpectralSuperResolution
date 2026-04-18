@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.Python
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Experiments / outputs
+experiments/
+wandb/
+*.pth
+*.ckpt
+*.log
+
+# Data
+*.mat
+*.tif
+*.tiff
+*.npy
+*.npz
+*.zip
+
+# Docs / notes
+*.md
+!README.md
