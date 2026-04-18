@@ -243,7 +243,7 @@ def fig_appendix_row(cat_key, tiles, n_cols, out_path):
             col_widths.append(0.22)
     n_grid_cols = len(col_widths)
 
-    hr = [1.0, 0.16]   # images, R² labels
+    hr = [1.0, 0.22]   # images, R² labels (row height leaves balanced whitespace)
     n_grid_rows = len(hr)
 
     cell_cm = 3.8
@@ -281,8 +281,8 @@ def fig_appendix_row(cat_key, tiles, n_cols, out_path):
         if np.isfinite(r2r):
             label += f"   $R^2_r$ = {r2r:.2f}"
         ax_r2.text(
-            0.5, 1.0, label,
-            ha="center", va="top", fontsize=6.5,
+            0.5, 0.5, label,
+            ha="center", va="center", fontsize=6.5,
             transform=ax_r2.transAxes,
         )
         ax_r2.axis("off")
