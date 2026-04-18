@@ -9,8 +9,10 @@ Main text (separate panels for subfigure composition in Overleaf):
   fig_qc_fail_rev_s2.{pdf,png}      S2 RGB  — tile passing forward, failing reverse R²
   fig_qc_fail_rev_emit.{pdf,png}    EMIT RGB — same tile
 
-Appendix (single combined grid):
-  fig_qc_grid_appendix.{pdf,png}    rows = QC categories, each cell = S2 / EMIT pair
+Appendix (one file per QC category — compose with LaTeX subfigure):
+  fig_qc_grid_pass.{pdf,png}        3 horizontal S2|EMIT pairs — tiles passing all filters
+  fig_qc_grid_fail_fwd.{pdf,png}    3 horizontal S2|EMIT pairs — tiles failing forward R²
+  fig_qc_grid_fail_rev.{pdf,png}    3 horizontal S2|EMIT pairs — tiles failing reverse R²
 
 Metadata:
   qc_examples_meta.csv              R² values for all selected tiles (paste into captions)
@@ -229,42 +231,22 @@ def fig_main_text(cats):
 
 # ── appendix grid ───────────────────────────────────────────────────────
 
-def fig_appendix(cats, n_cols):
-    """3 category rows stacked vertically. Each row holds n_cols horizontal
-    S2|EMIT pairs — S2 and EMIT sit shoulder to shoulder as a natural pair.
-    Italic subcaption above each row, R² labels under each pair. No headers,
-    minimal chrome — the tiles are the main event."""
-    row_order = ["pass_all", "fail_forward", "fail_reverse"]
-    sub_labels = {
-        "pass_all":     "(a) Pass all filters",
-        "fail_forward": f"(b) Fail forward $R^2$ (< {QC_MIN_R2})",
-        "fail_reverse": f"(c) Fail reverse $R^2$ (< {QC_MIN_R2_REV})",
-    }
-    n_cats = len(row_order)
-
-    # columns: S2, EMIT (pair), small gap, S2, EMIT, small gap, S2, EMIT
+def fig_appendix_row(cat_key, tiles, n_cols, out_path):
+    """One category = one figure. A row of n_cols horizontal S2|EMIT pairs
+    with R² labels underneath. No header — compose with LaTeX subfigure."""
     col_widths, pair_cols = [], []
     for p in range(n_cols):
         c0 = len(col_widths)
         col_widths.extend([1.0, 1.0])
         pair_cols.append((c0, c0 + 1))
         if p < n_cols - 1:
-            col_widths.append(0.22)   # small gap between pairs
+            col_widths.append(0.22)
     n_grid_cols = len(col_widths)
 
-    # rows per category: caption (0.22) → images (1.0) → R² labels (0.16)
-    # gap (0.32) between categories
-    hr, cat_rows = [], []
-    for c in range(n_cats):
-        cap_r = len(hr); hr.append(0.22)
-        img_r = len(hr); hr.append(1.0)
-        r2_r  = len(hr); hr.append(0.16)
-        cat_rows.append((cap_r, img_r, r2_r))
-        if c < n_cats - 1:
-            hr.append(0.32)
+    hr = [1.0, 0.16]   # images, R² labels
     n_grid_rows = len(hr)
 
-    cell_cm = 3.6
+    cell_cm = 3.8
     fig_w = sum(col_widths) * cell_cm * CM
     fig_h = sum(hr)         * cell_cm * CM
 
@@ -275,50 +257,51 @@ def fig_appendix(cats, n_cols):
         hspace=0.0, wspace=0.0,
     )
 
-    for cat_idx, cat_key in enumerate(row_order):
-        cap_r, img_r, r2_r = cat_rows[cat_idx]
-        tiles = cats.get(cat_key, [])
+    for p, (c_s2, c_em) in enumerate(pair_cols):
+        if p >= len(tiles):
+            continue
+        t = tiles[p]
+        s2_path = t["s2_tif"]
+        em_path = str(emit_path_from_s2(s2_path))
+        s2_rgb   = pct_stretch(read_s2_rgb(s2_path))
+        emit_rgb = pct_stretch(read_emit_rgb(em_path))
 
-        ax_cap = fig.add_subplot(gs[cap_r, :])
-        ax_cap.text(
-            0.5, 0.5, sub_labels[cat_key],
-            ha="center", va="center", fontsize=7.5, style="italic",
-            transform=ax_cap.transAxes,
+        ax_s2 = fig.add_subplot(gs[0, c_s2])
+        ax_s2.imshow(s2_rgb, interpolation="bilinear", aspect="equal")
+        clean_axes([ax_s2])
+
+        ax_em = fig.add_subplot(gs[0, c_em])
+        ax_em.imshow(emit_rgb, interpolation="bilinear", aspect="equal")
+        clean_axes([ax_em])
+
+        ax_r2 = fig.add_subplot(gs[1, c_s2:c_em + 1])
+        r2f = t.get("r2_mean", np.nan)
+        r2r = t.get("r2_reverse", np.nan)
+        label = f"$R^2_f$ = {r2f:.2f}"
+        if np.isfinite(r2r):
+            label += f"   $R^2_r$ = {r2r:.2f}"
+        ax_r2.text(
+            0.5, 1.0, label,
+            ha="center", va="top", fontsize=6.5,
+            transform=ax_r2.transAxes,
         )
-        ax_cap.axis("off")
+        ax_r2.axis("off")
 
-        for p, (c_s2, c_em) in enumerate(pair_cols):
-            if p >= len(tiles):
-                continue
-            t = tiles[p]
-            s2_path = t["s2_tif"]
-            em_path = str(emit_path_from_s2(s2_path))
-            s2_rgb   = pct_stretch(read_s2_rgb(s2_path))
-            emit_rgb = pct_stretch(read_emit_rgb(em_path))
+    _save(fig, out_path)
 
-            ax_s2 = fig.add_subplot(gs[img_r, c_s2])
-            ax_s2.imshow(s2_rgb, interpolation="bilinear", aspect="equal")
-            clean_axes([ax_s2])
 
-            ax_em = fig.add_subplot(gs[img_r, c_em])
-            ax_em.imshow(emit_rgb, interpolation="bilinear", aspect="equal")
-            clean_axes([ax_em])
-
-            # R² label centered under the pair
-            ax_r2 = fig.add_subplot(gs[r2_r, c_s2:c_em + 1])
-            r2f = t.get("r2_mean", np.nan)
-            r2r = t.get("r2_reverse", np.nan)
-            label = f"$R^2_f$ = {r2f:.2f}"
-            if np.isfinite(r2r):
-                label += f"   $R^2_r$ = {r2r:.2f}"
-            ax_r2.text(
-                0.5, 1.0, label,
-                ha="center", va="top", fontsize=6.5,
-                transform=ax_r2.transAxes,
-            )
-            ax_r2.axis("off")
-
-    _save(fig, FIG_DIR / "fig_qc_grid_appendix")
+def fig_appendix(cats, n_cols):
+    mapping = [
+        ("pass_all",     "fig_qc_grid_pass"),
+        ("fail_forward", "fig_qc_grid_fail_fwd"),
+        ("fail_reverse", "fig_qc_grid_fail_rev"),
+    ]
+    for cat_key, prefix in mapping:
+        tiles = cats.get(cat_key, [])
+        if not tiles:
+            print(f"  skip {prefix}: no tiles found")
+            continue
+        fig_appendix_row(cat_key, tiles, n_cols, FIG_DIR / prefix)
 
 
 # ── metadata CSV ────────────────────────────────────────────────────────
