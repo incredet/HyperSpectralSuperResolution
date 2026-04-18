@@ -1,31 +1,3 @@
-"""
-QC example figures for thesis.
-
-Main text (separate panels for subfigure composition in Overleaf):
-  fig_qc_pass_s2.{pdf,png}          S2 RGB  — tile passing all filters
-  fig_qc_pass_emit.{pdf,png}        EMIT RGB — same tile
-  fig_qc_fail_fwd_s2.{pdf,png}      S2 RGB  — tile failing forward R²
-  fig_qc_fail_fwd_emit.{pdf,png}    EMIT RGB — same tile
-  fig_qc_fail_rev_s2.{pdf,png}      S2 RGB  — tile passing forward, failing reverse R²
-  fig_qc_fail_rev_emit.{pdf,png}    EMIT RGB — same tile
-
-Appendix (one file per QC category — compose with LaTeX subfigure):
-  fig_qc_grid_pass.{pdf,png}        3 horizontal S2|EMIT pairs — tiles passing all filters
-  fig_qc_grid_fail_fwd.{pdf,png}    3 horizontal S2|EMIT pairs — tiles failing forward R²
-  fig_qc_grid_fail_rev.{pdf,png}    3 horizontal S2|EMIT pairs — tiles failing reverse R²
-
-Metadata:
-  qc_examples_meta.csv              R² values for all selected tiles (paste into captions)
-
-Reads  {DRIVE_ROOT}/r2_tiles_qc.csv
-       {DRIVE_ROOT}/tiles_clean.csv
-       tile TIFs on Drive
-Writes {DRIVE_ROOT}/figures/
-
-Usage (Colab):
-    !python viz/plot_qc_examples.py
-"""
-
 from __future__ import annotations
 
 import os
@@ -47,10 +19,9 @@ FIG_DIR = DRIVE_ROOT / "figures"
 QC_MIN_R2 = 0.75
 QC_MIN_R2_REV = 0.70
 
-N_MAIN = 1          # examples per category in main-text figure
-N_APPENDIX = 3      # examples per category in appendix grid
+N_MAIN = 1     
+N_APPENDIX = 3    
 
-# RGB bands in 32-band EMIT tiles (1-based): 665 nm, 560 nm, 490 nm
 EMIT_B32_RGB = [6, 4, 2]
 
 CM = 1 / 2.54
@@ -70,7 +41,6 @@ plt.rcParams.update({
 })
 
 
-# ── helpers ─────────────────────────────────────────────────────────────
 
 def pct_stretch(arr, plo=2.0, phi=98.0):
     """Shared percentile stretch. NaN pixels → black (0) so nodata does not
@@ -243,18 +213,15 @@ def fig_appendix_row(cat_key, tiles, n_cols, out_path):
             col_widths.append(0.22)
     n_grid_cols = len(col_widths)
 
-    hr = [1.0, 0.22]   # images, R² labels (row height leaves balanced whitespace)
-    n_grid_rows = len(hr)
-
     cell_cm = 3.8
     fig_w = sum(col_widths) * cell_cm * CM
-    fig_h = sum(hr)         * cell_cm * CM
+    fig_h = cell_cm * CM
 
     fig = plt.figure(figsize=(fig_w, fig_h))
     gs = fig.add_gridspec(
-        nrows=n_grid_rows, ncols=n_grid_cols,
-        height_ratios=hr, width_ratios=col_widths,
-        hspace=0.0, wspace=0.0,
+        nrows=1, ncols=n_grid_cols,
+        width_ratios=col_widths,
+        wspace=0.0,
     )
 
     for p, (c_s2, c_em) in enumerate(pair_cols):
@@ -274,18 +241,20 @@ def fig_appendix_row(cat_key, tiles, n_cols, out_path):
         ax_em.imshow(emit_rgb, interpolation="bilinear", aspect="equal")
         clean_axes([ax_em])
 
-        ax_r2 = fig.add_subplot(gs[1, c_s2:c_em + 1])
+        # R² label centered under the pair. x=0 in ax_em's coords is the
+        # boundary between S2 and EMIT (= pair center); y=-0.08 sits just
+        # below the image. clip_on=False lets it render outside the axis.
         r2f = t.get("r2_mean", np.nan)
         r2r = t.get("r2_reverse", np.nan)
         label = f"$R^2_f$ = {r2f:.2f}"
         if np.isfinite(r2r):
             label += f"   $R^2_r$ = {r2r:.2f}"
-        ax_r2.text(
-            0.5, 0.5, label,
-            ha="center", va="center", fontsize=6.5,
-            transform=ax_r2.transAxes,
+        ax_em.text(
+            0.0, -0.08, label,
+            ha="center", va="top", fontsize=6.5,
+            transform=ax_em.transAxes,
+            clip_on=False,
         )
-        ax_r2.axis("off")
 
     _save(fig, out_path)
 
