@@ -41,7 +41,7 @@ def parse_args():
     ap.add_argument("--gt-source", required=True, choices=list(GT_SUFFIXES),
                     help="GT fusion method: cnmf, sfim, or regression")
     ap.add_argument("--r2-thresh", type=float, default=None,
-                    help="GT-specific R² threshold (default: 0.5 for cnmf/sfim, none for regression)")
+                    help="GT-specific R^2 threshold (default: 0.5 for cnmf/sfim, none for regression)")
     ap.add_argument("--output-dir", type=str, default=None,
                     help="Output directory for zips (default: {drive_root}/{run_tag}/zips_{gt_source})")
     ap.add_argument("--dry-run", action="store_true",

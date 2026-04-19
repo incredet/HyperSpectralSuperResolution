@@ -11,6 +11,8 @@ from tqdm import tqdm
 
 FWHM_TO_SIGMA = 2.35482
 SCALE = 6
+NODATA = 65535
+MIN_SUPPORT = 0.5  # LR pixel marked nodata if valid-mask support below this
 
 
 def read_tif(path):
@@ -18,15 +20,29 @@ def read_tif(path):
         return ds.read()
 
 
-def degrade_emit(arr, scale, sigma):
-    """Gaussian blur + decimation, band-wise. Input/output: (B, H, W) uint16."""
-    arr_f = arr.astype(np.float64)
-    blurred = np.empty_like(arr_f)
-    for b in range(arr_f.shape[0]):
-        blurred[b] = gaussian_filter(arr_f[b], sigma=sigma)
+def degrade_emit(arr, scale, sigma, nodata=NODATA, min_support=MIN_SUPPORT):
+    """Nodata-aware Gaussian blur + decimation, per-band. (B, H, W) uint16 → uint16."""
+    valid = (arr != nodata)
+    data = np.where(valid, arr.astype(np.float64), 0.0)
+    mask = valid.astype(np.float64)
+
+    num = np.empty_like(data)
+    den = np.empty_like(mask)
+    for b in range(data.shape[0]):
+        num[b] = gaussian_filter(data[b], sigma=sigma)
+        den[b] = gaussian_filter(mask[b], sigma=sigma)
+
     offset = scale // 2
-    lr_f = blurred[:, offset::scale, offset::scale]
-    return np.clip(np.round(lr_f), 0, 65535).astype(np.uint16)
+    num_lr = num[:, offset::scale, offset::scale]
+    den_lr = den[:, offset::scale, offset::scale]
+
+    keep = den_lr >= min_support
+    lr = np.zeros_like(num_lr)
+    np.divide(num_lr, den_lr, out=lr, where=keep)
+
+    out = np.clip(np.round(lr), 0, nodata - 1).astype(np.uint16)
+    out[~keep] = nodata
+    return out
 
 
 def arr_to_npy_bytes(arr):
@@ -55,7 +71,7 @@ def process_pair(aoi, pair, group, drive_base, dst_dir, scale, sigma):
                 continue
             lr = degrade_emit(gt, scale, sigma)
             zout.writestr(f'tile{idx:03d}__emit_b32.npy', arr_to_npy_bytes(lr))
-            zout.writestr(f'tile{idx:03d}__synthetic_gt.npy', arr_to_npy_bytes(gt))
+            zout.writestr(f'tile{idx:03d}_synthetic_gt.npy', arr_to_npy_bytes(gt))
             pairs += 1
     if pairs == 0:
         dst_zip.unlink()

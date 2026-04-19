@@ -166,10 +166,13 @@ class PairedZipDataset(Dataset):
                 return self.__getitem__((idx + 1) % len(self))
             lq = _read_from_handle(zf, lr_name)
 
-        mask = lq == EMIT_NODATA
+        lq_mask = lq == EMIT_NODATA
         lq /= EMIT_SCALE
-        lq[mask] = 0.0
+        lq[lq_mask] = 0.0
+
+        gt_mask = gt == EMIT_NODATA
         gt /= EMIT_SCALE
+        gt[gt_mask] = 0.0
         gt = np.clip(np.nan_to_num(gt, nan=0.0), 0.0, 1.5)
 
         # skip cropping for pre-patched tiles (already the right size)
