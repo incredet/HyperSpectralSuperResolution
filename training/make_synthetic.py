@@ -4,28 +4,18 @@ from io import BytesIO
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
+import rasterio
 from scipy.ndimage import gaussian_filter
 from tqdm import tqdm
-
-try:
-    import rasterio
-    from rasterio.io import MemoryFile
-except ImportError:
-    rasterio = None
 
 FWHM_TO_SIGMA = 2.35482
 SCALE = 6
 
 
-def read_array(zf, name):
-    raw = zf.read(name)
-    if name.endswith('.npy'):
-        return np.load(BytesIO(raw))
-    if rasterio is None:
-        raise ImportError('rasterio needed for .tif source zips')
-    with MemoryFile(raw) as mf:
-        with mf.open() as ds:
-            return ds.read() 
+def read_tif(path):
+    with rasterio.open(path) as ds:
+        return ds.read()
 
 
 def degrade_emit(arr, scale, sigma):
@@ -45,53 +35,59 @@ def arr_to_npy_bytes(arr):
     return buf.getvalue()
 
 
-def process_zip(src_zip, dst_zip, scale, sigma):
-    with zipfile.ZipFile(src_zip, 'r') as zin, \
-         zipfile.ZipFile(dst_zip, 'w', zipfile.ZIP_STORED) as zout:
-        names = set(zin.namelist())
-        ext = '.npy' if any(n.endswith('.npy') for n in names) else '.tif'
-        lr_suffix = '__emit_b32' + ext
-
-        emit_names = sorted(n for n in names if n.endswith(lr_suffix))
-        pairs = 0
-
-        for emit_name in emit_names:
+def process_pair(aoi, pair, group, drive_base, dst_dir, scale, sigma):
+    dst_zip = dst_dir / f'{aoi}__{pair}.zip'
+    if dst_zip.exists():
+        return 0
+    pairs = 0
+    with zipfile.ZipFile(dst_zip, 'w', zipfile.ZIP_STORED) as zout:
+        for _, row in group.iterrows():
+            idx = int(row['tile_idx'])
+            name = f'{pair}_tile{idx:03d}'
+            lr_path = drive_base / aoi / pair / 'tiles' / f'{name}_emit_b32.tif'
+            if not lr_path.exists():
+                continue
             try:
-                gt = read_array(zin, emit_name)  # (32, 96, 96)
+                gt = read_tif(lr_path)
             except Exception:
                 continue
-
-            lr = degrade_emit(gt, scale, sigma)  # (32, 16, 16)
-
-            base = emit_name.replace(lr_suffix, '')
-            zout.writestr(f'{base}__emit_b32.npy', arr_to_npy_bytes(lr))
-            zout.writestr(f'{base}__synthetic_gt.npy', arr_to_npy_bytes(gt))
+            if gt.shape != (32, 96, 96):
+                continue
+            lr = degrade_emit(gt, scale, sigma)
+            zout.writestr(f'tile{idx:03d}__emit_b32.npy', arr_to_npy_bytes(lr))
+            zout.writestr(f'tile{idx:03d}__synthetic_gt.npy', arr_to_npy_bytes(gt))
             pairs += 1
-
+    if pairs == 0:
+        dst_zip.unlink()
     return pairs
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--src', required=True,
-                        help='source zip dir (any existing GT source, e.g. zips_cnmf)')
-    parser.add_argument('--dst', required=True,
-                        help='output directory for synthetic patched zips')
+    parser.add_argument('--drive-root', required=True)
+    parser.add_argument('--run-tag', required=True)
+    parser.add_argument('--dst', required=True, help='output dir for synthetic NPY zips')
     parser.add_argument('--scale', type=int, default=SCALE)
     parser.add_argument('--sigma', type=float, default=None,
                         help=f'blur sigma (default: scale/{FWHM_TO_SIGMA:.5f})')
     args = parser.parse_args()
 
-    src = Path(args.src)
+    drive_base = Path(args.drive_root) / args.run_tag
+    clean = drive_base / 'tiles_clean.csv'
+    if not clean.exists():
+        parser.error(f'missing {clean}')
+
     dst = Path(args.dst)
     dst.mkdir(parents=True, exist_ok=True)
 
     scale = args.scale
     sigma = args.sigma if args.sigma is not None else scale / FWHM_TO_SIGMA
 
-    zips = sorted(src.glob('*.zip'))
+    df = pd.read_csv(clean)
+    grouped = df.groupby(['aoi_slug', 'pair_id'])
     print(f'Synthetic data generation')
-    print(f'  Source: {src} ({len(zips)} zips)')
+    print(f'  Drive base: {drive_base}')
+    print(f'  tiles_clean.csv: {len(df)} tiles across {len(grouped)} pairs')
     print(f'  Output: {dst}')
     print(f'  Scale: {scale}')
     print(f'  Sigma: {sigma:.4f}')
@@ -100,14 +96,10 @@ def main():
     print()
 
     total = 0
-    for zp in tqdm(zips, desc='Zips'):
-        dst_zip = dst / zp.name
-        if dst_zip.exists():
-            continue
-        n = process_zip(zp, dst_zip, scale, sigma)
-        total += n
+    for (aoi, pair), group in tqdm(list(grouped), desc='Pairs'):
+        total += process_pair(aoi, pair, group, drive_base, dst, scale, sigma)
 
-    print(f'Done: {total} synthetic pairs across {len(zips)} zips')
+    print(f'Done: {total} synthetic pairs across {len(grouped)} pairs')
 
 
 if __name__ == '__main__':

@@ -1,19 +1,3 @@
-#!/usr/bin/env python3
-"""
-pack_npy.py — loose GeoTIFFs on Drive → NPY zips (full + patched) in one pass.
-
-Replaces pack_zips.py + convert_to_npy.py for the common SFIM/CNMF case
-where you want NPY directly and want both the full-scene zips (validation)
-and the 16×16/96×96 patched zips (training) from the same source.
-
-Usage:
-    python spectral/pack_npy.py \\
-        --drive-root /content/drive/Shareddrives/HyperResData/EMIT_S-2_Matches \\
-        --run-tag 2026-04-02 --gt-source sfim --r2-thresh 0.5 \\
-        --out-full /content/data/zips_sfim_npy \\
-        --patched /content/data/zips_sfim_patched:96 \\
-        --patched /content/data/zips_sfim_patched_192:192
-"""
 import argparse
 import sys
 import time
@@ -56,11 +40,8 @@ def parse_args():
     ap.add_argument("--gt-source",  required=True, choices=list(GT_SUFFIXES))
     ap.add_argument("--r2-thresh",  type=float, default=None,
                     help="R² threshold (default 0.5 for cnmf/sfim, none for regression)")
-    ap.add_argument("--out-full", type=str, default=None,
-                    help="dir for full 96×96/576×576 NPY zips (zip_dir_full)")
-    ap.add_argument("--patched", action="append", default=[], metavar="DIR:GT",
-                    help="patched output, e.g. /content/data/zips_sfim_patched:96. "
-                         "Can repeat for multiple GT sizes.")
+    ap.add_argument("--out-full", type=str, default=None)
+    ap.add_argument("--patched", action="append", default=[], metavar="DIR:GT")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-skip-existing", action="store_true")
     args = ap.parse_args()

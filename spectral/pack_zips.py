@@ -1,38 +1,3 @@
-#!/usr/bin/env python3
-"""
-pack_zips.py — Package GeoTIFF tiles into zip archives for SR training.
-
-Creates one zip per (aoi, pair), containing only R²-filtered LR + GT tiles.
-Zip naming matches the training notebook's PairedZipDataset expectations.
-
-Zip format
-----------
-  {aoi_slug}__{pair_id}.zip
-    tile{idx:03d}__emit_b32.tif     (LR — 32-band EMIT)
-    tile{idx:03d}_{gt_suffix}.tif   (GT — fused at 10m)
-
-GT suffixes
------------
-  regression → _regression_synth.tif
-  sfim       → _sfim.tif
-  cnmf       → _cnmf.tif
-
-Usage from Colab
-----------------
-    # CNMF GT, R² ≥ 0.5
-    !python spectral/pack_zips.py \\
-        --drive-root /content/drive/Shareddrives/HyperResData/EMIT_S-2_Matches \\
-        --run-tag 2026-04-02 --gt-source cnmf --r2-thresh 0.5
-
-    # SFIM GT, R² ≥ 0.7
-    !python spectral/pack_zips.py \\
-        --drive-root ... --run-tag 2026-04-02 --gt-source sfim --r2-thresh 0.7
-
-    # Regression GT (no GT-specific R² CSV, uses tiles_clean.csv only)
-    !python spectral/pack_zips.py \\
-        --drive-root ... --run-tag 2026-04-02 --gt-source regression
-"""
-
 import argparse
 import sys
 import time
