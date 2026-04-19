@@ -1,0 +1,150 @@
+\chapter{Dataset and Quality Filtering Details}
+\label{app:dataset}
+
+This appendix provides quantitative and visual summaries of the final
+EMIT--Sentinel-2 training dataset introduced in Section~\ref{sec:qc}.
+Section~\ref{app:pair-stats} reports the acquisition statistics of the
+110 scene pairs that survived quality filtering. Section~\ref{app:qc-attrition}
+breaks down the per-filter tile attrition at the regression-based QC
+stage. Section~\ref{app:qc-gallery} presents representative tile
+examples for each quality category.
+
+
+\section{Scene-pair statistics}
+\label{app:pair-stats}
+
+Table~\ref{tab:pairs-summary} summarises the 110 EMIT--Sentinel-2 scene
+pairs in the working dataset. The median absolute time gap between an
+EMIT acquisition and its Sentinel-2 counterpart is 24.1\,h, and 82\% of
+all pairs fall within a 48-hour window. Tables~\ref{tab:pairs-landcover}
+and~\ref{tab:pairs-year} break the pairs down by AOI land-cover class
+and by EMIT acquisition year, respectively.
+
+\begin{table}[h]
+  \centering
+  \begin{tabular}{lr}
+    \toprule
+    Statistic & Value \\
+    \midrule
+    Total scene pairs (post-QC) & 110 \\
+    Date range & 2023-04 -- 2026-03 \\
+    Mean $|\Delta t|$ & 29.04\,h \\
+    Median $|\Delta t|$ & 24.09\,h \\
+    Max $|\Delta t|$ & 71.98\,h \\
+    Pairs within $\pm$24\,h & 44 (40\%) \\
+    Pairs within $\pm$48\,h & 90 (82\%) \\
+    \bottomrule
+  \end{tabular}
+  \caption{Aggregate statistics of EMIT--Sentinel-2 scene pairs in the
+    final dataset.}
+  \label{tab:pairs-summary}
+\end{table}
+
+\begin{table}[h]
+  \centering
+  \begin{tabular}{lrrrr}
+    \toprule
+    Land-cover group & $n$ & median $|\Delta t|$ & mean $|\Delta t|$ & max $|\Delta t|$ \\
+     &  & (h) & (h) & (h) \\
+    \midrule
+    forest              & 11  & 24.0 & 24.0 & 48.2 \\
+    cropland            & 24  & 24.1 & 30.0 & 72.0 \\
+    desert / arid       & 19  & 24.4 & 30.4 & 71.8 \\
+    grassland / savanna & 27  & 24.1 & 26.7 & 48.3 \\
+    wetland             & 6   & 23.8 & 24.0 & 48.0 \\
+    mountain / alpine   & 8   & 12.1 & 21.1 & 48.2 \\
+    urban               & 8   & 48.1 & 50.9 & 71.8 \\
+    mediterranean       & 1   & 24.0 & 24.0 & 24.0 \\
+    barren / volcanic   & 6   & 24.2 & 28.1 & 71.9 \\
+    \midrule
+    \textbf{total}      & \textbf{110} & \textbf{24.1} & \textbf{29.0} & \textbf{72.0} \\
+    \bottomrule
+  \end{tabular}
+  \caption{Scene pairs grouped by AOI land-cover class.}
+  \label{tab:pairs-landcover}
+\end{table}
+
+\begin{table}[h]
+  \centering
+  \begin{tabular}{lrrr}
+    \toprule
+    Year & $n$ & median $|\Delta t|$ (h) & max $|\Delta t|$ (h) \\
+    \midrule
+    2023 & 34 & 24.1 & 71.7 \\
+    2024 & 27 & 24.0 & 48.3 \\
+    2025 & 39 & 24.2 & 72.0 \\
+    2026 & 10 & 24.0 & 48.2 \\
+    \midrule
+    \textbf{total} & \textbf{110} & \textbf{24.1} & \textbf{72.0} \\
+    \bottomrule
+  \end{tabular}
+  \caption{Scene pairs grouped by EMIT acquisition year. The 2026 row
+    contains only acquisitions up to the data-pull cut-off date.}
+  \label{tab:pairs-year}
+\end{table}
+
+
+\section{Quality-filter attrition}
+\label{app:qc-attrition}
+
+Table~\ref{tab:qc-filters} reports the number of tiles rejected by each
+regression-based quality filter, relative to the 12{,}043 tiles that
+entered the QC stage. The filters are not mutually exclusive, so a tile
+may fail more than one check; the per-row counts therefore sum to
+slightly more than the unique total. Counts of tiles removed earlier by
+the Sentinel-2 SCL cloud screening during tile extraction were not
+preserved in the QC log and are not included here.
+
+\begin{table}[h]
+  \centering
+  \begin{tabular}{lrr}
+    \toprule
+    QC filter & tiles failed & \% of total \\
+    \midrule
+    EMIT cloud contamination                       & 649    & 5.4\% \\
+    S2 reverse regression $R^2 < 0.70$             & 1{,}666 & 13.8\% \\
+    Forward regression $R^2 < 0.75$                & 1{,}296 & 10.8\% \\
+    \midrule
+    \textbf{Total rejected}                        & \textbf{3{,}494} & \textbf{29.0\%} \\
+    \textbf{Total retained}                        & \textbf{8{,}549} & \textbf{71.0\%} \\
+    \bottomrule
+  \end{tabular}
+  \caption{Per-filter tile attrition at the regression-based QC stage.}
+  \label{tab:qc-filters}
+\end{table}
+
+
+\section{Quality-filter tile gallery}
+\label{app:qc-gallery}
+
+Figure~\ref{fig:qc-gallery} shows three representative tile pairs for
+each of the quality categories: tiles passing all filters, tiles
+failing the forward regression, and tiles passing the forward but
+failing the reverse regression. In each entry, the Sentinel-2 tile is
+on the left and the paired EMIT tile is on the right, with the
+per-tile forward ($R^2_f$) and reverse ($R^2_r$) coefficients of
+determination reported below.
+
+\begin{figure}[p]
+  \centering
+  \begin{subfigure}[b]{\linewidth}\centering
+    \includegraphics[width=0.95\linewidth]{figures/fig_qc_grid_pass.pdf}
+    \caption{Tiles passing all QC filters.}
+    \label{fig:qc-gallery-pass}
+  \end{subfigure}\\[0.8em]
+  \begin{subfigure}[b]{\linewidth}\centering
+    \includegraphics[width=0.95\linewidth]{figures/fig_qc_grid_fail_fwd.pdf}
+    \caption{Tiles failing the forward regression ($R^2_f < 0.75$).}
+    \label{fig:qc-gallery-fail-fwd}
+  \end{subfigure}\\[0.8em]
+  \begin{subfigure}[b]{\linewidth}\centering
+    \includegraphics[width=0.95\linewidth]{figures/fig_qc_grid_fail_rev.pdf}
+    \caption{Tiles passing the forward but failing the reverse regression
+      ($R^2_r < 0.70$).}
+    \label{fig:qc-gallery-fail-rev}
+  \end{subfigure}
+  \caption{Quality-filter tile gallery. Three representative tile pairs
+    per category, with Sentinel-2 (left) and EMIT (right) side by side
+    and the per-tile $R^2_f$ / $R^2_r$ values printed below each pair.}
+  \label{fig:qc-gallery}
+\end{figure}

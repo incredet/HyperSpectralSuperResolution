@@ -12,7 +12,7 @@ seed: 42
 num_bands: 32
 scale: 6
 gt_size: 192
-batch_size: 48
+batch_size: 32
 num_workers: 8
 max_aois: null
 amp: false
