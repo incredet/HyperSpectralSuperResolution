@@ -1,9 +1,5 @@
-# Exp 2 — GT source comparison: CST dim=90 trained on SFIM GT
-# Direct counterpart to exp1_cst_dim90 (CNMF GT). Same architecture, same hyperparams,
-# only the GT source differs. Demonstrates the Wald-predicted quality gap empirically.
-# Requires zips_sfim_patched to exist on /content/data/.
-exp_name: exp2-cst-dim90-sfim
-model_type: cst
+exp_name: exp2-rrdb-192x24-sfim
+model_type: rrdbnet6x
 gt_source: sfim
 zip_dir: /content/data/zips_sfim_patched
 zip_dir_full: /content/data/zips_sfim_npy
@@ -13,18 +9,17 @@ seed: 42
 num_bands: 32
 scale: 6
 gt_size: 192
-batch_size: 48
-num_workers: 8
+batch_size: 96
+num_workers: 12
 max_aois: null
 amp: false
 
-dim: 90
-depths: [6, 6, 6, 6, 6, 6]
-num_heads: [6, 6, 6, 6, 6, 6]
-mlp_ratio: 2
-drop_path_rate: 0.1
+num_feat: 192
+num_block: 24
+num_grow_ch: 32
+channel_attention: false
 
-lr: 0.0001
+lr: 0.0002
 betas: [0.9, 0.99]
 milestones: [15_000, 30_000, 45_000, 60_000, 75_000]
 gamma: 0.5
