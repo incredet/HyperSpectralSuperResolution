@@ -30,6 +30,7 @@ def main():
     parser.add_argument('--no-vis', action='store_true', help='skip figure generation')
     parser.add_argument('--zip-dir', help='override zip_dir in config')
     parser.add_argument('--gt-source', help='override gt_source in config')
+    parser.add_argument('--split-json', help='JSON with {train,val,test} AOI lists; overrides split_aois')
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -45,11 +46,22 @@ def main():
     zip_dir = Path(cfg['zip_dir'])
     zip_dir_full = Path(cfg.get('zip_dir_full', cfg['zip_dir']))
 
-    all_aois = {zp.stem.split('__')[0] for zp in zip_dir.glob('*.zip')}
-    all_aois |= {zp.stem.split('__')[0] for zp in zip_dir_full.glob('*.zip')}
-    train_aois, val_aois, test_aois = split_aois(all_aois, cfg['seed'], cfg.get('max_aois'))
+    if args.split_json:
+        import json
+        with open(args.split_json) as f:
+            split_data = json.load(f)
+        val_aois = set(split_data['val'])
+        test_aois = set(split_data['test'])
+        print(f'Loaded split from {args.split_json}: {len(val_aois)} val / {len(test_aois)} test AOIs')
+    else:
+        all_aois = {zp.stem.split('__')[0] for zp in zip_dir.glob('*.zip')}
+        all_aois |= {zp.stem.split('__')[0] for zp in zip_dir_full.glob('*.zip')}
+        _, val_aois, test_aois = split_aois(all_aois, cfg['seed'], cfg.get('max_aois'))
     target_aois = test_aois if args.split == 'test' else val_aois
     index = build_index(zip_dir_full, cfg['gt_source'], target_aois)
+    if not index:
+        print(f'No tiles for split={args.split}; check zip_dir and AOI split.')
+        return
 
     model_type = cfg.get('model_type', 'rrdbnet6x')
     bands = cfg['num_bands']

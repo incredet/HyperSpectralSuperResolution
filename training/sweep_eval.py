@@ -29,6 +29,8 @@ def main():
                    help='also generate figures (default: --no-vis for speed)')
     p.add_argument('--zip-dir', default=None,
                    help='override zip_dir in config (useful if Drive path differs on this session)')
+    p.add_argument('--split-json', default=None,
+                   help='JSON with {train,val,test} AOI lists; forwarded to evaluate.py')
     p.add_argument('--dry-run', action='store_true')
     args = p.parse_args()
 
@@ -62,6 +64,8 @@ def main():
             cmd.append('--no-vis')
         if args.zip_dir:
             cmd += ['--zip-dir', args.zip_dir]
+        if args.split_json:
+            cmd += ['--split-json', args.split_json]
         if args.dry_run:
             print('  DRY:', ' '.join(cmd))
             continue
