@@ -163,10 +163,13 @@ def plot_distance_scatter(summary_df, dist_df, out_path: Path):
     print(f"  saved {out_path.with_suffix('.png').name}")
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--eval-dir", type=Path,
-                    default=Path("hif-benchmarking/data/eval"))
+                    default=REPO_ROOT / "hif-benchmarking" / "data" / "eval")
     ap.add_argument("--dataset", default="EMIT32_WALD")
     ap.add_argument("--scale", default="6")
     ap.add_argument("--out-dir", type=Path, default=DRIVE_ROOT / "figures")
