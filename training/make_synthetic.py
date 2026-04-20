@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import rasterio
+from PIL import Image
 from scipy.ndimage import gaussian_filter
 from tqdm import tqdm
 
@@ -45,13 +46,43 @@ def degrade_emit(arr, scale, sigma, nodata=NODATA, min_support=MIN_SUPPORT):
     return out
 
 
+def degrade_emit_bicubic(arr, scale, nodata=NODATA, min_support=MIN_SUPPORT):
+    """Nodata-aware PIL bicubic downsample, per-band. (B, H, W) uint16 → uint16."""
+    B, H, W = arr.shape
+    Hlr, Wlr = H // scale, W // scale
+    valid = (arr != nodata)
+    data = np.where(valid, arr.astype(np.float32), np.float32(0.0))
+    mask = valid.astype(np.float32)
+
+    for b in range(B):
+        if valid[b].any() and not valid[b].all():
+            data[b] = np.where(valid[b], data[b], data[b][valid[b]].mean()).astype(np.float32)
+
+    lr = np.empty((B, Hlr, Wlr), dtype=np.float32)
+    den = np.empty((B, Hlr, Wlr), dtype=np.float32)
+    for b in range(B):
+        lr[b] = np.asarray(
+            Image.fromarray(data[b], mode='F').resize((Wlr, Hlr), resample=Image.BICUBIC),
+            dtype=np.float32,
+        )
+        den[b] = np.asarray(
+            Image.fromarray(mask[b], mode='F').resize((Wlr, Hlr), resample=Image.BILINEAR),
+            dtype=np.float32,
+        )
+
+    keep = den >= min_support
+    out = np.clip(np.round(lr), 0, nodata - 1).astype(np.uint16)
+    out[~keep] = nodata
+    return out
+
+
 def arr_to_npy_bytes(arr):
     buf = BytesIO()
     np.save(buf, arr)
     return buf.getvalue()
 
 
-def process_pair(aoi, pair, group, drive_base, dst_dir, scale, sigma):
+def process_pair(aoi, pair, group, drive_base, dst_dir, scale, sigma, method):
     dst_zip = dst_dir / f'{aoi}__{pair}.zip'
     if dst_zip.exists():
         return 0
@@ -69,7 +100,10 @@ def process_pair(aoi, pair, group, drive_base, dst_dir, scale, sigma):
                 continue
             if gt.shape != (32, 96, 96):
                 continue
-            lr = degrade_emit(gt, scale, sigma)
+            if method == 'gaussian':
+                lr = degrade_emit(gt, scale, sigma)
+            else:
+                lr = degrade_emit_bicubic(gt, scale)
             zout.writestr(f'tile{idx:03d}__emit_b32.npy', arr_to_npy_bytes(lr))
             zout.writestr(f'tile{idx:03d}_synthetic_gt.npy', arr_to_npy_bytes(gt))
             pairs += 1
@@ -84,8 +118,10 @@ def main():
     parser.add_argument('--run-tag', required=True)
     parser.add_argument('--dst', required=True, help='output dir for synthetic NPY zips')
     parser.add_argument('--scale', type=int, default=SCALE)
+    parser.add_argument('--method', choices=['gaussian', 'bicubic'], default='gaussian',
+                        help='degradation: gaussian blur+decimate (Wald) or PIL bicubic (CAVE)')
     parser.add_argument('--sigma', type=float, default=None,
-                        help=f'blur sigma (default: scale/{FWHM_TO_SIGMA:.5f})')
+                        help=f'gaussian blur sigma (default: scale/{FWHM_TO_SIGMA:.5f})')
     args = parser.parse_args()
 
     drive_base = Path(args.drive_root) / args.run_tag
@@ -106,14 +142,16 @@ def main():
     print(f'  tiles_clean.csv: {len(df)} tiles across {len(grouped)} pairs')
     print(f'  Output: {dst}')
     print(f'  Scale: {scale}')
-    print(f'  Sigma: {sigma:.4f}')
+    print(f'  Method: {args.method}')
+    if args.method == 'gaussian':
+        print(f'  Sigma: {sigma:.4f}')
     print(f'  GT: 96x96 real EMIT (uint16)')
     print(f'  LR: 16x16 degraded EMIT (uint16)')
     print()
 
     total = 0
     for (aoi, pair), group in tqdm(list(grouped), desc='Pairs'):
-        total += process_pair(aoi, pair, group, drive_base, dst, scale, sigma)
+        total += process_pair(aoi, pair, group, drive_base, dst, scale, sigma, args.method)
 
     print(f'Done: {total} synthetic pairs across {len(grouped)} pairs')
 
