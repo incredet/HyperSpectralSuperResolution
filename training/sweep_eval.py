@@ -22,6 +22,8 @@ def main():
     p.add_argument('--archs', nargs='+', default=DEFAULT_ARCHS)
     p.add_argument('--checkpoint-name', default='best.pth',
                    help='filename under {exp}/models/ (e.g. best.pth, iter_100000.pth)')
+    p.add_argument('--exp-suffix', default='',
+                   help='appended to exp_name when resolving folder (e.g. "-cnmf")')
     p.add_argument('--splits', nargs='+', default=['val', 'test'])
     p.add_argument('--with-vis', action='store_true',
                    help='also generate figures (default: --no-vis for speed)')
@@ -39,7 +41,8 @@ def main():
             continue
         with open(cfg_path) as f:
             cfg = yaml.safe_load(f)
-        ckpt = Path(cfg['out_dir']) / cfg['exp_name'] / 'models' / args.checkpoint_name
+        exp_folder = cfg['exp_name'] + args.exp_suffix
+        ckpt = Path(cfg['out_dir']) / exp_folder / 'models' / args.checkpoint_name
         if not ckpt.exists():
             print(f'SKIP {arch}: no checkpoint at {ckpt}', file=sys.stderr)
             continue

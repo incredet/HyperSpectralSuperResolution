@@ -47,6 +47,8 @@ def main():
     p.add_argument('--configs-dir', default='configs')
     p.add_argument('--archs', nargs='+', default=list(ARCH_LABEL.keys()))
     p.add_argument('--splits', nargs='+', default=['val', 'test'])
+    p.add_argument('--exp-suffix', default='',
+                   help='appended to exp_name when resolving folder (e.g. "-cnmf")')
     p.add_argument('--output', required=True, help='master CSV path')
     p.add_argument('--no-params', action='store_true',
                    help='skip parameter counting (faster, no torch needed)')
@@ -72,7 +74,7 @@ def main():
                 print(f'  params count failed for {arch}: {e}')
                 params_by_arch[arch] = None
 
-        exp_dir = Path(cfg['out_dir']) / cfg['exp_name']
+        exp_dir = Path(cfg['out_dir']) / (cfg['exp_name'] + args.exp_suffix)
         for split in args.splits:
             csv_path = exp_dir / f'eval_{split}' / f'{split}_metrics.csv'
             if not csv_path.exists():
