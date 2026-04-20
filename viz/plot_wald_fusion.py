@@ -107,6 +107,89 @@ def print_latex_table(stats, best):
     print(r"\end{table}")
 
 
+def compute_gain_stats(dist_df: pd.DataFrame):
+    """Per-method gains over the per-tile bicubic baseline."""
+    out = {}
+    for m in METHOD_ORDER:
+        if m == "Bicubic":
+            continue
+        d = dist_df[dist_df["method"] == m]
+        if len(d) == 0:
+            continue
+        d_psnr = d["gt_PSNR"] - d["bic_gt_PSNR"]
+        d_sam = d["bic_gt_SAM"] - d["gt_SAM"]
+        d_rmse = d["bic_gt_RMSE"] - d["gt_RMSE"]
+        out[m] = {
+            "n": len(d),
+            "dPSNR": (float(d_psnr.mean()), float(d_psnr.std(ddof=1))),
+            "dSAM": (float(d_sam.mean()), float(d_sam.std(ddof=1))),
+            "dRMSE": (float(d_rmse.mean()), float(d_rmse.std(ddof=1))),
+            "win_psnr": float((d_psnr > 0).mean() * 100),
+            "win_sam": float((d_sam > 0).mean() * 100),
+            "dist_rmse": float(d["dist_bic_RMSE"].mean()),
+            "dist_sam": float(d["dist_bic_SAM"].mean()),
+        }
+    return out
+
+
+def print_gain_table(gain_stats):
+    """Table of improvements over the bicubic baseline, per tile."""
+    methods = [m for m in METHOD_ORDER if m in gain_stats]
+
+    # best per column
+    best = {}
+    best["dPSNR"] = max(methods, key=lambda m: gain_stats[m]["dPSNR"][0])
+    best["dSAM"] = max(methods, key=lambda m: gain_stats[m]["dSAM"][0])
+    best["dRMSE"] = max(methods, key=lambda m: gain_stats[m]["dRMSE"][0])
+    best["win_psnr"] = max(methods, key=lambda m: gain_stats[m]["win_psnr"])
+    best["win_sam"] = max(methods, key=lambda m: gain_stats[m]["win_sam"])
+
+    def fmt_pm(m, key, dec):
+        mean, std = gain_stats[m][key]
+        body = f"{mean:+.{dec}f} \\pm {std:.{dec}f}"
+        return f"$\\mathbf{{{body}}}$" if m == best[key] else f"${body}$"
+
+    def fmt_pct(m, key):
+        v = gain_stats[m][key]
+        body = f"{v:.1f}"
+        return f"$\\mathbf{{{body}}}$" if m == best[key] else f"${body}$"
+
+    print()
+    print(r"\begin{table}[ht]")
+    print(r"  \centering")
+    print(r"  \caption{Per-tile gains over the bicubic baseline on the same "
+          f"{gain_stats[methods[0]]['n']} Wald tiles. "
+          r"$\Delta$PSNR, $\Delta$SAM, $\Delta$RMSE are signed so that positive values "
+          r"indicate improvement over bicubic. Win rate is the fraction of tiles on which "
+          r"the method strictly beats bicubic. The last two columns report how far the "
+          r"method output departs from bicubic (mean per-tile RMSE and SAM between "
+          r"method and bicubic outputs).}")
+    print(r"  \label{tab:wald-gain}")
+    print(r"  \resizebox{\textwidth}{!}{%")
+    print(r"  \begin{tabular}{lccccccc}")
+    print(r"    \toprule")
+    print(r"    Method & $\Delta$PSNR$\uparrow$ & $\Delta$SAM$\uparrow$ & "
+          r"$\Delta$RMSE$\uparrow$ & Win\% PSNR & Win\% SAM & "
+          r"$d_{\mathrm{bic}}$ RMSE & $d_{\mathrm{bic}}$ SAM \\")
+    print(r"    \midrule")
+    for m in methods:
+        cells = [
+            m,
+            fmt_pm(m, "dPSNR", 2),
+            fmt_pm(m, "dSAM", 2),
+            fmt_pm(m, "dRMSE", 4),
+            fmt_pct(m, "win_psnr"),
+            fmt_pct(m, "win_sam"),
+            f"{gain_stats[m]['dist_rmse']:.4f}",
+            f"{gain_stats[m]['dist_sam']:.2f}",
+        ]
+        print("    " + " & ".join(cells) + r" \\")
+    print(r"    \bottomrule")
+    print(r"  \end{tabular}%")
+    print(r"  }")
+    print(r"\end{table}")
+
+
 def plot_distance_scatter(summary_df, dist_df, out_path: Path):
     """Two-panel scatter: method fidelity vs. distance from bicubic."""
     # per-method means on each axis
@@ -185,6 +268,9 @@ def main():
     best = best_per_metric(stats)
 
     print_latex_table(stats, best)
+
+    gain_stats = compute_gain_stats(dist_df)
+    print_gain_table(gain_stats)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     plot_distance_scatter(summary_df, dist_df,
