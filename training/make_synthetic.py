@@ -62,11 +62,11 @@ def degrade_emit_bicubic(arr, scale, nodata=NODATA, min_support=MIN_SUPPORT):
     den = np.empty((B, Hlr, Wlr), dtype=np.float32)
     for b in range(B):
         lr[b] = np.asarray(
-            Image.fromarray(data[b], mode='F').resize((Wlr, Hlr), resample=Image.BICUBIC),
+            Image.fromarray(data[b]).resize((Wlr, Hlr), resample=Image.BICUBIC),
             dtype=np.float32,
         )
         den[b] = np.asarray(
-            Image.fromarray(mask[b], mode='F').resize((Wlr, Hlr), resample=Image.BILINEAR),
+            Image.fromarray(mask[b]).resize((Wlr, Hlr), resample=Image.BILINEAR),
             dtype=np.float32,
         )
 

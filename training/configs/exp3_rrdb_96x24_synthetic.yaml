@@ -1,4 +1,4 @@
-exp_name: exp3-rrdb-192x24-synthetic
+exp_name: exp3-rrdb-96x24-synthetic
 model_type: rrdbnet6x
 gt_source: synthetic
 zip_dir: /content/data/zips_synthetic
@@ -14,7 +14,7 @@ num_workers: 12
 max_aois: null
 amp: false
 
-num_feat: 192
+num_feat: 96
 num_block: 24
 num_grow_ch: 32
 channel_attention: false
