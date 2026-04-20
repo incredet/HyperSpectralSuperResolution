@@ -1,7 +1,7 @@
 exp_name: exp2-rrdb-192x24-sfim
 model_type: rrdbnet6x
 gt_source: sfim
-zip_dir: /content/data/zips_sfim_patched
+zip_dir: /content/data/zips_sfim
 zip_dir_full: /content/data/zips_sfim_npy
 out_dir: /content/drive/Shareddrives/HyperResData/EMIT_S-2_Matches/experiments
 
