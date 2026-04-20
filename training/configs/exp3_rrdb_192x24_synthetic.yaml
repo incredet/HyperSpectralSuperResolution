@@ -1,5 +1,5 @@
-exp_name: exp3-cst-dim90-synthetic
-model_type: cst
+exp_name: exp3-rrdb-192x24-synthetic
+model_type: rrdbnet6x
 gt_source: synthetic
 zip_dir: /content/data/zips_synthetic
 zip_dir_full: /content/data/zips_synthetic
