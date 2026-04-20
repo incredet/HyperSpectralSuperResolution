@@ -1,6 +1,6 @@
 exp_name: exp3-rrdb-96x24-synthetic-bicubic
 model_type: rrdbnet6x
-gt_source: synthetic_bicubic
+gt_source: synthetic
 zip_dir: /content/data/zips_synthetic_bicubic
 zip_dir_full: /content/data/zips_synthetic_bicubic
 out_dir: /content/drive/Shareddrives/HyperResData/EMIT_S-2_Matches/experiments
