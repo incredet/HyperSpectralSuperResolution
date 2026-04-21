@@ -1,13 +1,3 @@
-"""Edge-spread-function fit for effective spatial resolution.
-
-Fits I(x) = a + b * 0.5 * (1 + erf((x - x0) / (sqrt(2) * sigma))) to many local
-edge profiles in an image, aggregates sigma across edges, and converts to
-FWHM = 2.3548 * sigma and effective GSD = FWHM * pixel_size.
-
-Works on one image, one folder, or several folders (one per model) for
-side-by-side comparison.
-"""
-
 import argparse
 import time
 from pathlib import Path
@@ -170,6 +160,15 @@ def _analyze_one(path, pixel_size_m, nodata, kw):
     return r
 
 
+def _register_main_for_loky():
+    import sys
+    try:
+        import cloudpickle
+        cloudpickle.register_pickle_by_value(sys.modules[__name__])
+    except Exception as e:
+        print(f'  [warn] cloudpickle register_pickle_by_value failed: {e}', flush=True)
+
+
 def analyze_folder(folder, pixel_size_m, pattern='*.npy', nodata=None,
                    n_jobs=1, **kw):
     """Run ESF on every file in a folder; return per-file DataFrame."""
@@ -181,7 +180,8 @@ def analyze_folder(folder, pixel_size_m, pattern='*.npy', nodata=None,
     if n_jobs == 1 or n <= 1:
         rows = [_analyze_one(f, pixel_size_m, nodata, kw) for f in files]
     else:
-        rows = Parallel(n_jobs=n_jobs, verbose=5)(
+        _register_main_for_loky()
+        rows = Parallel(n_jobs=n_jobs, verbose=5, backend='threading')(
             delayed(_analyze_one)(f, pixel_size_m, nodata, kw) for f in files
         )
     dt = time.time() - t0
