@@ -37,7 +37,12 @@ def main():
     configs_dir = Path(args.configs_dir)
     tasks = []
     for arch in args.archs:
-        cfg_path = configs_dir / f'{arch}.yaml'
+        if args.exp_sufix == "-synthetic-bicubic":
+            cfg_path = configs_dir / f'{arch}_synthetic_bicubic.yaml'
+        elif args.exp_suffix == "-synthetic" | args.exp_suffix == "-synthetic-synthetic":
+            cfg_path = configs_dir / f'{arch}_synthetic.yaml'
+        else:
+            cfg_path = configs_dir / f'{arch}.yaml'
         if not cfg_path.exists():
             print(f'SKIP {arch}: no config at {cfg_path}', file=sys.stderr)
             continue
