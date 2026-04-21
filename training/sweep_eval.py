@@ -48,7 +48,10 @@ def main():
             continue
         with open(cfg_path) as f:
             cfg = yaml.safe_load(f)
-        exp_folder = cfg['exp_name'] + args.exp_suffix
+        if args.exp_suffix.startswith("-synthetic"):
+            exp_folder = cfg['exp_name']
+        else:
+            exp_folder = cfg['exp_name'] + args.exp_suffix
         ckpt = Path(cfg['out_dir']) / exp_folder / 'models' / args.checkpoint_name
         if not ckpt.exists():
             print(f'SKIP {arch}: no checkpoint at {ckpt}', file=sys.stderr)
