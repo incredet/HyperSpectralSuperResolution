@@ -9,10 +9,12 @@ side-by-side comparison.
 """
 
 import argparse
+import time
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from joblib import Parallel, delayed
 from scipy.ndimage import map_coordinates, sobel
 from scipy.optimize import curve_fit
 from scipy.special import erf
@@ -162,15 +164,29 @@ def analyze_file(path, pixel_size_m, nodata=None, **kw):
     return estimate_esf(_load_image(path), pixel_size_m, nodata, **kw)
 
 
-def analyze_folder(folder, pixel_size_m, pattern='*.npy', nodata=None, **kw):
+def _analyze_one(path, pixel_size_m, nodata, kw):
+    r = analyze_file(path, pixel_size_m, nodata=nodata, **kw)
+    r['file'] = Path(path).name
+    return r
+
+
+def analyze_folder(folder, pixel_size_m, pattern='*.npy', nodata=None,
+                   n_jobs=1, **kw):
     """Run ESF on every file in a folder; return per-file DataFrame."""
     folder = Path(folder)
     files = sorted(folder.glob(pattern))
-    rows = []
-    for f in files:
-        r = analyze_file(f, pixel_size_m, nodata=nodata, **kw)
-        r['file'] = f.name
-        rows.append(r)
+    n = len(files)
+    print(f'  {n} tiles, n_jobs={n_jobs}', flush=True)
+    t0 = time.time()
+    if n_jobs == 1 or n <= 1:
+        rows = [_analyze_one(f, pixel_size_m, nodata, kw) for f in files]
+    else:
+        rows = Parallel(n_jobs=n_jobs, verbose=5)(
+            delayed(_analyze_one)(f, pixel_size_m, nodata, kw) for f in files
+        )
+    dt = time.time() - t0
+    rate = n / dt if dt > 0 else float('inf')
+    print(f'  done in {dt:.0f}s ({rate:.1f} tiles/s)', flush=True)
     return pd.DataFrame(rows)
 
 
@@ -243,6 +259,8 @@ def main():
     p.add_argument('--min-contrast-rel', type=float, default=0.05)
     p.add_argument('--x0-bound', type=float, default=2.5)
     p.add_argument('--no-plot', action='store_true')
+    p.add_argument('--jobs', type=int, default=-1,
+                   help='joblib n_jobs for per-tile parallelism (-1 = all cores)')
     args = p.parse_args()
 
     if len(args.inputs) != len(args.labels):
@@ -263,9 +281,11 @@ def main():
 
     per_tile_dfs = []
     summary_rows = []
-    for folder, label in zip(args.inputs, args.labels):
-        print(f'[{label}] {folder}')
-        df = analyze_folder(folder, args.pixel_size, args.pattern, args.nodata, **kw)
+    t_all = time.time()
+    for i, (folder, label) in enumerate(zip(args.inputs, args.labels), 1):
+        print(f'[{i}/{len(args.inputs)}] {label}  {folder}', flush=True)
+        df = analyze_folder(folder, args.pixel_size, args.pattern, args.nodata,
+                            n_jobs=args.jobs, **kw)
         df['model'] = label
         df.to_csv(out_dir / f'esf_per_tile_{label}.csv', index=False)
         per_tile_dfs.append(df)
@@ -282,7 +302,8 @@ def main():
 
     summary = pd.DataFrame(summary_rows)
     summary.to_csv(out_dir / 'esf_summary.csv', index=False)
-    print('\nSummary:')
+    print(f'\nAll folders done in {time.time() - t_all:.0f}s')
+    print('Summary:')
     print(summary.to_string(index=False))
 
     if per_tile_dfs:
