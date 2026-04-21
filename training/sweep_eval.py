@@ -37,7 +37,7 @@ def main():
     configs_dir = Path(args.configs_dir)
     tasks = []
     for arch in args.archs:
-        if args.exp_sufix == "-synthetic-bicubic":
+        if args.exp_suffix == "-synthetic-bicubic":
             cfg_path = configs_dir / f'{arch}_synthetic_bicubic.yaml'
         elif args.exp_suffix == "-synthetic" | args.exp_suffix == "-synthetic-synthetic":
             cfg_path = configs_dir / f'{arch}_synthetic.yaml'
