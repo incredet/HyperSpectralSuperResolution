@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from skimage.metrics import structural_similarity
 
 
 def compute_psnr(sr, gt, border=6):
@@ -11,6 +12,19 @@ def compute_psnr(sr, gt, border=6):
     if mse < 1e-10:
         return 100.0
     return float(10 * np.log10(1.0 / mse))
+
+
+def compute_ssim(sr, gt, border=6):
+    s = sr[:, border:-border, border:-border] if border > 0 else sr
+    g = gt[:, border:-border, border:-border] if border > 0 else gt
+    vals = [structural_similarity(g[c], s[c], data_range=1.0) for c in range(s.shape[0])]
+    return float(np.mean(vals))
+
+
+def compute_rmse(sr, gt, border=6):
+    s = sr[:, border:-border, border:-border] if border > 0 else sr
+    g = gt[:, border:-border, border:-border] if border > 0 else gt
+    return float(np.sqrt(np.mean((s - g) ** 2)))
 
 
 def compute_sam(sr, gt, border=6):
@@ -47,11 +61,15 @@ def compute_per_band_correlation(sr, gt, border=6):
 def compute_all_metrics(sr, gt, bic, scale=6, border=6):
     return {
         'sr_psnr': compute_psnr(sr, gt, border),
+        'sr_ssim': compute_ssim(sr, gt, border),
         'sr_sam': compute_sam(sr, gt, border),
         'sr_ergas': compute_ergas(sr, gt, scale, border),
+        'sr_rmse': compute_rmse(sr, gt, border),
         'bic_psnr': compute_psnr(bic, gt, border),
+        'bic_ssim': compute_ssim(bic, gt, border),
         'bic_sam': compute_sam(bic, gt, border),
         'bic_ergas': compute_ergas(bic, gt, scale, border),
+        'bic_rmse': compute_rmse(bic, gt, border),
     }
 
 

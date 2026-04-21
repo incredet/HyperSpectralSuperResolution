@@ -4,10 +4,9 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from joblib import Parallel, delayed
 from scipy.ndimage import map_coordinates, sobel
-from scipy.optimize import curve_fit
 from scipy.special import erf
+from tqdm import tqdm
 
 FWHM_COEF = 2.0 * np.sqrt(2.0 * np.log(2.0))   # 2.3548
 W1090_COEF = 2.5631                             # 10%-to-90% edge width per sigma
@@ -73,36 +72,73 @@ def _select_edges(img, top_fraction, border):
     return ys[keep], xs[keep], ny[keep], nx[keep]
 
 
-def _fit_edge(img, y, x, ny, nx, half_len, sigma_bounds,
-              min_contrast_rel, min_r2, x0_bound):
-    t = np.arange(-half_len, half_len + 1, dtype=np.float64)
-    prof = map_coordinates(img, [y + t * ny, x + t * nx],
-                           order=1, mode='reflect')
-    if not np.all(np.isfinite(prof)):
-        return None
-    span = float(prof.max() - prof.min())
-    if span <= 0:
-        return None
-    p0 = [float(prof.min()), float(prof[-1] - prof[0]), 0.0, 1.0]
-    try:
-        popt, _ = curve_fit(
-            erf_step, t, prof, p0=p0,
-            bounds=([-np.inf, -np.inf, -x0_bound, sigma_bounds[0]],
-                    [ np.inf,  np.inf,  x0_bound, sigma_bounds[1]]),
-            maxfev=400,
-        )
-    except Exception:
-        return None
-    a, b, x0, sigma = popt
-    pred = erf_step(t, *popt)
-    ss_res = float(np.sum((prof - pred) ** 2))
-    ss_tot = float(np.sum((prof - prof.mean()) ** 2))
-    if ss_tot <= 0:
-        return None
-    r2 = 1.0 - ss_res / ss_tot
-    if r2 < min_r2 or abs(b) / max(span, 1e-9) < min_contrast_rel:
-        return None
-    return sigma
+def _fit_erf_batch(profiles, t, sigma_bounds, x0_bound,
+                   n_sigma=80, n_x0=51,
+                   min_r2=0.9, min_contrast_rel=0.05, span=None):
+    # For fixed (x0, sigma), the erf step is linear in (a, b) — closed-form per profile.
+    # Grid-search (x0, sigma), then parabolic-refine sigma in log space.
+    N, M = profiles.shape
+    sigma_grid = np.geomspace(sigma_bounds[0], sigma_bounds[1], n_sigma)
+    x0_grid = np.linspace(-x0_bound, x0_bound, n_x0)
+
+    sum_y = profiles.sum(axis=1)                              # [N]
+    sum_yy = np.einsum('ij,ij->i', profiles, profiles)        # [N]
+    ss_tot = sum_yy - (sum_y * sum_y) / M                     # [N]
+
+    sqrt2 = np.sqrt(2.0)
+    ssr_per_sigma = np.full((n_sigma, N), np.inf)
+    b_per_sigma = np.zeros((n_sigma, N))
+
+    for si, sigma in enumerate(sigma_grid):
+        basis = 0.5 * (1.0 + erf((t[None, :] - x0_grid[:, None]) / (sqrt2 * sigma)))  # [Nx0, M]
+        s1 = basis.sum(axis=1)                                # [Nx0]
+        s2 = np.einsum('ij,ij->i', basis, basis)              # [Nx0]
+        det = M * s2 - s1 * s1                                # [Nx0]
+        ok = det > 1e-12
+        if not ok.any():
+            continue
+        basis, s1, s2, det = basis[ok], s1[ok], s2[ok], det[ok]
+
+        ybasis = profiles @ basis.T                           # [N, Nx0_ok]
+        a = (s2[None, :] * sum_y[:, None] - s1[None, :] * ybasis) / det[None, :]
+        b = (M * ybasis - s1[None, :] * sum_y[:, None]) / det[None, :]
+        # ss_res via normal-equation identity: sum(y²) - a*sum(y) - b*sum(y*basis)
+        ssr = sum_yy[:, None] - a * sum_y[:, None] - b * ybasis
+        np.maximum(ssr, 0.0, out=ssr)
+
+        best_x0 = np.argmin(ssr, axis=1)                      # [N]
+        rows = np.arange(N)
+        ssr_per_sigma[si] = ssr[rows, best_x0]
+        b_per_sigma[si] = b[rows, best_x0]
+
+    best_s = np.argmin(ssr_per_sigma, axis=0)                 # [N]
+    rows = np.arange(N)
+    best_ssr = ssr_per_sigma[best_s, rows]
+    best_b = b_per_sigma[best_s, rows]
+
+    log_sigma = np.log(sigma_grid)
+    sigma_out = sigma_grid[best_s].astype(np.float64)
+    interior = (best_s > 0) & (best_s < n_sigma - 1)
+    if interior.any():
+        idx = np.where(interior)[0]
+        si = best_s[idx]
+        r0 = ssr_per_sigma[si - 1, idx]
+        r1 = ssr_per_sigma[si, idx]
+        r2_ = ssr_per_sigma[si + 1, idx]
+        denom = r0 - 2 * r1 + r2_
+        step = log_sigma[1] - log_sigma[0]
+        dx = np.zeros_like(r0)
+        good = denom > 0
+        dx[good] = 0.5 * (r0[good] - r2_[good]) / denom[good] * step
+        np.clip(dx, -step, step, out=dx)
+        sigma_out[idx] = np.exp(log_sigma[si] + dx)
+
+    r2 = 1.0 - best_ssr / np.maximum(ss_tot, 1e-12)
+    if span is None:
+        span = np.ones(N)
+    bad = (r2 < min_r2) | (np.abs(best_b) / np.maximum(span, 1e-9) < min_contrast_rel)
+    sigma_out[bad] = np.nan
+    return sigma_out
 
 
 def estimate_esf(
@@ -116,21 +152,53 @@ def estimate_esf(
     min_contrast_rel=0.05,
     min_r2=0.9,
     x0_bound=2.5,
+    n_sigma_grid=80,
+    n_x0_grid=51,
     return_sigmas=False,
 ):
     """Estimate effective spatial resolution from a 2D or (B, H, W) image."""
     scalar = _to_scalar(img, nodata=nodata)
     ys, xs, ny, nx = _select_edges(scalar, top_fraction, border)
-    sigmas = []
-    for y, x, vy, vx in zip(ys, xs, ny, nx):
-        s = _fit_edge(scalar, y, x, vy, vx,
-                      half_len, sigma_bounds, min_contrast_rel, min_r2, x0_bound)
-        if s is not None:
-            sigmas.append(s)
-    sigmas = np.asarray(sigmas)
+    n_tried = int(ys.size)
+
+    def _blank():
+        out = {
+            'n_tried': n_tried, 'n_accepted': 0,
+            'sigma_px_med': np.nan, 'sigma_px_q1': np.nan, 'sigma_px_q3': np.nan,
+            'sigma_iqr': np.nan, 'fwhm_px': np.nan, 'gsd_eff_m': np.nan,
+        }
+        if return_sigmas:
+            out['sigmas'] = np.empty(0)
+        return out
+
+    if n_tried == 0:
+        return _blank()
+
+    # Batch sub-pixel profile sampling: one map_coordinates call for all candidates.
+    t = np.arange(-half_len, half_len + 1, dtype=np.float64)
+    M = t.size
+    ys_prof = ys[:, None] + t[None, :] * ny[:, None]
+    xs_prof = xs[:, None] + t[None, :] * nx[:, None]
+    profiles = map_coordinates(
+        scalar, [ys_prof.ravel(), xs_prof.ravel()],
+        order=1, mode='reflect',
+    ).reshape(n_tried, M)
+
+    finite = np.isfinite(profiles).all(axis=1)
+    span = profiles.max(axis=1) - profiles.min(axis=1)
+    keep = finite & (span > 0)
+    if not keep.any():
+        return _blank()
+
+    sigmas = _fit_erf_batch(
+        profiles[keep], t, sigma_bounds, x0_bound,
+        n_sigma=n_sigma_grid, n_x0=n_x0_grid,
+        min_r2=min_r2, min_contrast_rel=min_contrast_rel, span=span[keep],
+    )
+    sigmas = sigmas[np.isfinite(sigmas)]
+
     out = {
-        'n_tried': int(ys.size),
-        'n_accepted': int(sigmas.size),
+        'n_tried': n_tried, 'n_accepted': int(sigmas.size),
         'sigma_px_med': np.nan, 'sigma_px_q1': np.nan, 'sigma_px_q3': np.nan,
         'sigma_iqr': np.nan, 'fwhm_px': np.nan, 'gsd_eff_m': np.nan,
     }
@@ -160,33 +228,19 @@ def _analyze_one(path, pixel_size_m, nodata, kw):
     return r
 
 
-def _register_main_for_loky():
-    import sys
-    try:
-        import cloudpickle
-        cloudpickle.register_pickle_by_value(sys.modules[__name__])
-    except Exception as e:
-        print(f'  [warn] cloudpickle register_pickle_by_value failed: {e}', flush=True)
-
-
 def analyze_folder(folder, pixel_size_m, pattern='*.npy', nodata=None,
                    n_jobs=1, **kw):
     """Run ESF on every file in a folder; return per-file DataFrame."""
     folder = Path(folder)
     files = sorted(folder.glob(pattern))
     n = len(files)
-    print(f'  {n} tiles, n_jobs={n_jobs}', flush=True)
+    print(f'  {n} tiles', flush=True)
     t0 = time.time()
-    if n_jobs == 1 or n <= 1:
-        rows = [_analyze_one(f, pixel_size_m, nodata, kw) for f in files]
-    else:
-        _register_main_for_loky()
-        rows = Parallel(n_jobs=n_jobs, verbose=5, backend='threading')(
-            delayed(_analyze_one)(f, pixel_size_m, nodata, kw) for f in files
-        )
+    rows = [_analyze_one(f, pixel_size_m, nodata, kw)
+            for f in tqdm(files, desc=folder.name, unit='tile')]
     dt = time.time() - t0
     rate = n / dt if dt > 0 else float('inf')
-    print(f'  done in {dt:.0f}s ({rate:.1f} tiles/s)', flush=True)
+    print(f'  done in {dt:.0f}s ({rate:.2f} tiles/s)', flush=True)
     return pd.DataFrame(rows)
 
 
@@ -258,9 +312,13 @@ def main():
     p.add_argument('--min-r2', type=float, default=0.9)
     p.add_argument('--min-contrast-rel', type=float, default=0.05)
     p.add_argument('--x0-bound', type=float, default=2.5)
+    p.add_argument('--n-sigma-grid', type=int, default=80,
+                   help='log-spaced sigma grid size for batch fit (default 80)')
+    p.add_argument('--n-x0-grid', type=int, default=51,
+                   help='linear x0 grid size for batch fit (default 51)')
     p.add_argument('--no-plot', action='store_true')
-    p.add_argument('--jobs', type=int, default=-1,
-                   help='joblib n_jobs for per-tile parallelism (-1 = all cores)')
+    p.add_argument('--jobs', type=int, default=1,
+                   help='ignored — fit is numpy-vectorized; kept for CLI back-compat')
     args = p.parse_args()
 
     if len(args.inputs) != len(args.labels):
@@ -277,6 +335,8 @@ def main():
         min_r2=args.min_r2,
         min_contrast_rel=args.min_contrast_rel,
         x0_bound=args.x0_bound,
+        n_sigma_grid=args.n_sigma_grid,
+        n_x0_grid=args.n_x0_grid,
     )
 
     per_tile_dfs = []

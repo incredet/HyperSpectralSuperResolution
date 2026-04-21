@@ -136,9 +136,9 @@ def main():
         tile_id = Path(lr_name).stem.replace('_emit_b32', '')
         rows.append({
             'tile': tile_id,
-            'sr_psnr': m['sr_psnr'], 'sr_sam': m['sr_sam'], 'sr_ergas': m['sr_ergas'],
-            'bic_psnr': m['bic_psnr'], 'bic_sam': m['bic_sam'], 'bic_ergas': m['bic_ergas'],
-            'sr_corr': np.mean(sr_corr), 'bic_corr': np.mean(bic_corr),
+            **m,
+            'sr_corr': float(np.mean(sr_corr)),
+            'bic_corr': float(np.mean(bic_corr)),
         })
 
         if i in vis_set:
@@ -163,24 +163,16 @@ def main():
         writer.writeheader()
         writer.writerows(rows)
 
-    # summary
-    sr_psnrs = [r['sr_psnr'] for r in rows]
-    bic_psnrs = [r['bic_psnr'] for r in rows]
-    sr_sams = [r['sr_sam'] for r in rows]
-    bic_sams = [r['bic_sam'] for r in rows]
-    sr_ergas = [r['sr_ergas'] for r in rows]
-    bic_ergas = [r['bic_ergas'] for r in rows]
+    def avg(key):
+        return float(np.mean([r[key] for r in rows]))
 
     print(f'\n{args.split} results ({len(rows)} tiles):')
-    print(f'  SR:      PSNR={np.mean(sr_psnrs):.2f} +/- {np.std(sr_psnrs):.2f}  '
-          f'SAM={np.mean(sr_sams):.2f}  ERGAS={np.mean(sr_ergas):.1f}  '
-          f'corr={np.mean(all_sr_corr):.4f}')
-    print(f'  Bicubic: PSNR={np.mean(bic_psnrs):.2f} +/- {np.std(bic_psnrs):.2f}  '
-          f'SAM={np.mean(bic_sams):.2f}  ERGAS={np.mean(bic_ergas):.1f}  '
-          f'corr={np.mean(all_bic_corr):.4f}')
-    print(f'  Delta:   PSNR=+{np.mean(sr_psnrs) - np.mean(bic_psnrs):.2f}  '
-          f'SAM=-{np.mean(bic_sams) - np.mean(sr_sams):.2f}  '
-          f'ERGAS=-{np.mean(bic_ergas) - np.mean(sr_ergas):.1f}')
+    print(f'  SR:      PSNR={avg("sr_psnr"):.2f}  SSIM={avg("sr_ssim"):.4f}  '
+          f'SAM={avg("sr_sam"):.2f}  ERGAS={avg("sr_ergas"):.2f}  '
+          f'RMSE={avg("sr_rmse"):.4f}  corr={avg("sr_corr"):.4f}')
+    print(f'  Bicubic: PSNR={avg("bic_psnr"):.2f}  SSIM={avg("bic_ssim"):.4f}  '
+          f'SAM={avg("bic_sam"):.2f}  ERGAS={avg("bic_ergas"):.2f}  '
+          f'RMSE={avg("bic_rmse"):.4f}  corr={avg("bic_corr"):.4f}')
     print(f'\nSaved: {csv_path}')
     if not args.no_vis:
         print(f'Figures: {out_dir / "figures"}/ ({len(vis_set)} tiles × 3 figures)')
