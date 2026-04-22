@@ -17,6 +17,7 @@ GT_SUFFIXES = {
     'sfim': '_sfim',
     'cnmf': '_cnmf',
     'synthetic': '_synthetic_gt',
+    'synthetic_cnmf': '_synthetic_cnmf_gt',
 }
 
 
