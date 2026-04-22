@@ -69,6 +69,12 @@ def compute_ergas(sr, gt, scale=6, border=6):
     return float(100.0 / scale * np.sqrt(np.mean((band_rmse / band_mean) ** 2)))
 
 
+def compute_per_band_rmse(sr, gt, border=6):
+    s = sr[:, border:-border, border:-border] if border > 0 else sr
+    g = gt[:, border:-border, border:-border] if border > 0 else gt
+    return np.sqrt(np.mean((s - g) ** 2, axis=(1, 2)))
+
+
 def compute_per_band_correlation(sr, gt, border=6):
     s = sr[:, border:-border, border:-border] if border > 0 else sr
     g = gt[:, border:-border, border:-border] if border > 0 else gt

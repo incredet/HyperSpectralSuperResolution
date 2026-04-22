@@ -13,7 +13,7 @@ from tqdm import tqdm
 from dataset import build_index, split_aois, read_tif_from_zip, EMIT_SCALE, EMIT_NODATA
 from model import build_model, load_checkpoint
 from viz import (compute_psnr, compute_sam, compute_ergas, compute_all_metrics,
-                 compute_per_band_correlation, to_rgb,
+                 compute_per_band_correlation, compute_per_band_rmse, to_rgb,
                  make_main_figure, make_perband_figure, make_zoom_figure)
 
 
@@ -102,20 +102,26 @@ def main():
         m = compute_all_metrics(sr, gt, bic, scale, border)
         sr_corr = compute_per_band_correlation(sr, gt, border)
         bic_corr = compute_per_band_correlation(bic, gt, border)
-        all_sr_corr.append(np.mean(sr_corr))
-        all_bic_corr.append(np.mean(bic_corr))
+        sr_brmse = compute_per_band_rmse(sr, gt, border)
+        bic_brmse = compute_per_band_rmse(bic, gt, border)
 
         bare = Path(lr_name).stem.replace('__emit_b32', '')
         tile_id = scene_id + '__' + bare if scene_id else bare
         raw_aoi = scene_id.split('__')[0] if '__' in scene_id else ''
         aoi_id = raw_aoi.replace('aoi_', '', 1)
-        rows.append({
+        row = {
             'tile': tile_id,
             'aoi': aoi_id,
             **m,
             'sr_corr': float(np.mean(sr_corr)),
             'bic_corr': float(np.mean(bic_corr)),
-        })
+        }
+        for b in range(len(sr_corr)):
+            row[f'sr_corr_b{b:02d}'] = float(sr_corr[b])
+            row[f'bic_corr_b{b:02d}'] = float(bic_corr[b])
+            row[f'sr_rmse_b{b:02d}'] = float(sr_brmse[b])
+            row[f'bic_rmse_b{b:02d}'] = float(bic_brmse[b])
+        rows.append(row)
 
         if i in vis_set:
             aoi = aoi_id.replace('aoi_', '')
