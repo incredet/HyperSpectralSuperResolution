@@ -73,6 +73,14 @@ def compute_all_metrics(sr, gt, bic, scale=6, border=6):
     }
 
 
+NATURAL_RGB_NM = (665.0, 560.0, 490.0)
+
+
+def rgb_bands_for_wavelengths(wavelengths_nm, rgb_nm=NATURAL_RGB_NM):
+    wl = np.asarray(wavelengths_nm, dtype=float)
+    return [int(np.argmin(np.abs(wl - nm))) for nm in rgb_nm]
+
+
 def to_rgb(cube, bands):
     rgb = np.stack([cube[b] for b in bands], axis=-1)
     pos = rgb[rgb > 0]
