@@ -15,59 +15,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from dataset import PairedZipDataset, build_index, split_aois, worker_init_fn
-from model import RRDBNet6x
-from essaformer import ESSAformer
-from mambahsisr import MambaHSISR
-from cst import CST
+from model import build_model
 from losses import build_losses
-
-
-def build_model(cfg, device):
-    model_type = cfg.get('model_type', 'rrdbnet6x')
-    bands = cfg['num_bands']
-
-    if model_type == 'rrdbnet6x':
-        model = RRDBNet6x(
-            bands, bands,
-            cfg['num_feat'], cfg['num_block'], cfg['num_grow_ch'],
-            channel_attention=cfg.get('channel_attention', False),
-        )
-        tag = f'RRDBNet6x {cfg["num_feat"]}f/{cfg["num_block"]}b'
-    elif model_type == 'essaformer':
-        model = ESSAformer(
-            bands, bands,
-            dim=cfg.get('dim', 252), upscale=cfg['scale'],
-        )
-        tag = f'ESSAformer dim={cfg.get("dim", 252)}'
-    elif model_type == 'mambahsisr':
-        model = MambaHSISR(
-            bands, bands,
-            img_size=cfg['gt_size'] // cfg['scale'],
-            embed_dim=cfg.get('embed_dim', 180),
-            depths=tuple(cfg.get('depths', [5, 5, 5])),
-            d_state=cfg.get('d_state', 16),
-            resi_connection=cfg.get('resi_connection', '1conv'),
-            upscale=cfg['scale'],
-        )
-        tag = f'MambaHSISR dim={cfg.get("embed_dim", 180)} d={cfg.get("depths", [5,5,5])} d_state={cfg.get("d_state", 16)} resi={cfg.get("resi_connection", "1conv")}'
-    elif model_type == 'cst':
-        model = CST(
-            inp_channels=bands, out_channels=bands,
-            dim=cfg.get('dim', 90),
-            depths=tuple(cfg.get('depths', [6, 6, 6, 6, 6, 6])),
-            num_heads=tuple(cfg.get('num_heads', [6, 6, 6, 6, 6, 6])),
-            mlp_ratio=cfg.get('mlp_ratio', 2),
-            drop_path_rate=cfg.get('drop_path_rate', 0.1),
-            scale=cfg['scale'],
-        )
-        tag = f'CST dim={cfg.get("dim", 90)} depths={cfg.get("depths", [6,6,6,6,6,6])}'
-    else:
-        raise ValueError(f'Unknown model_type: {model_type}')
-
-    model = model.to(device)
-    n_params = sum(p.numel() for p in model.parameters()) / 1e6
-    print(f'Model:      {tag}  ({n_params:.1f}M params)')
-    return model
 from viz import (compute_all_metrics, compute_per_band_correlation,
                  compute_psnr, compute_sam, compute_ergas,
                  make_main_figure, make_perband_figure, make_zoom_figure,
@@ -273,6 +222,8 @@ def main():
 
     # --- model ---
     model = build_model(cfg, device)
+    n_params = sum(p.numel() for p in model.parameters()) / 1e6
+    print(f'Model:      {cfg.get("model_type", "rrdbnet6x")}  ({n_params:.1f}M params)')
     ema = copy.deepcopy(model).eval()
 
     # --- losses ---

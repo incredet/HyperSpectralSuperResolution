@@ -12,45 +12,7 @@ from affine import Affine
 from tqdm import tqdm
 
 from dataset import EMIT_NODATA, EMIT_SCALE, read_tif_from_zip
-from model import RRDBNet6x
-from essaformer import ESSAformer
-from mambahsisr import MambaHSISR
-from cst import CST
-
-
-def build_model(cfg, device):
-    model_type = cfg.get('model_type', 'rrdbnet6x')
-    bands = cfg['num_bands']
-    if model_type == 'rrdbnet6x':
-        net = RRDBNet6x(bands, bands,
-                        cfg['num_feat'], cfg['num_block'], cfg['num_grow_ch'],
-                        channel_attention=cfg.get('channel_attention', False))
-    elif model_type == 'essaformer':
-        net = ESSAformer(bands, bands, dim=cfg.get('dim', 252), upscale=cfg['scale'])
-    elif model_type == 'mambahsisr':
-        net = MambaHSISR(bands, bands,
-                         img_size=cfg['gt_size'] // cfg['scale'],
-                         embed_dim=cfg.get('embed_dim', 180),
-                         depths=tuple(cfg.get('depths', [5, 5, 5])),
-                         upscale=cfg['scale'])
-    elif model_type == 'cst':
-        net = CST(inp_channels=bands, out_channels=bands,
-                  dim=cfg.get('dim', 90),
-                  depths=tuple(cfg.get('depths', [6, 6, 6, 6, 6, 6])),
-                  num_heads=tuple(cfg.get('num_heads', [6, 6, 6, 6, 6, 6])),
-                  mlp_ratio=cfg.get('mlp_ratio', 2),
-                  drop_path_rate=cfg.get('drop_path_rate', 0.1),
-                  scale=cfg['scale'])
-    else:
-        raise ValueError(f'Unknown model_type: {model_type}')
-    return net.to(device)
-
-
-def load_checkpoint(net, ckpt_path):
-    state = torch.load(ckpt_path, map_location='cpu', weights_only=False)
-    key = 'params_ema' if 'params_ema' in state else 'params' if 'params' in state else None
-    net.load_state_dict(state[key] if key else state)
-    return 'EMA' if key == 'params_ema' else 'regular'
+from model import build_model, load_checkpoint
 
 
 def find_emit_tif(emit_root, aoi, pair_id, tile_base):
@@ -91,6 +53,8 @@ def main():
                     help='default: {checkpoint}/../../sr_outputs')
     ap.add_argument('--gt-suffix', default='_synthetic_gt.npy',
                     help='file suffix inside zips identifying the 96x96 real-EMIT input')
+    ap.add_argument('--force', action='store_true',
+                    help='overwrite existing .npy files')
     ap.add_argument('--save-geotiff', action='store_true',
                     help='also write a georeferenced GeoTIFF alongside each .npy')
     ap.add_argument('--emit-tif-root',
@@ -148,8 +112,8 @@ def main():
         tile_base = Path(member).stem.replace('_synthetic_gt', '')
         npy_path = out_dir / f'{zp.stem}__{tile_base}.npy'
         tif_path = npy_path.with_suffix('.tif')
-        need_npy = not npy_path.exists()
-        need_tif = args.save_geotiff and not tif_path.exists()
+        need_npy = args.force or not npy_path.exists()
+        need_tif = args.save_geotiff and (args.force or not tif_path.exists())
         if not need_npy and not need_tif:
             skipped_exists += 1
             continue

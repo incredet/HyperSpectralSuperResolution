@@ -38,34 +38,12 @@ def _aoi_key(lat, lon):
 
 
 def load_model(cfg_path, ckpt_path, device):
+    from model import build_model, load_checkpoint
     with open(cfg_path) as f:
         cfg = yaml.safe_load(f)
-    mt = cfg.get('model_type', 'rrdbnet6x')
-    if mt == 'rrdbnet6x':
-        from model import RRDBNet6x
-        net = RRDBNet6x(cfg['num_bands'], cfg['num_bands'],
-                        cfg['num_feat'], cfg['num_block'], cfg['num_grow_ch'],
-                        channel_attention=cfg.get('channel_attention', False))
-    elif mt == 'essaformer':
-        from essaformer import ESSAformer
-        net = ESSAformer(cfg['num_bands'], cfg['num_bands'],
-                         dim=cfg.get('dim', 252), upscale=cfg['scale'])
-    elif mt == 'cst':
-        from cst import CST
-        net = CST(inp_channels=cfg['num_bands'], out_channels=cfg['num_bands'],
-                  dim=cfg.get('dim', 90),
-                  depths=tuple(cfg.get('depths', [6] * 6)),
-                  num_heads=tuple(cfg.get('num_heads', [6] * 6)),
-                  mlp_ratio=cfg.get('mlp_ratio', 2),
-                  drop_path_rate=cfg.get('drop_path_rate', 0.1),
-                  scale=cfg['scale'])
-    else:
-        raise ValueError(f'unknown model_type: {mt}')
-
-    state = torch.load(ckpt_path, map_location='cpu', weights_only=False)
-    key = 'params_ema' if 'params_ema' in state else 'params' if 'params' in state else None
-    net.load_state_dict(state[key] if key else state)
-    net.to(device).eval()
+    net = build_model(cfg, device)
+    load_checkpoint(net, ckpt_path)
+    net.eval()
     return net, cfg
 
 

@@ -17,29 +17,12 @@ ARCH_LABEL = {
 
 
 def count_params(cfg):
-    import torch  # noqa: F401
-    mt = cfg.get('model_type', 'rrdbnet6x')
-    bands = cfg['num_bands']
-    if mt == 'rrdbnet6x':
-        from model import RRDBNet6x
-        net = RRDBNet6x(bands, bands,
-                        cfg['num_feat'], cfg['num_block'], cfg['num_grow_ch'],
-                        channel_attention=cfg.get('channel_attention', False))
-    elif mt == 'essaformer':
-        from essaformer import ESSAformer
-        net = ESSAformer(bands, bands, dim=cfg.get('dim', 252), upscale=cfg['scale'])
-    elif mt == 'cst':
-        from cst import CST
-        net = CST(inp_channels=bands, out_channels=bands,
-                  dim=cfg.get('dim', 90),
-                  depths=tuple(cfg.get('depths', [6] * 6)),
-                  num_heads=tuple(cfg.get('num_heads', [6] * 6)),
-                  mlp_ratio=cfg.get('mlp_ratio', 2),
-                  drop_path_rate=cfg.get('drop_path_rate', 0.1),
-                  scale=cfg['scale'])
-    else:
+    from model import build_model
+    try:
+        net = build_model(cfg, 'cpu')
+        return sum(p.numel() for p in net.parameters())
+    except Exception:
         return None
-    return sum(p.numel() for p in net.parameters())
 
 
 def main():

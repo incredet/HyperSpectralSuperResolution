@@ -90,3 +90,43 @@ class RRDBNet6x(nn.Module):
         feat = self.lrelu(self.conv_up2(F.interpolate(feat, scale_factor=3, mode='nearest')))
         out = self.conv_last(self.lrelu(self.conv_hr(feat)))
         return out
+
+
+def build_model(cfg, device='cpu'):
+    model_type = cfg.get('model_type', 'rrdbnet6x')
+    bands = cfg['num_bands']
+    if model_type == 'rrdbnet6x':
+        net = RRDBNet6x(bands, bands,
+                        cfg['num_feat'], cfg['num_block'], cfg['num_grow_ch'],
+                        channel_attention=cfg.get('channel_attention', False))
+    elif model_type == 'essaformer':
+        from essaformer import ESSAformer
+        net = ESSAformer(bands, bands, dim=cfg.get('dim', 252), upscale=cfg['scale'])
+    elif model_type == 'mambahsisr':
+        from mambahsisr import MambaHSISR
+        net = MambaHSISR(bands, bands,
+                         img_size=cfg['gt_size'] // cfg['scale'],
+                         embed_dim=cfg.get('embed_dim', 180),
+                         depths=tuple(cfg.get('depths', [5, 5, 5])),
+                         d_state=cfg.get('d_state', 16),
+                         resi_connection=cfg.get('resi_connection', '1conv'),
+                         upscale=cfg['scale'])
+    elif model_type == 'cst':
+        from cst import CST
+        net = CST(inp_channels=bands, out_channels=bands,
+                  dim=cfg.get('dim', 90),
+                  depths=tuple(cfg.get('depths', [6, 6, 6, 6, 6, 6])),
+                  num_heads=tuple(cfg.get('num_heads', [6, 6, 6, 6, 6, 6])),
+                  mlp_ratio=cfg.get('mlp_ratio', 2),
+                  drop_path_rate=cfg.get('drop_path_rate', 0.1),
+                  scale=cfg['scale'])
+    else:
+        raise ValueError(f'Unknown model_type: {model_type}')
+    return net.to(device)
+
+
+def load_checkpoint(net, path):
+    state = torch.load(path, map_location='cpu', weights_only=False)
+    key = 'params_ema' if 'params_ema' in state else 'params' if 'params' in state else None
+    net.load_state_dict(state[key] if key else state)
+    return 'EMA' if key == 'params_ema' else 'regular'

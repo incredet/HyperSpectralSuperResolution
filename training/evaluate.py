@@ -11,10 +11,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 from dataset import build_index, split_aois, read_tif_from_zip, EMIT_SCALE, EMIT_NODATA
-from model import RRDBNet6x
-from essaformer import ESSAformer
-from mambahsisr import MambaHSISR
-from cst import CST
+from model import build_model, load_checkpoint
 from viz import (compute_psnr, compute_sam, compute_ergas, compute_all_metrics,
                  compute_per_band_correlation, to_rgb,
                  make_main_figure, make_perband_figure, make_zoom_figure)
@@ -63,35 +60,10 @@ def main():
         print(f'No tiles for split={args.split}; check zip_dir and AOI split.')
         return
 
-    model_type = cfg.get('model_type', 'rrdbnet6x')
-    bands = cfg['num_bands']
-    if model_type == 'rrdbnet6x':
-        net = RRDBNet6x(bands, bands,
-                        cfg['num_feat'], cfg['num_block'], cfg['num_grow_ch'],
-                        channel_attention=cfg.get('channel_attention', False))
-    elif model_type == 'essaformer':
-        net = ESSAformer(bands, bands, dim=cfg.get('dim', 252), upscale=cfg['scale'])
-    elif model_type == 'mambahsisr':
-        net = MambaHSISR(bands, bands,
-                         img_size=cfg['gt_size'] // cfg['scale'],
-                         embed_dim=cfg.get('embed_dim', 180),
-                         depths=tuple(cfg.get('depths', [5, 5, 5])),
-                         upscale=cfg['scale'])
-    elif model_type == 'cst':
-        net = CST(inp_channels=bands, out_channels=bands,
-                  dim=cfg.get('dim', 90),
-                  depths=tuple(cfg.get('depths', [6, 6, 6, 6, 6, 6])),
-                  num_heads=tuple(cfg.get('num_heads', [6, 6, 6, 6, 6, 6])),
-                  mlp_ratio=cfg.get('mlp_ratio', 2),
-                  drop_path_rate=cfg.get('drop_path_rate', 0.1),
-                  scale=cfg['scale'])
-    else:
-        raise ValueError(f'Unknown model_type: {model_type}')
-    state = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
-    key = 'params_ema' if 'params_ema' in state else 'params' if 'params' in state else None
-    net.load_state_dict(state[key] if key else state)
-    net = net.to(device).eval()
-    print(f'Loaded {"EMA" if key == "params_ema" else "regular"} weights from {args.checkpoint}')
+    net = build_model(cfg, device)
+    kind = load_checkpoint(net, args.checkpoint)
+    net.eval()
+    print(f'Loaded {kind} weights from {args.checkpoint}')
 
     out_dir = Path(args.out_dir) if args.out_dir else Path(args.checkpoint).parent.parent / f'eval_{args.split}'
     out_dir.mkdir(parents=True, exist_ok=True)
