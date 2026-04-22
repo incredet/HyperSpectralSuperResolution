@@ -1,8 +1,9 @@
 import numpy as np
+import torch
+import torch.nn.functional as F
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from skimage.metrics import structural_similarity
 
 
 def compute_psnr(sr, gt, border=6):
@@ -14,11 +15,34 @@ def compute_psnr(sr, gt, border=6):
     return float(10 * np.log10(1.0 / mse))
 
 
+def _ssim_gauss_kernel(size=11, sigma=1.5):
+    coords = torch.arange(size, dtype=torch.float32) - size // 2
+    g = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
+    g = torch.outer(g, g)
+    return (g / g.sum()).unsqueeze(0).unsqueeze(0)
+
+_SSIM_K = None
+
 def compute_ssim(sr, gt, border=6):
+    global _SSIM_K
     s = sr[:, border:-border, border:-border] if border > 0 else sr
     g = gt[:, border:-border, border:-border] if border > 0 else gt
-    vals = [structural_similarity(g[c], s[c], data_range=1.0) for c in range(s.shape[0])]
-    return float(np.mean(vals))
+    # (C,H,W) numpy → (C,1,H,W) tensor, treat bands as batch
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    x = torch.from_numpy(s).float().unsqueeze(1).to(device)
+    y = torch.from_numpy(g).float().unsqueeze(1).to(device)
+    if _SSIM_K is None or _SSIM_K.device != device:
+        _SSIM_K = _ssim_gauss_kernel().to(device)
+    k = _SSIM_K
+    C1, C2 = 0.01 ** 2, 0.03 ** 2
+    mu_x = F.conv2d(x, k, padding=5)
+    mu_y = F.conv2d(y, k, padding=5)
+    sigma_x2 = F.conv2d(x * x, k, padding=5) - mu_x * mu_x
+    sigma_y2 = F.conv2d(y * y, k, padding=5) - mu_y * mu_y
+    sigma_xy = F.conv2d(x * y, k, padding=5) - mu_x * mu_y
+    num = (2 * mu_x * mu_y + C1) * (2 * sigma_xy + C2)
+    den = (mu_x ** 2 + mu_y ** 2 + C1) * (sigma_x2 + sigma_y2 + C2)
+    return float((num / den).mean())
 
 
 def compute_rmse(sr, gt, border=6):

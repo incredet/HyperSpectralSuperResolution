@@ -123,28 +123,41 @@ def select_tiles_by_landcover(master_csv, aois_csv, zip_dir, gt_source,
 
 def _resolve_tile_refs(picked, zip_dir, gt_source):
     gt_stem = GT_SUFFIXES[gt_source]
-    want = dict(picked)
+    zip_dir = Path(zip_dir)
     out = {}
 
-    for zp in sorted(Path(zip_dir).glob('*.zip')):
-        if not want:
-            break
-        with zipfile.ZipFile(zp, 'r') as zf:
-            names = set(zf.namelist())
-        ext = '.npy' if any(n.endswith('.npy') for n in names) else '.tif'
-        lr_suffix = '__emit_b32' + ext
-
-        for cls, tid in list(want.items()):
-            base = tid.rstrip('_')
-            lr_name = base + lr_suffix
-            gt_name = base + gt_stem + ext
+    for cls, tid in picked.items():
+        # full tile ID: "{zip_stem}__{bare}" — derive zip path directly
+        i = tid.rfind('__')
+        if i > 0:
+            scene, bare = tid[:i], tid[i+2:]
+            zp = zip_dir / (scene + '.zip')
+            if zp.exists():
+                with zipfile.ZipFile(zp, 'r') as zf:
+                    names = set(zf.namelist())
+                ext = '.npy' if any(n.endswith('.npy') for n in names) else '.tif'
+                lr_name = bare + '__emit_b32' + ext
+                gt_name = bare + gt_stem + ext
+                if lr_name in names and gt_name in names:
+                    out[cls] = {'tile': tid, 'zip': str(zp),
+                                'lr_name': lr_name, 'gt_name': gt_name}
+                    continue
+        # fallback: scan zips (old-style bare tile names)
+        bare = tid.rstrip('_')
+        for zp in sorted(zip_dir.glob('*.zip')):
+            with zipfile.ZipFile(zp, 'r') as zf:
+                names = set(zf.namelist())
+            ext = '.npy' if any(n.endswith('.npy') for n in names) else '.tif'
+            lr_name = bare + '__emit_b32' + ext
+            gt_name = bare + gt_stem + ext
             if lr_name in names and gt_name in names:
                 out[cls] = {'tile': tid, 'zip': str(zp),
                             'lr_name': lr_name, 'gt_name': gt_name}
-                del want[cls]
+                break
 
-    if want:
-        print(f'warn: {len(want)} selected tiles not found in {zip_dir}: {list(want)}')
+    missing = set(picked) - set(out)
+    if missing:
+        print(f'warn: {len(missing)} tiles not found in {zip_dir}: {list(missing)}')
     return out
 
 

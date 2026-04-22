@@ -83,7 +83,7 @@ def main():
             with open(csv_path) as f:
                 for r in csv.DictReader(f):
                     tile = r['tile']
-                    aoi = tile.split('__')[0].replace('aoi_', '') if '__' in tile else ''
+                    aoi = r.get('aoi', '')
                     pm = params_by_arch.get(arch)
                     row = {
                         'arch': ARCH_LABEL.get(arch, arch),

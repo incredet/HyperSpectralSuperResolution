@@ -110,7 +110,7 @@ def main():
     rows = []
     all_sr_corr, all_bic_corr = [], []
 
-    for i, (zip_path, lr_name, gt_name, _) in enumerate(tqdm(index, desc=args.split)):
+    for i, (zip_path, lr_name, gt_name, scene_id) in enumerate(tqdm(index, desc=args.split)):
         lq = read_tif_from_zip(zip_path, lr_name)
         gt = read_tif_from_zip(zip_path, gt_name)
 
@@ -133,16 +133,20 @@ def main():
         all_sr_corr.append(np.mean(sr_corr))
         all_bic_corr.append(np.mean(bic_corr))
 
-        tile_id = Path(lr_name).stem.replace('_emit_b32', '')
+        bare = Path(lr_name).stem.replace('__emit_b32', '')
+        tile_id = scene_id + '__' + bare if scene_id else bare
+        raw_aoi = scene_id.split('__')[0] if '__' in scene_id else ''
+        aoi_id = raw_aoi.replace('aoi_', '', 1)
         rows.append({
             'tile': tile_id,
+            'aoi': aoi_id,
             **m,
             'sr_corr': float(np.mean(sr_corr)),
             'bic_corr': float(np.mean(bic_corr)),
         })
 
         if i in vis_set:
-            aoi = tile_id.split('__')[0].replace('aoi_', '')
+            aoi = aoi_id.replace('aoi_', '')
 
             fig = make_main_figure(sr, gt, bic, m, vis_bands, gt_source, aoi)
             fig.savefig(out_dir / 'figures' / f'{tile_id}_main.png', dpi=150, bbox_inches='tight')
