@@ -160,21 +160,49 @@ def run_predictions(models, tile_refs, device, scale=6):
     return data
 
 
-def make_tile_grid(data, arch_names, rgb_bands, out_path, title=None):
+def make_tile_grid(data, arch_names, rgb_bands, out_path, title=None,
+                   zoom=False, crop_frac=0.30):
+    import matplotlib.patches as mpatches
     cols = ['Bicubic'] + list(arch_names) + ['GT']
     n_rows, n_cols = len(data), len(cols)
-    fig, axes = plt.subplots(n_rows, n_cols,
-                             figsize=(1.8 * n_cols, 2.0 * n_rows),
-                             squeeze=False)
+
+    if zoom:
+        fig, axes = plt.subplots(
+            n_rows * 2, n_cols,
+            figsize=(2.2 * n_cols, 2.0 * n_rows * 2),
+            gridspec_kw={'height_ratios': [3, 2] * n_rows},
+            squeeze=False)
+    else:
+        fig, axes = plt.subplots(n_rows, n_cols,
+                                 figsize=(1.8 * n_cols, 2.0 * n_rows),
+                                 squeeze=False)
+
     for r, (cls, d) in enumerate(data.items()):
-        axes[r, 0].imshow(to_rgb(d['bic'], rgb_bands))
-        for c, name in enumerate(arch_names, start=1):
-            axes[r, c].imshow(to_rgb(d['preds'][name], rgb_bands))
-        axes[r, -1].imshow(to_rgb(d['gt'], rgb_bands))
-        axes[r, 0].set_ylabel(cls, fontsize=10)
-        for c in range(n_cols):
-            axes[r, c].set_xticks([])
-            axes[r, c].set_yticks([])
+        imgs = [d['bic']] + [d['preds'][n] for n in arch_names] + [d['gt']]
+        _, H, W = d['gt'].shape
+
+        if zoom:
+            row_full, row_zoom = r * 2, r * 2 + 1
+            ch, cw = int(H * crop_frac), int(W * crop_frac)
+            y0, x0 = (H - ch) // 2, (W - cw) // 2
+            for c, img in enumerate(imgs):
+                rgb = to_rgb(img, rgb_bands)
+                axes[row_full, c].imshow(rgb)
+                rect = mpatches.Rectangle((x0, y0), cw, ch, lw=1.2,
+                                          edgecolor='yellow', facecolor='none')
+                axes[row_full, c].add_patch(rect)
+                axes[row_full, c].set_xticks([]); axes[row_full, c].set_yticks([])
+                crop = to_rgb(img[:, y0:y0+ch, x0:x0+cw], rgb_bands)
+                axes[row_zoom, c].imshow(crop, interpolation='nearest')
+                axes[row_zoom, c].set_xticks([]); axes[row_zoom, c].set_yticks([])
+            axes[row_full, 0].set_ylabel(cls, fontsize=10)
+            axes[row_zoom, 0].set_ylabel('zoom', fontsize=9, fontstyle='italic')
+        else:
+            for c, img in enumerate(imgs):
+                axes[r, c].imshow(to_rgb(img, rgb_bands))
+                axes[r, c].set_xticks([]); axes[r, c].set_yticks([])
+            axes[r, 0].set_ylabel(cls, fontsize=10)
+
     for c, name in enumerate(cols):
         axes[0, c].set_title(name, fontsize=10)
     if title:
@@ -215,3 +243,239 @@ def make_spectral_figure(data, class_key, arch_names, out_path,
     plt.tight_layout()
     fig.savefig(out_path, dpi=180, bbox_inches='tight')
     plt.close(fig)
+
+
+def make_perband_rmse(master_csv, arch_names, wavelengths, out_path, split='test'):
+    df = pd.read_csv(master_csv)
+    df = df[df['split'] == split]
+    n_bands = len(wavelengths)
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    for arch in arch_names:
+        g = df[df['arch'] == arch]
+        rmse = [g[f'sr_rmse_b{b:02d}'].mean() for b in range(n_bands)]
+        ax.plot(wavelengths, rmse, '-o', ms=3, lw=1.5, label=arch)
+
+    g0 = df[df['arch'] == df['arch'].iloc[0]]
+    bic = [g0[f'bic_rmse_b{b:02d}'].mean() for b in range(n_bands)]
+    ax.plot(wavelengths, bic, '--', color='0.5', lw=1.5, label='Bicubic')
+
+    ax.set_xlabel('Wavelength (nm)')
+    ax.set_ylabel('RMSE')
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim(bottom=0)
+    plt.tight_layout()
+    fig.savefig(out_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
+
+
+def make_perband_corr(master_csv, arch_names, wavelengths, out_path, split='test'):
+    df = pd.read_csv(master_csv)
+    df = df[df['split'] == split]
+    n_bands = len(wavelengths)
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    for arch in arch_names:
+        g = df[df['arch'] == arch]
+        corr = [g[f'sr_corr_b{b:02d}'].mean() for b in range(n_bands)]
+        ax.plot(wavelengths, corr, '-o', ms=3, lw=1.2, label=arch)
+
+    g0 = df[df['arch'] == df['arch'].iloc[0]]
+    bic = [g0[f'bic_corr_b{b:02d}'].mean() for b in range(n_bands)]
+    ax.plot(wavelengths, bic, '--', color='0.5', lw=1.5, label='Bicubic')
+
+    ax.set_xlabel('Wavelength (nm)')
+    ax.set_ylabel('Correlation')
+    ax.legend(fontsize=8, ncol=2)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    fig.savefig(out_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
+
+
+def make_params_vs_psnr(master_csv, families, out_path, split='test'):
+    from matplotlib.lines import Line2D
+    tbl = aggregate_arch_table(master_csv, split=split)
+    tbl = tbl[tbl['arch'] != 'Bicubic']
+
+    family_map = {v: fam for fam, variants in families.items() for v in variants}
+    markers = {'RRDB': 's', 'ESSA': '^', 'CST': 'D'}
+    colors = {'RRDB': '#1f77b4', 'ESSA': '#2ca02c', 'CST': '#d62728'}
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    for _, row in tbl.iterrows():
+        fam = family_map.get(row['arch'], '?')
+        ax.scatter(row['params_M'], row['psnr_mean'],
+                   marker=markers.get(fam, 'o'), color=colors.get(fam, '0.3'),
+                   s=80, zorder=5)
+        ax.annotate(row['arch'], (row['params_M'], row['psnr_mean']),
+                    textcoords='offset points', xytext=(6, 4), fontsize=8)
+
+    ax.set_xlabel('Parameters (M)')
+    ax.set_ylabel(f'{split.capitalize()} PSNR (dB)')
+    ax.grid(True, alpha=0.3)
+    handles = [Line2D([0], [0], marker=markers[f], color=colors[f], ls='',
+                      ms=8, label=f) for f in families]
+    ax.legend(handles=handles, fontsize=9)
+    plt.tight_layout()
+    fig.savefig(out_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
+
+
+def make_training_curves(archs, configs_dir, exp_suffix, out_path,
+                         project='EMIT-S2-SuperResolution'):
+    try:
+        import wandb
+    except ImportError:
+        print('wandb not installed — skip training curves')
+        return
+    api = wandb.Api()
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    found = 0
+    for arch, cfg_stem in archs.items():
+        cfg = yaml.safe_load((Path(configs_dir) / f'{cfg_stem}.yaml').read_text())
+        run_name = cfg['exp_name'] + exp_suffix
+        runs = api.runs(project, filters={'display_name': run_name})
+        if not runs:
+            print(f'  {arch}: no WandB run "{run_name}"'); continue
+        hist = runs[0].history(keys=['val/sr_psnr_mean', '_step'], samples=5000)
+        hist = hist.dropna(subset=['val/sr_psnr_mean'])
+        if len(hist) == 0:
+            print(f'  {arch}: no val metrics'); continue
+        ax.plot(hist['_step'], hist['val/sr_psnr_mean'], label=arch)
+        found += 1
+        print(f'  {arch}: {len(hist)} points, final {hist["val/sr_psnr_mean"].iloc[-1]:.2f} dB')
+    if found == 0:
+        plt.close(fig); print('no training curves found'); return
+    ax.set_xlabel('Iteration')
+    ax.set_ylabel('Val PSNR (dB)')
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    fig.savefig(out_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
+
+
+def pick_best_per_family(master_csv, families):
+    val_tbl = aggregate_arch_table(master_csv, split='val')
+    best = {}
+    for fam, variants in families.items():
+        sub = val_tbl[val_tbl['arch'].isin(variants)].sort_values('psnr_mean', ascending=False)
+        best[fam] = sub.iloc[0]['arch']
+        print(f'{fam}: {best[fam]} (val PSNR {sub.iloc[0]["psnr_mean"]:.2f})')
+    return list(best.values())
+
+
+if __name__ == '__main__':
+    import argparse
+
+    p = argparse.ArgumentParser(description='Generate all arch comparison figures')
+    p.add_argument('--master-csv', required=True)
+    p.add_argument('--configs-dir', required=True)
+    p.add_argument('--exp-dir', required=True, help='root experiments dir')
+    p.add_argument('--exp-suffix', default='')
+    p.add_argument('--zip-dir', required=True)
+    p.add_argument('--aois-csv', required=True)
+    p.add_argument('--pipe-config', required=True, help='pipeline_config.yaml')
+    p.add_argument('--fig-dir', required=True)
+    p.add_argument('--gt-source', default='cnmf')
+    p.add_argument('--no-wandb', action='store_true')
+    args = p.parse_args()
+
+    import torch
+    from viz import rgb_bands_for_wavelengths
+
+    fig_dir = Path(args.fig_dir)
+    fig_dir.mkdir(parents=True, exist_ok=True)
+
+    pipe_cfg = yaml.safe_load(Path(args.pipe_config).read_text())
+    wl = pipe_cfg['emit_target_wavelengths_nm']
+    rgb_bands = rgb_bands_for_wavelengths(wl)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    ARCHS = {
+        'RRDB-192': 'exp1_rrdb_192x24',
+        'RRDB-96':  'exp1_rrdb_96x24',
+        'ESSA-252': 'exp1_essa_dim252',
+        'ESSA-180': 'exp1_essa_dim180',
+        'CST-180':  'exp1_cst_dim180',
+        'CST-96':   'exp1_cst_dim96',
+    }
+    FAMILIES = {
+        'RRDB': ['RRDB-192', 'RRDB-96'],
+        'ESSA': ['ESSA-252', 'ESSA-180'],
+        'CST':  ['CST-180', 'CST-96'],
+    }
+
+    configs_dir = Path(args.configs_dir)
+    exp_dir = Path(args.exp_dir)
+
+    # best per family (val PSNR)
+    best_archs = pick_best_per_family(args.master_csv, FAMILIES)
+
+    # load all 6 models
+    all_models = {}
+    for arch, cfg_stem in ARCHS.items():
+        cfg_path = configs_dir / f'{cfg_stem}.yaml'
+        cfg = yaml.safe_load(cfg_path.read_text())
+        ckpt = exp_dir / (cfg['exp_name'] + args.exp_suffix) / 'models' / 'best.pth'
+        if not ckpt.exists():
+            print(f'skip {arch}: no ckpt at {ckpt}'); continue
+        all_models[arch], _ = load_model(str(cfg_path), str(ckpt), device)
+        print(f'loaded {arch}')
+
+    tile_refs = select_tiles_by_landcover(
+        args.master_csv, args.aois_csv, args.zip_dir, args.gt_source, split='test')
+
+    # --- main text ---
+    print('\n=== main text figures ===')
+
+    # 1. visual grid — best per family, with zoom
+    best_models = {a: all_models[a] for a in best_archs if a in all_models}
+    data_best = run_predictions(best_models, tile_refs, device)
+    make_tile_grid(data_best, best_archs, rgb_bands,
+                   out_path=fig_dir / 'tile_grid_main.png', zoom=True)
+    print(f'  tile_grid_main.png')
+
+    # 2. per-band RMSE — best per family
+    make_perband_rmse(args.master_csv, best_archs, wl,
+                      out_path=fig_dir / 'perband_rmse_main.png')
+    print(f'  perband_rmse_main.png')
+
+    # 3. params vs PSNR
+    make_params_vs_psnr(args.master_csv, FAMILIES,
+                        out_path=fig_dir / 'params_vs_psnr.png')
+    print(f'  params_vs_psnr.png')
+
+    # --- appendix ---
+    print('\n=== appendix figures ===')
+
+    # 4. full 6-model grid (no zoom)
+    data_all = run_predictions(all_models, tile_refs, device)
+    make_tile_grid(data_all, list(all_models), rgb_bands,
+                   out_path=fig_dir / 'tile_grid_all.png',
+                   title='Test tiles — 6× SR (trained on CNMF)')
+    print(f'  tile_grid_all.png')
+
+    # 5. per-band correlation — all 6
+    make_perband_corr(args.master_csv, list(ARCHS), wl,
+                      out_path=fig_dir / 'perband_corr_appendix.png')
+    print(f'  perband_corr_appendix.png')
+
+    # 6. spectral profiles — all 6
+    for cls in data_all:
+        safe = cls.replace('/', '_')
+        make_spectral_figure(data_all, cls, list(all_models),
+                             out_path=fig_dir / f'spectra_{safe}.png',
+                             wavelengths=wl)
+        print(f'  spectra_{safe}.png')
+
+    # 7. training curves
+    if not args.no_wandb:
+        make_training_curves(ARCHS, args.configs_dir, args.exp_suffix,
+                             out_path=fig_dir / 'training_curves.png')
+        if (fig_dir / 'training_curves.png').exists():
+            print(f'  training_curves.png')
+
+    print(f'\nall figures in {fig_dir}')
