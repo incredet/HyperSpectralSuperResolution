@@ -1,0 +1,36 @@
+{
+  "scene": "lat-20.45_lon24.81_20250830_T35KKT_t129",
+  "hs_file": "20250830T085101_T35KKT_20250829_tile129_emit_b32.tif",
+  "ms_file": "20250830T085101_T35KKT_20250829_tile129_s2.tif",
+  "gt_shape": [
+    96,
+    96,
+    32
+  ],
+  "hs_shape": [
+    16,
+    16,
+    32
+  ],
+  "ms_shape": [
+    96,
+    96,
+    10
+  ],
+  "hs_bands": 32,
+  "ms_bands": 10,
+  "scale": 6,
+  "blur_sigma": 2.0,
+  "norm_global_max": 6869.0,
+  "ms_crs": "EPSG:32735",
+  "ms_transform": [
+    10.0,
+    0.0,
+    288420.0,
+    0.0,
+    -10.0,
+    7730260.0
+  ],
+  "ms_dtype": "uint16",
+  "wald_protocol": true
+}

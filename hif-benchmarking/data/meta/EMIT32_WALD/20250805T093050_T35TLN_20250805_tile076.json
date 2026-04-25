@@ -1,0 +1,30 @@
+{
+  "scene": "20250805T093050_T35TLN_20250805_tile076",
+  "hs_file": "20250805T093050_T35TLN_20250805_tile076_emit_b32.tif",
+  "ms_file": "20250805T093050_T35TLN_20250805_tile076_s2.tif",
+  "pair_dir": "/Users/incredet/Library/CloudStorage/GoogleDrive-voitsitska.pn@ucu.edu.ua/Shared drives/HyperResData/EMIT_S-2_Matches/2026-03-17/aoi_lat47.5_lon24.5/20250805T093050_T35TLN_20250805",
+  "hs_shape": [
+    100,
+    100,
+    32
+  ],
+  "ms_shape": [
+    600,
+    600,
+    10
+  ],
+  "hs_bands": 32,
+  "ms_bands": 10,
+  "scale": 6,
+  "norm_global_max": 18697.0,
+  "ms_crs": "EPSG:32635",
+  "ms_transform": [
+    10.0,
+    0.0,
+    336000.0,
+    0.0,
+    -10.0,
+    5268000.0
+  ],
+  "ms_dtype": "uint16"
+}

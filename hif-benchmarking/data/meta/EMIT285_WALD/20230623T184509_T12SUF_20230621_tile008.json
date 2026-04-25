@@ -1,0 +1,36 @@
+{
+  "scene": "20230623T184509_T12SUF_20230621_tile008",
+  "hs_file": "20230623T184509_T12SUF_20230621_tile008_emit.tif",
+  "ms_file": "20230623T184509_T12SUF_20230621_tile008_s2.tif",
+  "gt_shape": [
+    450,
+    450,
+    285
+  ],
+  "hs_shape": [
+    75,
+    75,
+    285
+  ],
+  "ms_shape": [
+    450,
+    450,
+    10
+  ],
+  "hs_bands": 285,
+  "ms_bands": 10,
+  "scale": 6,
+  "blur_sigma": 2.0,
+  "norm_global_max": 65535.0,
+  "ms_crs": "EPSG:32612",
+  "ms_transform": [
+    10.0,
+    0.0,
+    363420.0,
+    0.0,
+    -10.0,
+    4033500.0
+  ],
+  "ms_dtype": "uint16",
+  "wald_protocol": true
+}

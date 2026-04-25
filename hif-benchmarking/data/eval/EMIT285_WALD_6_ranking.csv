@@ -1,0 +1,2 @@
+method,n_scenes,avg_rank,PSNR↑,PSNR_rank,SSIM↑,SSIM_rank,SAM↓,SAM_rank,ERGAS↓,ERGAS_rank,RMSE↓,RMSE_rank,UIQI↑,UIQI_rank,SCC↑,SCC_rank
+GLP,6,1.00,40.597822,1,0.942018,1,0.696039,1,0.878858,1,0.011419,1,0.588791,1,0.800948,1

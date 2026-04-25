@@ -1,0 +1,36 @@
+{
+  "scene": "lat23.0_lon57.5_20260129_T40QEL_t217",
+  "hs_file": "20260129T064108_T40QEL_20260129_tile217_emit_b32.tif",
+  "ms_file": "20260129T064108_T40QEL_20260129_tile217_s2.tif",
+  "gt_shape": [
+    96,
+    96,
+    32
+  ],
+  "hs_shape": [
+    16,
+    16,
+    32
+  ],
+  "ms_shape": [
+    96,
+    96,
+    10
+  ],
+  "hs_bands": 32,
+  "ms_bands": 10,
+  "scale": 6,
+  "blur_sigma": 2.0,
+  "norm_global_max": 5850.0,
+  "ms_crs": "EPSG:32640",
+  "ms_transform": [
+    10.0,
+    0.0,
+    562560.0,
+    0.0,
+    -10.0,
+    2504340.0
+  ],
+  "ms_dtype": "uint16",
+  "wald_protocol": true
+}
