@@ -4,6 +4,7 @@ gt_source: synthetic
 zip_dir: /content/data/zips_synthetic_bicubic
 zip_dir_full: /content/data/zips_synthetic_bicubic
 out_dir: /content/drive/Shareddrives/HyperResData/EMIT_S-2_Matches/experiments
+split_json: /content/drive/Shareddrives/HyperResData/EMIT_S-2_Matches/2026-04-02/aoi_split.json
 
 seed: 42
 num_bands: 32

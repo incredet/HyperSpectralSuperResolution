@@ -164,6 +164,7 @@ def main():
     parser.add_argument('--zip-dir')
     parser.add_argument('--out-dir')
     parser.add_argument('--gt-source', help='override gt_source in config')
+    parser.add_argument('--split-json', help='JSON with {train,val,test} AOI lists; overrides split_aois')
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -200,10 +201,28 @@ def main():
     zip_dir = Path(cfg['zip_dir'])
     zip_dir_full = Path(cfg.get('zip_dir_full', cfg['zip_dir']))
 
-    # pool AOIs from both folders so split matches the original 109-AOI split
-    all_aois = {zp.stem.split('__')[0] for zp in zip_dir.glob('*.zip')}
-    all_aois |= {zp.stem.split('__')[0] for zp in zip_dir_full.glob('*.zip')}
-    train_aois, val_aois, _ = split_aois(all_aois, cfg['seed'], cfg.get('max_aois'))
+    split_json = args.split_json or cfg.get('split_json')
+    if split_json:
+        import json
+        with open(split_json) as f:
+            split_data = json.load(f)
+        train_aois = set(split_data['train'])
+        val_aois = set(split_data['val'])
+        test_aois = set(split_data.get('test', []))
+        # sanity: flag any zip AOIs not in the split
+        disk_aois = {zp.stem.split('__')[0] for zp in zip_dir.glob('*.zip')}
+        disk_aois |= {zp.stem.split('__')[0] for zp in zip_dir_full.glob('*.zip')}
+        extras = disk_aois - train_aois - val_aois - test_aois
+        if extras:
+            print(f'WARNING: {len(extras)} AOIs on disk not in split JSON (ignored): {sorted(extras)[:5]}')
+        leaked = (val_aois | test_aois) & train_aois
+        if leaked:
+            raise ValueError(f'Split JSON has overlapping train/val/test AOIs: {leaked}')
+        print(f'Loaded split from {split_json}: {len(train_aois)} train / {len(val_aois)} val AOIs')
+    else:
+        all_aois = {zp.stem.split('__')[0] for zp in zip_dir.glob('*.zip')}
+        all_aois |= {zp.stem.split('__')[0] for zp in zip_dir_full.glob('*.zip')}
+        train_aois, val_aois, _ = split_aois(all_aois, cfg['seed'], cfg.get('max_aois'))
 
     train_index = build_index(zip_dir, cfg['gt_source'], train_aois)
     val_index = build_index(zip_dir_full, cfg['gt_source'], val_aois)
