@@ -105,6 +105,8 @@ def main():
                     help='srf_R.mat from compute_srf.py (key "R", shape 10x32)')
     ap.add_argument('--out-dir', default=None,
                     help='default: {sr-dir}/../eval_s2')
+    ap.add_argument('--out-csv', default=None,
+                    help='explicit CSV output path (overrides out-dir default)')
     ap.add_argument('--border', type=int, default=6,
                     help='border pixels to exclude (default: 6)')
     ap.add_argument('--n-vis', type=int, default=8)
@@ -188,7 +190,7 @@ def main():
         print('No tiles evaluated.')
         return
 
-    csv_path = out_dir / 'eval_s2_bands.csv'
+    csv_path = Path(args.out_csv) if args.out_csv else out_dir / 'eval_s2_bands.csv'
     with open(csv_path, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=rows[0].keys())
         w.writeheader()
