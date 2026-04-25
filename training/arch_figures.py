@@ -245,6 +245,39 @@ def make_spectral_figure(data, class_key, arch_names, out_path,
     plt.close(fig)
 
 
+def make_perband_psnr(master_csv, arch_names, wavelengths, out_path, split='test'):
+    df = pd.read_csv(master_csv)
+    df = df[df['split'] == split]
+    n_bands = len(wavelengths)
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    for arch in arch_names:
+        g = df[df['arch'] == arch]
+        # per-tile per-band PSNR from RMSE, then average across tiles
+        psnr = []
+        for b in range(n_bands):
+            rmse_vals = pd.to_numeric(g[f'sr_rmse_b{b:02d}'], errors='coerce').dropna()
+            mse = (rmse_vals ** 2).clip(lower=1e-10)
+            psnr.append((10 * np.log10(1.0 / mse)).mean())
+        ax.plot(wavelengths, psnr, '-o', ms=3, lw=1.5, label=arch)
+
+    g0 = df[df['arch'] == df['arch'].iloc[0]]
+    bic_psnr = []
+    for b in range(n_bands):
+        rmse_vals = pd.to_numeric(g0[f'bic_rmse_b{b:02d}'], errors='coerce').dropna()
+        mse = (rmse_vals ** 2).clip(lower=1e-10)
+        bic_psnr.append((10 * np.log10(1.0 / mse)).mean())
+    ax.plot(wavelengths, bic_psnr, '--', color='0.5', lw=1.5, label='Bicubic')
+
+    ax.set_xlabel('Wavelength (nm)')
+    ax.set_ylabel('PSNR (dB)')
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    fig.savefig(out_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
+
+
 def make_perband_rmse(master_csv, arch_names, wavelengths, out_path, split='test'):
     df = pd.read_csv(master_csv)
     df = df[df['split'] == split]
@@ -289,35 +322,6 @@ def make_perband_corr(master_csv, arch_names, wavelengths, out_path, split='test
     ax.set_ylabel('Correlation')
     ax.legend(fontsize=8, ncol=2)
     ax.grid(True, alpha=0.3)
-    plt.tight_layout()
-    fig.savefig(out_path, dpi=200, bbox_inches='tight')
-    plt.close(fig)
-
-
-def make_params_vs_psnr(master_csv, families, out_path, split='test'):
-    from matplotlib.lines import Line2D
-    tbl = aggregate_arch_table(master_csv, split=split)
-    tbl = tbl[tbl['arch'] != 'Bicubic']
-
-    family_map = {v: fam for fam, variants in families.items() for v in variants}
-    markers = {'RRDB': 's', 'ESSA': '^', 'CST': 'D'}
-    colors = {'RRDB': '#1f77b4', 'ESSA': '#2ca02c', 'CST': '#d62728'}
-
-    fig, ax = plt.subplots(figsize=(6, 4))
-    for _, row in tbl.iterrows():
-        fam = family_map.get(row['arch'], '?')
-        ax.scatter(row['params_M'], row['psnr_mean'],
-                   marker=markers.get(fam, 'o'), color=colors.get(fam, '0.3'),
-                   s=80, zorder=5)
-        ax.annotate(row['arch'], (row['params_M'], row['psnr_mean']),
-                    textcoords='offset points', xytext=(6, 4), fontsize=8)
-
-    ax.set_xlabel('Parameters (M)')
-    ax.set_ylabel(f'{split.capitalize()} PSNR (dB)')
-    ax.grid(True, alpha=0.3)
-    handles = [Line2D([0], [0], marker=markers[f], color=colors[f], ls='',
-                      ms=8, label=f) for f in families]
-    ax.legend(handles=handles, fontsize=9)
     plt.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches='tight')
     plt.close(fig)
@@ -438,15 +442,15 @@ if __name__ == '__main__':
                    out_path=fig_dir / 'tile_grid_main.png', zoom=True)
     print(f'  tile_grid_main.png')
 
-    # 2. per-band RMSE — best per family
+    # 2. per-band PSNR — best per family
+    make_perband_psnr(args.master_csv, best_archs, wl,
+                      out_path=fig_dir / 'perband_psnr_main.png')
+    print(f'  perband_psnr_main.png')
+
+    # 3. per-band RMSE — best per family
     make_perband_rmse(args.master_csv, best_archs, wl,
                       out_path=fig_dir / 'perband_rmse_main.png')
     print(f'  perband_rmse_main.png')
-
-    # 3. params vs PSNR
-    make_params_vs_psnr(args.master_csv, FAMILIES,
-                        out_path=fig_dir / 'params_vs_psnr.png')
-    print(f'  params_vs_psnr.png')
 
     # --- appendix ---
     print('\n=== appendix figures ===')
@@ -463,7 +467,17 @@ if __name__ == '__main__':
                       out_path=fig_dir / 'perband_corr_appendix.png')
     print(f'  perband_corr_appendix.png')
 
-    # 6. spectral profiles — all 6
+    # 6. per-band PSNR — all 6
+    make_perband_psnr(args.master_csv, list(ARCHS), wl,
+                      out_path=fig_dir / 'perband_psnr_appendix.png')
+    print(f'  perband_psnr_appendix.png')
+
+    # 7. per-band RMSE — all 6
+    make_perband_rmse(args.master_csv, list(ARCHS), wl,
+                      out_path=fig_dir / 'perband_rmse_appendix.png')
+    print(f'  perband_rmse_appendix.png')
+
+    # 8. spectral profiles — all 6
     for cls in data_all:
         safe = cls.replace('/', '_')
         make_spectral_figure(data_all, cls, list(all_models),
@@ -471,7 +485,7 @@ if __name__ == '__main__':
                              wavelengths=wl)
         print(f'  spectra_{safe}.png')
 
-    # 7. training curves
+    # 9. training curves
     if not args.no_wandb:
         make_training_curves(ARCHS, args.configs_dir, args.exp_suffix,
                              out_path=fig_dir / 'training_curves.png')
