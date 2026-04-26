@@ -94,13 +94,11 @@ def select_tiles_by_landcover(aois_csv, zip_dir, split_json, split='test',
             if aoi not in cls_aois:
                 continue
             with zipfile.ZipFile(zp) as zf:
-                members = sorted(n for n in zf.namelist()
-                                 if n.endswith('_synthetic_gt.npy') or n.endswith('__emit_b32.npy'))
-                lr_members = [n for n in members if '__emit_b32' in n]
-            if lr_members:
-                # pick middle tile
-                m = lr_members[len(lr_members) // 2]
-                picked[cls] = (zp, m)
+                # _synthetic_gt.npy = real EMIT 96×96, the test-time input
+                gt_members = sorted(n for n in zf.namelist()
+                                    if n.endswith('_synthetic_gt.npy'))
+            if gt_members:
+                picked[cls] = (zp, gt_members[len(gt_members) // 2])
                 break
 
     return picked
