@@ -382,10 +382,26 @@ if __name__ == '__main__':
             print(f'loaded {name}')
 
         # select tiles by landcover class
-        # skip first Urban zip — often lands on desert outskirts
         tile_refs = select_tiles_by_landcover(
             args.aois_csv, args.zip_dir, args.split_file,
             skip={'Urban': 1})
+
+        # force specific tiles by label (overrides auto-selection)
+        FORCE_TILES = {
+            'Fire scar (California)': ('aoi_lat37.5_lon-120.0__20250619T191233_T10SGG_20250619',
+                                       'tile004_synthetic_gt.npy'),
+            'Fire scar (Australia)':  ('aoi_lat-37.0_lon149.0__20250104T001736_T55HFU_20250103',
+                                       'tile007_synthetic_gt.npy'),
+        }
+        zip_dir_p = Path(args.zip_dir)
+        for label, (zip_stem, member) in FORCE_TILES.items():
+            zp = zip_dir_p / f'{zip_stem}.zip'
+            if zp.exists():
+                tile_refs[label] = (zp, member)
+                print(f'  {label}: forced {zip_stem}')
+            else:
+                print(f'  {label}: WARN zip not found: {zp.name}')
+
         print(f'selected {len(tile_refs)} tiles: {list(tile_refs.keys())}')
 
         from collections import OrderedDict
@@ -394,14 +410,24 @@ if __name__ == '__main__':
             td = run_tile(models, zp, member, device)
             data[cls] = td
 
-        # 1. comparison grid
-        make_comparison_grid(data, rgb_bands,
-                             out_path=fig_dir / 'gt_comparison_grid.png')
-        print('  gt_comparison_grid.png')
+        # 1a. main figure — single row (Temperate forest)
+        MAIN_ROW = 'Temperate forest'
+        if MAIN_ROW in data:
+            main_data = OrderedDict([(MAIN_ROW, data[MAIN_ROW])])
+            make_comparison_grid(main_data, rgb_bands,
+                                 out_path=fig_dir / 'gt_comparison_grid_main.png')
+            print('  gt_comparison_grid_main.png')
 
-        # 2. gradient magnitude maps (first tile)
-        first_cls = next(iter(data))
-        make_gradient_maps(data[first_cls], rgb_bands,
+        # 1b. appendix figure — remaining rows
+        app_data = OrderedDict((k, v) for k, v in data.items() if k != MAIN_ROW)
+        if app_data:
+            make_comparison_grid(app_data, rgb_bands,
+                                 out_path=fig_dir / 'gt_comparison_grid_appendix.png')
+            print('  gt_comparison_grid_appendix.png')
+
+        # 2. gradient magnitude maps (main row tile)
+        grad_cls = MAIN_ROW if MAIN_ROW in data else next(iter(data))
+        make_gradient_maps(data[grad_cls], rgb_bands,
                            out_path=fig_dir / 'gt_gradient_maps.png')
         print('  gt_gradient_maps.png')
 
