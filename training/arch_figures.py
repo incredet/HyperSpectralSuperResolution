@@ -174,7 +174,7 @@ def make_tile_grid(data, arch_names, rgb_bands, out_path, title=None,
             squeeze=False)
     else:
         fig, axes = plt.subplots(n_rows, n_cols,
-                                 figsize=(2.2 * n_cols, 2.4 * n_rows),
+                                 figsize=(3.0 * n_cols, 3.2 * n_rows),
                                  squeeze=False)
 
     for r, (cls, d) in enumerate(data.items()):
@@ -195,18 +195,18 @@ def make_tile_grid(data, arch_names, rgb_bands, out_path, title=None,
                 crop = to_rgb(img[:, y0:y0+ch, x0:x0+cw], rgb_bands)
                 axes[row_zoom, c].imshow(crop, interpolation='nearest')
                 axes[row_zoom, c].set_xticks([]); axes[row_zoom, c].set_yticks([])
-            axes[row_full, 0].set_ylabel(cls, fontsize=13)
-            axes[row_zoom, 0].set_ylabel('zoom', fontsize=11, fontstyle='italic')
+            axes[row_full, 0].set_ylabel(cls, fontsize=16)
+            axes[row_zoom, 0].set_ylabel('zoom', fontsize=14, fontstyle='italic')
         else:
             for c, img in enumerate(imgs):
                 axes[r, c].imshow(to_rgb(img, rgb_bands))
                 axes[r, c].set_xticks([]); axes[r, c].set_yticks([])
-            axes[r, 0].set_ylabel(cls, fontsize=13)
+            axes[r, 0].set_ylabel(cls, fontsize=16)
 
     for c, name in enumerate(cols):
-        axes[0, c].set_title(name, fontsize=13)
+        axes[0, c].set_title(name, fontsize=16)
     if title:
-        fig.suptitle(title, fontsize=14)
+        fig.suptitle(title, fontsize=18)
     plt.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches='tight')
     plt.close(fig)
