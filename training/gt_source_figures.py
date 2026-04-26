@@ -101,36 +101,42 @@ def make_comparison_grid(tiles_data, rgb_bands, out_path,
     plt.close(fig)
 
 
-# ── residual heatmaps ──
+# ── gradient magnitude maps ──
 
-def make_residual_heatmaps(tile_data, rgb_bands, out_path, models=None):
-    # mean |SR - bicubic| across bands — shows added high-frequency content
+def _sobel_gradient_mag(cube):
+    # mean Sobel gradient magnitude across bands
+    from scipy.ndimage import sobel
+    B = cube.shape[0]
+    gmag = np.zeros(cube.shape[1:], dtype=np.float64)
+    for b in range(B):
+        gx = sobel(cube[b], axis=1)
+        gy = sobel(cube[b], axis=0)
+        gmag += np.sqrt(gx**2 + gy**2)
+    return (gmag / B).astype(np.float32)
+
+
+def make_gradient_maps(tile_data, rgb_bands, out_path, models=None):
     models = models or ORDER
     bic = tile_data['bic']
 
-    residuals, labs = [], []
+    gmaps = [_sobel_gradient_mag(bic)]
+    labs = ['Bicubic']
     for m in models:
-        res = np.abs(tile_data['preds'][m] - bic).mean(axis=0)
-        residuals.append(res)
+        gmaps.append(_sobel_gradient_mag(tile_data['preds'][m]))
         labs.append(_label(m))
 
-    # also show the tile RGB for spatial context
-    n = len(residuals)
-    fig, axes = plt.subplots(1, n + 2, figsize=(2.8 * (n + 2), 3.2),
-                             gridspec_kw={'width_ratios': [1] * (n + 1) + [0.06]})
+    n = len(gmaps)
+    fig, axes = plt.subplots(1, n + 1, figsize=(2.8 * (n + 1), 3.2),
+                             gridspec_kw={'width_ratios': [1] * n + [0.06]})
 
-    axes[0].imshow(to_rgb(bic, rgb_bands))
-    axes[0].set_title('Bicubic', fontsize=16)
-    axes[0].set_xticks([]); axes[0].set_yticks([])
-
-    vmax = np.quantile(np.concatenate([r.ravel() for r in residuals]), 0.98)
-    for i, (res, lab) in enumerate(zip(residuals, labs)):
-        im = axes[i + 1].imshow(res, cmap='inferno', vmin=0, vmax=vmax)
-        axes[i + 1].set_title(lab, fontsize=16)
-        axes[i + 1].set_xticks([]); axes[i + 1].set_yticks([])
+    vmax = np.quantile(np.concatenate([g.ravel() for g in gmaps]), 0.98)
+    for i, (gm, lab) in enumerate(zip(gmaps, labs)):
+        im = axes[i].imshow(gm, cmap='inferno', vmin=0, vmax=vmax)
+        axes[i].set_title(lab, fontsize=16)
+        axes[i].set_xticks([]); axes[i].set_yticks([])
 
     cb = fig.colorbar(im, cax=axes[-1])
-    cb.set_label('Mean |SR $-$ Bicubic|', fontsize=12)
+    cb.set_label('Mean gradient magnitude', fontsize=12)
     cb.ax.tick_params(labelsize=11)
 
     plt.tight_layout()
@@ -145,8 +151,9 @@ def make_gsde_histogram(esf_dir, out_path, models=None):
     esf_dir = Path(esf_dir)
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
 
+    # draw in reverse so first model (CNMF) ends up on top
     fig, ax = plt.subplots(figsize=(6, 4))
-    for i, m in enumerate(models):
+    for i, m in reversed(list(enumerate(models))):
         p = esf_dir / f'esf_per_tile_{m}.csv'
         if not p.exists():
             print(f'  skip {m}: no {p.name}'); continue
@@ -160,7 +167,9 @@ def make_gsde_histogram(esf_dir, out_path, models=None):
     ax.set_xlabel('Effective GSD (m)', fontsize=14)
     ax.set_ylabel('Number of tiles', fontsize=14)
     ax.tick_params(labelsize=12)
-    ax.legend(fontsize=11)
+    # legend in original ORDER (not reversed draw order)
+    handles, labels = ax.get_legend_handles_labels()
+    ax.legend(handles[::-1], labels[::-1], fontsize=11)
     ax.grid(True, axis='y', alpha=0.3)
     plt.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches='tight')
@@ -202,6 +211,34 @@ def make_s2_perband_corr(s2b_dir, out_path, models=None):
 
 def make_s2_perband_rmse(s2b_dir, out_path, models=None):
     _s2_perband(s2b_dir, 'rmse', 'RMSE vs real S2', out_path, models)
+
+
+def make_s2_perband_psnr(s2b_dir, out_path, models=None):
+    """PSNR per S2 band: -20·log10(RMSE) assuming [0,1] data."""
+    models = models or ORDER
+    s2b_dir = Path(s2b_dir)
+    xlabels = [f'{b}\n{wl}nm' for b, wl in zip(S2_BANDS, S2_WL)]
+    x = np.arange(len(S2_BANDS))
+
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    for m in models:
+        p = s2b_dir / f's2_bands_{m}.csv'
+        if not p.exists():
+            continue
+        df = pd.read_csv(p)
+        rmse_vals = [df[f'rmse_{b}'].mean() for b in S2_BANDS]
+        psnr = [-20 * np.log10(v) if v > 0 else 60.0 for v in rmse_vals]
+        ax.plot(x, psnr, '-o', ms=5, lw=1.5, label=_label(m))
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(xlabels, fontsize=9)
+    ax.set_ylabel('PSNR (dB) vs real S2', fontsize=14)
+    ax.tick_params(axis='y', labelsize=12)
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    fig.savefig(out_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
 
 
 # ── main ──
@@ -281,10 +318,10 @@ if __name__ == '__main__':
                              out_path=fig_dir / 'gt_comparison_grid.png')
         print('  gt_comparison_grid.png')
 
-        # 2. residual heatmaps (first tile)
-        make_residual_heatmaps(tiles_data[0], rgb_bands,
-                               out_path=fig_dir / 'gt_residual_heatmap.png')
-        print('  gt_residual_heatmap.png')
+        # 2. gradient magnitude maps (first tile)
+        make_gradient_maps(tiles_data[0], rgb_bands,
+                           out_path=fig_dir / 'gt_gradient_maps.png')
+        print('  gt_gradient_maps.png')
 
     # 3. GSDe histogram
     make_gsde_histogram(args.esf_dir, out_path=fig_dir / 'gt_gsde_histogram.png')
@@ -293,6 +330,9 @@ if __name__ == '__main__':
     # 4. S2 per-band
     make_s2_perband_corr(args.s2b_dir, out_path=fig_dir / 'gt_s2_perband_corr.png')
     print('  gt_s2_perband_corr.png')
+
+    make_s2_perband_psnr(args.s2b_dir, out_path=fig_dir / 'gt_s2_perband_psnr.png')
+    print('  gt_s2_perband_psnr.png')
 
     make_s2_perband_rmse(args.s2b_dir, out_path=fig_dir / 'gt_s2_perband_rmse.png')
     print('  gt_s2_perband_rmse.png')
