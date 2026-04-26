@@ -73,9 +73,11 @@ def _classify_landcover(lc, prefixes):
 
 
 def select_tiles_by_landcover(aois_csv, zip_dir, split_json, split='test',
-                              groups=None):
-    """Pick one representative tile per landcover class from test set."""
+                              groups=None, skip=None):
+    """Pick one representative tile per landcover class from test set.
+    skip: dict {class_name: n} — skip first n matching zips for that class."""
     groups = groups or LANDCOVER_PREFIXES
+    skip = skip or {}
 
     aois_df = pd.read_csv(aois_csv)
     aois_df['aoi'] = ['aoi_' + _aoi_key(r.lat, r.lon) for r in aois_df.itertuples()]
@@ -87,7 +89,6 @@ def select_tiles_by_landcover(aois_csv, zip_dir, split_json, split='test',
     test_aois = set(split_data[split])
 
     zip_dir = Path(zip_dir)
-    # map aoi key → land_cover for preferring "pure" labels
     aoi_to_lc = dict(zip(aois_df['aoi'], aois_df['land_cover']))
 
     picked = {}
@@ -98,10 +99,11 @@ def select_tiles_by_landcover(aois_csv, zip_dir, split_json, split='test',
         if not cls_aois:
             print(f'  {cls}: {n_before} AOIs in class, 0 in test split')
             continue
-        # prefer AOIs whose land_cover has no slash (e.g. "urban" over "urban/arid")
         pure = {a for a in cls_aois if '/' not in aoi_to_lc.get(a, '/')}
         prefer = sorted(pure) if pure else sorted(cls_aois)
 
+        n_skip = skip.get(cls, 0)
+        hits = 0
         for zp in sorted(zip_dir.glob('*.zip')):
             aoi = zp.stem.split('__')[0]
             if aoi not in prefer:
@@ -110,7 +112,11 @@ def select_tiles_by_landcover(aois_csv, zip_dir, split_json, split='test',
                 gt_members = sorted(n for n in zf.namelist()
                                     if n.endswith('_synthetic_gt.npy'))
             if gt_members:
+                if hits < n_skip:
+                    hits += 1
+                    continue
                 picked[cls] = (zp, gt_members[len(gt_members) // 2])
+                print(f'  {cls}: {aoi} ({aoi_to_lc.get(aoi, "?")})')
                 break
 
     return picked
@@ -377,8 +383,10 @@ if __name__ == '__main__':
             print(f'loaded {name}')
 
         # select tiles by landcover class
+        # skip first Urban zip — often lands on desert outskirts
         tile_refs = select_tiles_by_landcover(
-            args.aois_csv, args.zip_dir, args.split_file)
+            args.aois_csv, args.zip_dir, args.split_file,
+            skip={'Urban': 1})
         print(f'selected {len(tile_refs)} tiles: {list(tile_refs.keys())}')
 
         from collections import OrderedDict
