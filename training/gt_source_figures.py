@@ -24,13 +24,36 @@ LABELS = {
     'rrdb_syn_emit': 'Syn-EMIT',
     'rrdb_syn_cnmf': 'Syn-CNMF',
 }
+COLORS = {
+    'rrdb_cnmf': '#1f77b4',
+    'rrdb_sfim': '#ff7f0e',
+    'rrdb_syn_emit': '#2ca02c',
+    'rrdb_syn_cnmf': '#d62728',
+}
 FWHM_COEF = 2.3548200450309493
 S2_BANDS = ['B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08', 'B8A', 'B11', 'B12']
 S2_WL = [490, 560, 665, 705, 740, 783, 842, 865, 1610, 2190]
 
+LANDCOVER_GROUPS = {
+    'Vegetation':  ['tropical_forest', 'temperate_forest', 'boreal_forest',
+                    'tropical_dry_forest', 'tropical_montane_forest',
+                    'mangrove', 'grassland', 'savanna'],
+    'Cropland':    ['cropland', 'cropland/rice', 'cropland/irrigated',
+                    'cropland/plantation', 'cropland/arid'],
+    'Arid/bare':   ['desert', 'desert/rock', 'salt_flat', 'mining/barren',
+                    'shrubland/semi-arid', 'shrubland/mediterranean',
+                    'alpine/mountain', 'alpine/grassland', 'fire_scar'],
+    'Urban':       ['urban', 'urban/arid', 'urban/tropical', 'urban/temperate',
+                    'urban/mountain'],
+}
+
 
 def _label(m):
     return LABELS.get(m, m)
+
+
+def _aoi_key(lat, lon):
+    return f'lat{lat}_lon{lon}'
 
 
 def load_model(cfg_path, ckpt_path, device):
@@ -40,6 +63,45 @@ def load_model(cfg_path, ckpt_path, device):
     load_checkpoint(net, ckpt_path)
     net.eval()
     return net
+
+
+def select_tiles_by_landcover(aois_csv, zip_dir, split_json, split='test',
+                              groups=None):
+    """Pick one representative tile per landcover class from test set."""
+    groups = groups or LANDCOVER_GROUPS
+    lc_to_class = {lc: cls for cls, members in groups.items() for lc in members}
+
+    aois_df = pd.read_csv(aois_csv)
+    aois_df['aoi'] = [_aoi_key(r.lat, r.lon) for r in aois_df.itertuples()]
+    aois_df['class'] = aois_df['land_cover'].map(lc_to_class)
+
+    import json
+    split_data = json.loads(Path(split_json).read_text())
+    test_aois = set(split_data[split])
+
+    zip_dir = Path(zip_dir)
+    picked = {}
+    for cls in groups:
+        cls_aois = set(aois_df[aois_df['class'] == cls]['aoi'])
+        cls_aois &= test_aois
+        if not cls_aois:
+            continue
+        # find first zip with tiles for this class
+        for zp in sorted(zip_dir.glob('*.zip')):
+            aoi = zp.stem.split('__')[0]
+            if aoi not in cls_aois:
+                continue
+            with zipfile.ZipFile(zp) as zf:
+                members = sorted(n for n in zf.namelist()
+                                 if n.endswith('_synthetic_gt.npy') or n.endswith('__emit_b32.npy'))
+                lr_members = [n for n in members if '__emit_b32' in n]
+            if lr_members:
+                # pick middle tile
+                m = lr_members[len(lr_members) // 2]
+                picked[cls] = (zp, m)
+                break
+
+    return picked
 
 
 def run_tile(models, zip_path, member, device, scale=6):
@@ -61,11 +123,12 @@ def run_tile(models, zip_path, member, device, scale=6):
 
 # ── comparison grid ──
 
-def make_comparison_grid(tiles_data, rgb_bands, out_path,
+def make_comparison_grid(data, rgb_bands, out_path,
                          models=None, crop_frac=0.30):
+    """data: OrderedDict {class_name: {'bic': ..., 'preds': ...}}"""
     models = models or ORDER
     cols = ['Bicubic'] + [_label(m) for m in models]
-    n_rows, n_cols = len(tiles_data), len(cols)
+    n_rows, n_cols = len(data), len(cols)
 
     fig, axes = plt.subplots(
         n_rows * 2, n_cols,
@@ -73,7 +136,7 @@ def make_comparison_grid(tiles_data, rgb_bands, out_path,
         gridspec_kw={'height_ratios': [3, 2] * n_rows},
         squeeze=False)
 
-    for r, td in enumerate(tiles_data):
+    for r, (cls, td) in enumerate(data.items()):
         imgs = [td['bic']] + [td['preds'][m] for m in models]
         _, H, W = td['bic'].shape
         row_f, row_z = r * 2, r * 2 + 1
@@ -91,7 +154,7 @@ def make_comparison_grid(tiles_data, rgb_bands, out_path,
             axes[row_z, c].imshow(crop, interpolation='nearest')
             axes[row_z, c].set_xticks([]); axes[row_z, c].set_yticks([])
 
-        axes[row_f, 0].set_ylabel(td.get('label', f'Tile {r+1}'), fontsize=16)
+        axes[row_f, 0].set_ylabel(cls, fontsize=16)
         axes[row_z, 0].set_ylabel('zoom', fontsize=14, fontstyle='italic')
 
     for c, name in enumerate(cols):
@@ -104,7 +167,6 @@ def make_comparison_grid(tiles_data, rgb_bands, out_path,
 # ── gradient magnitude maps ──
 
 def _sobel_gradient_mag(cube):
-    # mean Sobel gradient magnitude across bands
     from scipy.ndimage import sobel
     B = cube.shape[0]
     gmag = np.zeros(cube.shape[1:], dtype=np.float64)
@@ -144,33 +206,49 @@ def make_gradient_maps(tile_data, rgb_bands, out_path, models=None):
     plt.close(fig)
 
 
-# ── GSDe histogram ──
+# ── GSDe histogram (stacked subplots) ──
 
 def make_gsde_histogram(esf_dir, out_path, models=None):
     models = models or ORDER
     esf_dir = Path(esf_dir)
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
 
-    # draw in reverse so first model (CNMF) ends up on top
-    fig, ax = plt.subplots(figsize=(6, 4))
-    for i, m in reversed(list(enumerate(models))):
+    # collect data first to get shared bins
+    gsd_data = {}
+    for m in models:
         p = esf_dir / f'esf_per_tile_{m}.csv'
         if not p.exists():
             print(f'  skip {m}: no {p.name}'); continue
         df = pd.read_csv(p)
-        gsd = FWHM_COEF * df['sigma_px_med'].dropna() * 10
-        ax.hist(gsd, bins=40, alpha=0.45, color=colors[i % len(colors)],
-                edgecolor=colors[i % len(colors)], linewidth=0.8,
-                label=f'{_label(m)} (med={gsd.median():.1f} m)')
+        gsd_data[m] = FWHM_COEF * df['sigma_px_med'].dropna() * 10
 
-    ax.axhline(y=0, color='k', lw=0.5)
-    ax.set_xlabel('Effective GSD (m)', fontsize=14)
-    ax.set_ylabel('Number of tiles', fontsize=14)
-    ax.tick_params(labelsize=12)
-    # legend in original ORDER (not reversed draw order)
-    handles, labels = ax.get_legend_handles_labels()
-    ax.legend(handles[::-1], labels[::-1], fontsize=11)
-    ax.grid(True, axis='y', alpha=0.3)
+    if not gsd_data:
+        return
+
+    all_vals = np.concatenate(list(gsd_data.values()))
+    bins = np.linspace(all_vals.min() * 0.9, all_vals.max() * 1.05, 45)
+
+    n = len(gsd_data)
+    fig, axes = plt.subplots(n, 1, figsize=(7, 1.8 * n), sharex=True)
+    if n == 1:
+        axes = [axes]
+
+    for ax, m in zip(axes, models):
+        if m not in gsd_data:
+            continue
+        gsd = gsd_data[m]
+        color = COLORS.get(m, '#333')
+        ax.hist(gsd, bins=bins, color=color, alpha=0.75,
+                edgecolor=color, linewidth=0.6)
+        med = gsd.median()
+        ax.axvline(med, color='k', ls='--', lw=1.0)
+        ax.text(0.97, 0.85, f'{_label(m)}  (med = {med:.1f} m)',
+                transform=ax.transAxes, ha='right', fontsize=12,
+                bbox=dict(facecolor='white', alpha=0.8, edgecolor='none'))
+        ax.set_ylabel('Tiles', fontsize=12)
+        ax.tick_params(labelsize=11)
+        ax.grid(True, axis='y', alpha=0.3)
+
+    axes[-1].set_xlabel('Effective GSD (m)', fontsize=14)
     plt.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches='tight')
     plt.close(fig)
@@ -181,7 +259,6 @@ def make_gsde_histogram(esf_dir, out_path, models=None):
 def _s2_perband(s2b_dir, metric, ylabel, out_path, models=None):
     models = models or ORDER
     s2b_dir = Path(s2b_dir)
-    # band labels with center wavelength for context
     xlabels = [f'{b}\n{wl}nm' for b, wl in zip(S2_BANDS, S2_WL)]
     x = np.arange(len(S2_BANDS))
 
@@ -192,7 +269,8 @@ def _s2_perband(s2b_dir, metric, ylabel, out_path, models=None):
             continue
         df = pd.read_csv(p)
         vals = [df[f'{metric}_{b}'].mean() for b in S2_BANDS]
-        ax.plot(x, vals, '-o', ms=5, lw=1.5, label=_label(m))
+        ax.plot(x, vals, '-o', ms=5, lw=1.5, label=_label(m),
+                color=COLORS.get(m))
 
     ax.set_xticks(x)
     ax.set_xticklabels(xlabels, fontsize=9)
@@ -214,7 +292,6 @@ def make_s2_perband_rmse(s2b_dir, out_path, models=None):
 
 
 def make_s2_perband_psnr(s2b_dir, out_path, models=None):
-    """PSNR per S2 band: -20·log10(RMSE) assuming [0,1] data."""
     models = models or ORDER
     s2b_dir = Path(s2b_dir)
     xlabels = [f'{b}\n{wl}nm' for b, wl in zip(S2_BANDS, S2_WL)]
@@ -228,7 +305,8 @@ def make_s2_perband_psnr(s2b_dir, out_path, models=None):
         df = pd.read_csv(p)
         rmse_vals = [df[f'rmse_{b}'].mean() for b in S2_BANDS]
         psnr = [-20 * np.log10(v) if v > 0 else 60.0 for v in rmse_vals]
-        ax.plot(x, psnr, '-o', ms=5, lw=1.5, label=_label(m))
+        ax.plot(x, psnr, '-o', ms=5, lw=1.5, label=_label(m),
+                color=COLORS.get(m))
 
     ax.set_xticks(x)
     ax.set_xticklabels(xlabels, fontsize=9)
@@ -244,23 +322,21 @@ def make_s2_perband_psnr(s2b_dir, out_path, models=None):
 # ── main ──
 
 if __name__ == '__main__':
-    import argparse
+    import argparse, json
 
     p = argparse.ArgumentParser(description='GT source comparison figures')
     p.add_argument('--configs-dir', required=True)
-    p.add_argument('--exp-dir', required=True, help='root experiments dir with model checkpoints')
-    p.add_argument('--zip-dir', required=True, help='synthetic zips with 96x96 EMIT tiles')
+    p.add_argument('--exp-dir', required=True, help='root experiments dir')
+    p.add_argument('--zip-dir', required=True, help='test zips (synthetic)')
     p.add_argument('--split-file', required=True, help='aoi_split.json')
-    p.add_argument('--esf-dir', required=True, help='dir with esf_per_tile_{model}.csv files')
-    p.add_argument('--s2b-dir', required=True, help='dir with s2_bands_{model}.csv files')
+    p.add_argument('--aois-csv', required=True, help='aois.csv with land_cover')
+    p.add_argument('--esf-dir', required=True, help='dir with esf_per_tile CSVs')
+    p.add_argument('--s2b-dir', required=True, help='dir with s2_bands CSVs')
     p.add_argument('--pipe-config', required=True, help='pipeline_config.yaml')
     p.add_argument('--fig-dir', required=True)
-    p.add_argument('--n-tiles', type=int, default=3, help='tiles for comparison grid')
     p.add_argument('--no-inference', action='store_true',
-                   help='skip grid/residual (need inference), only make csv-based plots')
+                   help='skip grid/gradient (need GPU), only csv-based plots')
     args = p.parse_args()
-
-    import json
 
     fig_dir = Path(args.fig_dir)
     fig_dir.mkdir(parents=True, exist_ok=True)
@@ -289,37 +365,25 @@ if __name__ == '__main__':
             models[name] = load_model(str(configs_dir / cfg_file), str(ckpt), device)
             print(f'loaded {name}')
 
-        # pick tiles: take every Nth from test set
-        split = json.loads(Path(args.split_file).read_text())
-        test_aois = set(split['test'])
-        zip_dir = Path(args.zip_dir)
-        all_tiles = []
-        for zp in sorted(zip_dir.glob('*.zip')):
-            if zp.stem.split('__')[0] not in test_aois:
-                continue
-            with zipfile.ZipFile(zp) as zf:
-                members = sorted(n for n in zf.namelist() if n.endswith('_synthetic_gt.npy'))
-            for m in members:
-                all_tiles.append((zp, m))
+        # select tiles by landcover class
+        tile_refs = select_tiles_by_landcover(
+            args.aois_csv, args.zip_dir, args.split_file)
+        print(f'selected {len(tile_refs)} tiles: {list(tile_refs.keys())}')
 
-        step = max(1, len(all_tiles) // args.n_tiles)
-        picks = all_tiles[::step][:args.n_tiles]
-        print(f'{len(picks)} tiles selected from {len(all_tiles)} total')
-
-        tiles_data = []
-        for zp, member in picks:
+        from collections import OrderedDict
+        data = OrderedDict()
+        for cls, (zp, member) in tile_refs.items():
             td = run_tile(models, zp, member, device)
-            bare = Path(member).stem.replace('_synthetic_gt', '')
-            td['label'] = bare[-7:]  # short suffix for row label
-            tiles_data.append(td)
+            data[cls] = td
 
         # 1. comparison grid
-        make_comparison_grid(tiles_data, rgb_bands,
+        make_comparison_grid(data, rgb_bands,
                              out_path=fig_dir / 'gt_comparison_grid.png')
         print('  gt_comparison_grid.png')
 
         # 2. gradient magnitude maps (first tile)
-        make_gradient_maps(tiles_data[0], rgb_bands,
+        first_cls = next(iter(data))
+        make_gradient_maps(data[first_cls], rgb_bands,
                            out_path=fig_dir / 'gt_gradient_maps.png')
         print('  gt_gradient_maps.png')
 
