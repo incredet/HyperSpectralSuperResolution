@@ -226,7 +226,7 @@ def make_spectral_figure(data, class_key, arch_names, out_path,
     labels = [f'{int(q * 100)}% bright' for q in qs]
 
     x = wavelengths if wavelengths is not None else np.arange(gt.shape[0])
-    fig, axes = plt.subplots(1, len(coords), figsize=(4.5 * len(coords), 3.3),
+    fig, axes = plt.subplots(1, len(coords), figsize=(5 * len(coords), 4),
                              sharey=False)
     if len(coords) == 1:
         axes = [axes]
@@ -235,13 +235,14 @@ def make_spectral_figure(data, class_key, arch_names, out_path,
         ax.plot(x, bic[:, y, x0], '--', color='tab:orange', lw=1, label='Bicubic')
         for name in arch_names:
             ax.plot(x, d['preds'][name][:, y, x0], lw=1, alpha=0.8, label=name)
-        ax.set_title(f'{class_key} — {lab} pixel', fontsize=9)
-        ax.set_xlabel('Wavelength (nm)' if wavelengths is not None else 'Band')
-        ax.set_ylabel('Reflectance')
+        ax.set_title(f'{class_key} \u2014 {lab} pixel', fontsize=13)
+        ax.set_xlabel('Wavelength (nm)' if wavelengths is not None else 'Band', fontsize=12)
+        ax.set_ylabel('Reflectance', fontsize=12)
+        ax.tick_params(labelsize=11)
         ax.grid(True, alpha=0.3)
-    axes[-1].legend(fontsize=8, loc='best')
+    axes[-1].legend(fontsize=10, loc='best')
     plt.tight_layout()
-    fig.savefig(out_path, dpi=180, bbox_inches='tight')
+    fig.savefig(out_path, dpi=200, bbox_inches='tight')
     plt.close(fig)
 
 
@@ -250,7 +251,7 @@ def make_perband_psnr(master_csv, arch_names, wavelengths, out_path, split='test
     df = df[df['split'] == split]
     n_bands = len(wavelengths)
 
-    fig, ax = plt.subplots(figsize=(8, 4))
+    fig, ax = plt.subplots(figsize=(8, 4.5))
     for arch in arch_names:
         g = df[df['arch'] == arch]
         # per-tile per-band PSNR from RMSE, then average across tiles
@@ -259,7 +260,7 @@ def make_perband_psnr(master_csv, arch_names, wavelengths, out_path, split='test
             rmse_vals = pd.to_numeric(g[f'sr_rmse_b{b:02d}'], errors='coerce').dropna()
             mse = (rmse_vals ** 2).clip(lower=1e-10)
             psnr.append((10 * np.log10(1.0 / mse)).mean())
-        ax.plot(wavelengths, psnr, '-o', ms=3, lw=1.5, label=arch)
+        ax.plot(wavelengths, psnr, '-o', ms=4, lw=1.5, label=arch)
 
     g0 = df[df['arch'] == df['arch'].iloc[0]]
     bic_psnr = []
@@ -269,9 +270,10 @@ def make_perband_psnr(master_csv, arch_names, wavelengths, out_path, split='test
         bic_psnr.append((10 * np.log10(1.0 / mse)).mean())
     ax.plot(wavelengths, bic_psnr, '--', color='0.5', lw=1.5, label='Bicubic')
 
-    ax.set_xlabel('Wavelength (nm)')
-    ax.set_ylabel('PSNR (dB)')
-    ax.legend(fontsize=9)
+    ax.set_xlabel('Wavelength (nm)', fontsize=14)
+    ax.set_ylabel('PSNR (dB)', fontsize=14)
+    ax.tick_params(labelsize=12)
+    ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches='tight')
@@ -283,19 +285,20 @@ def make_perband_rmse(master_csv, arch_names, wavelengths, out_path, split='test
     df = df[df['split'] == split]
     n_bands = len(wavelengths)
 
-    fig, ax = plt.subplots(figsize=(8, 4))
+    fig, ax = plt.subplots(figsize=(8, 4.5))
     for arch in arch_names:
         g = df[df['arch'] == arch]
         rmse = [g[f'sr_rmse_b{b:02d}'].mean() for b in range(n_bands)]
-        ax.plot(wavelengths, rmse, '-o', ms=3, lw=1.5, label=arch)
+        ax.plot(wavelengths, rmse, '-o', ms=4, lw=1.5, label=arch)
 
     g0 = df[df['arch'] == df['arch'].iloc[0]]
     bic = [g0[f'bic_rmse_b{b:02d}'].mean() for b in range(n_bands)]
     ax.plot(wavelengths, bic, '--', color='0.5', lw=1.5, label='Bicubic')
 
-    ax.set_xlabel('Wavelength (nm)')
-    ax.set_ylabel('RMSE')
-    ax.legend(fontsize=9)
+    ax.set_xlabel('Wavelength (nm)', fontsize=14)
+    ax.set_ylabel('RMSE', fontsize=14)
+    ax.tick_params(labelsize=12)
+    ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
     ax.set_ylim(bottom=0)
     plt.tight_layout()
@@ -308,19 +311,20 @@ def make_perband_corr(master_csv, arch_names, wavelengths, out_path, split='test
     df = df[df['split'] == split]
     n_bands = len(wavelengths)
 
-    fig, ax = plt.subplots(figsize=(8, 4))
+    fig, ax = plt.subplots(figsize=(8, 4.5))
     for arch in arch_names:
         g = df[df['arch'] == arch]
         corr = [g[f'sr_corr_b{b:02d}'].mean() for b in range(n_bands)]
-        ax.plot(wavelengths, corr, '-o', ms=3, lw=1.2, label=arch)
+        ax.plot(wavelengths, corr, '-o', ms=4, lw=1.2, label=arch)
 
     g0 = df[df['arch'] == df['arch'].iloc[0]]
     bic = [g0[f'bic_corr_b{b:02d}'].mean() for b in range(n_bands)]
     ax.plot(wavelengths, bic, '--', color='0.5', lw=1.5, label='Bicubic')
 
-    ax.set_xlabel('Wavelength (nm)')
-    ax.set_ylabel('Correlation')
-    ax.legend(fontsize=8, ncol=2)
+    ax.set_xlabel('Wavelength (nm)', fontsize=14)
+    ax.set_ylabel('Correlation', fontsize=14)
+    ax.tick_params(labelsize=12)
+    ax.legend(fontsize=11, ncol=2)
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches='tight')
@@ -352,9 +356,10 @@ def make_training_curves(archs, configs_dir, exp_suffix, out_path,
         print(f'  {arch}: {len(hist)} points, final {hist["val/sr_psnr_mean"].iloc[-1]:.2f} dB')
     if found == 0:
         plt.close(fig); print('no training curves found'); return
-    ax.set_xlabel('Iteration')
-    ax.set_ylabel('Val PSNR (dB)')
-    ax.legend(fontsize=9)
+    ax.set_xlabel('Iteration', fontsize=14)
+    ax.set_ylabel('Val PSNR (dB)', fontsize=14)
+    ax.tick_params(labelsize=12)
+    ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches='tight')
