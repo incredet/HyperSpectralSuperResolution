@@ -34,17 +34,15 @@ FWHM_COEF = 2.3548200450309493
 S2_BANDS = ['B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08', 'B8A', 'B11', 'B12']
 S2_WL = [490, 560, 665, 705, 740, 783, 842, 865, 1610, 2190]
 
-LANDCOVER_GROUPS = {
-    'Vegetation':  ['tropical_forest', 'temperate_forest', 'boreal_forest',
-                    'tropical_dry_forest', 'tropical_montane_forest',
-                    'mangrove', 'grassland', 'savanna'],
-    'Cropland':    ['cropland', 'cropland/rice', 'cropland/irrigated',
-                    'cropland/plantation', 'cropland/arid'],
-    'Arid/bare':   ['desert', 'desert/rock', 'salt_flat', 'mining/barren',
-                    'shrubland/semi-arid', 'shrubland/mediterranean',
-                    'alpine/mountain', 'alpine/grassland', 'fire_scar'],
-    'Built/water': ['urban', 'urban/arid', 'urban/tropical', 'urban/temperate',
-                    'urban/mountain', 'wetland', 'wetland/coastal', 'coastal/delta'],
+LANDCOVER_PREFIXES = {
+    'Tropical forest':   ['tropical_forest'],
+    'Temperate forest':  ['temperate_forest', 'boreal_forest', 'subtropical_forest'],
+    'Cropland':          ['cropland', 'agriculture'],
+    'Savanna':           ['savanna', 'grassland', 'steppe', 'woodland'],
+    'Desert':            ['desert', 'salt_flat', 'barren', 'volcanic'],
+    'Shrubland':         ['shrubland', 'alpine', 'fire_scar', 'mountain'],
+    'Urban':             ['urban'],
+    'Wetland':           ['wetland', 'coastal', 'peatland', 'mangrove'],
 }
 
 
@@ -65,15 +63,24 @@ def load_model(cfg_path, ckpt_path, device):
     return net
 
 
+def _classify_landcover(lc, prefixes):
+    """Map a land_cover string to a class using prefix matching."""
+    for cls, plist in prefixes.items():
+        for pfx in plist:
+            if lc == pfx or lc.startswith(pfx + '/') or lc.startswith(pfx + '_'):
+                return cls
+    return None
+
+
 def select_tiles_by_landcover(aois_csv, zip_dir, split_json, split='test',
                               groups=None):
     """Pick one representative tile per landcover class from test set."""
-    groups = groups or LANDCOVER_GROUPS
-    lc_to_class = {lc: cls for cls, members in groups.items() for lc in members}
+    groups = groups or LANDCOVER_PREFIXES
 
     aois_df = pd.read_csv(aois_csv)
     aois_df['aoi'] = ['aoi_' + _aoi_key(r.lat, r.lon) for r in aois_df.itertuples()]
-    aois_df['class'] = aois_df['land_cover'].map(lc_to_class)
+    aois_df['class'] = aois_df['land_cover'].apply(
+        lambda lc: _classify_landcover(lc, groups))
 
     import json
     split_data = json.loads(Path(split_json).read_text())
