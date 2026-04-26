@@ -72,7 +72,7 @@ def select_tiles_by_landcover(aois_csv, zip_dir, split_json, split='test',
     lc_to_class = {lc: cls for cls, members in groups.items() for lc in members}
 
     aois_df = pd.read_csv(aois_csv)
-    aois_df['aoi'] = [_aoi_key(r.lat, r.lon) for r in aois_df.itertuples()]
+    aois_df['aoi'] = ['aoi_' + _aoi_key(r.lat, r.lon) for r in aois_df.itertuples()]
     aois_df['class'] = aois_df['land_cover'].map(lc_to_class)
 
     import json
@@ -83,8 +83,10 @@ def select_tiles_by_landcover(aois_csv, zip_dir, split_json, split='test',
     picked = {}
     for cls in groups:
         cls_aois = set(aois_df[aois_df['class'] == cls]['aoi'])
+        n_before = len(cls_aois)
         cls_aois &= test_aois
         if not cls_aois:
+            print(f'  {cls}: {n_before} AOIs in class, 0 in test split')
             continue
         # find first zip with tiles for this class
         for zp in sorted(zip_dir.glob('*.zip')):
@@ -254,7 +256,6 @@ def make_gsde_histogram(esf_dir, out_path, models=None):
     plt.close(fig)
 
 
-# ── S2 per-band line plots ──
 
 def _s2_perband(s2b_dir, metric, ylabel, out_path, models=None):
     models = models or ORDER
