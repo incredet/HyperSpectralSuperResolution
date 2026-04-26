@@ -43,8 +43,8 @@ LANDCOVER_GROUPS = {
     'Arid/bare':   ['desert', 'desert/rock', 'salt_flat', 'mining/barren',
                     'shrubland/semi-arid', 'shrubland/mediterranean',
                     'alpine/mountain', 'alpine/grassland', 'fire_scar'],
-    'Urban':       ['urban', 'urban/arid', 'urban/tropical', 'urban/temperate',
-                    'urban/mountain'],
+    'Built/water': ['urban', 'urban/arid', 'urban/tropical', 'urban/temperate',
+                    'urban/mountain', 'wetland', 'wetland/coastal', 'coastal/delta'],
 }
 
 
