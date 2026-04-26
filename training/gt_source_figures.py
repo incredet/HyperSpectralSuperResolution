@@ -40,9 +40,9 @@ LANDCOVER_PREFIXES = {
     'Cropland':          ['cropland', 'agriculture'],
     'Savanna':           ['savanna', 'grassland', 'steppe', 'woodland'],
     'Desert':            ['desert', 'salt_flat', 'barren', 'volcanic'],
-    'Shrubland':         ['shrubland', 'alpine', 'fire_scar', 'mountain'],
-    'Urban':             ['urban'],
-    'Wetland':           ['wetland', 'coastal', 'peatland', 'mangrove'],
+    # 'Shrubland':         ['shrubland', 'alpine', 'fire_scar', 'mountain'],
+    # 'Urban':             ['urban'],
+    # 'Wetland':           ['wetland', 'coastal', 'peatland', 'mangrove'],
 }
 
 
@@ -182,7 +182,6 @@ def make_comparison_grid(data, rgb_bands, out_path,
     plt.close(fig)
 
 
-# ── gradient magnitude maps ──
 
 def _sobel_gradient_mag(cube):
     from scipy.ndimage import sobel
