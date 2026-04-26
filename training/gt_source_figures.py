@@ -80,6 +80,9 @@ def select_tiles_by_landcover(aois_csv, zip_dir, split_json, split='test',
     test_aois = set(split_data[split])
 
     zip_dir = Path(zip_dir)
+    # map aoi key → land_cover for preferring "pure" labels
+    aoi_to_lc = dict(zip(aois_df['aoi'], aois_df['land_cover']))
+
     picked = {}
     for cls in groups:
         cls_aois = set(aois_df[aois_df['class'] == cls]['aoi'])
@@ -88,13 +91,15 @@ def select_tiles_by_landcover(aois_csv, zip_dir, split_json, split='test',
         if not cls_aois:
             print(f'  {cls}: {n_before} AOIs in class, 0 in test split')
             continue
-        # find first zip with tiles for this class
+        # prefer AOIs whose land_cover has no slash (e.g. "urban" over "urban/arid")
+        pure = {a for a in cls_aois if '/' not in aoi_to_lc.get(a, '/')}
+        prefer = sorted(pure) if pure else sorted(cls_aois)
+
         for zp in sorted(zip_dir.glob('*.zip')):
             aoi = zp.stem.split('__')[0]
-            if aoi not in cls_aois:
+            if aoi not in prefer:
                 continue
             with zipfile.ZipFile(zp) as zf:
-                # _synthetic_gt.npy = real EMIT 96×96, the test-time input
                 gt_members = sorted(n for n in zf.namelist()
                                     if n.endswith('_synthetic_gt.npy'))
             if gt_members:
