@@ -240,8 +240,9 @@ def make_spectral_figure(data, class_key, arch_names, out_path,
         ax.set_ylabel('Reflectance', fontsize=12)
         ax.tick_params(labelsize=11)
         ax.grid(True, alpha=0.3)
-    axes[-1].legend(fontsize=10, loc='best')
+    axes[-1].legend(fontsize=10, loc='center left', bbox_to_anchor=(1.02, 0.5))
     plt.tight_layout()
+    fig.subplots_adjust(right=0.88)
     fig.savefig(out_path, dpi=200, bbox_inches='tight')
     plt.close(fig)
 
