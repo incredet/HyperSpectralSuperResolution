@@ -223,7 +223,13 @@ def analyze_file(path, pixel_size_m, nodata=None, **kw):
 
 
 def _analyze_one(path, pixel_size_m, nodata, kw):
-    r = analyze_file(path, pixel_size_m, nodata=nodata, **kw)
+    try:
+        r = analyze_file(path, pixel_size_m, nodata=nodata, **kw)
+    except Exception as e:
+        print(f'\n  [skip] {Path(path).name}: {e}')
+        r = {'n_tried': 0, 'n_accepted': 0,
+             'sigma_px_med': np.nan, 'sigma_px_q1': np.nan, 'sigma_px_q3': np.nan,
+             'sigma_iqr': np.nan, 'fwhm_px': np.nan, 'gsd_eff_m': np.nan}
     r['file'] = Path(path).name
     return r
 
