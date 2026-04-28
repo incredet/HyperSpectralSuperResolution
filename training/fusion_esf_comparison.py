@@ -90,8 +90,8 @@ def make_paired_histogram(cnmf, sfim, out_path):
     gsd_s = sfim['gsd_eff_m'].dropna()
 
     lo = min(gsd_c.min(), gsd_s.min()) * 0.9
-    hi = np.percentile(np.concatenate([gsd_c, gsd_s]), 99) * 1.05
-    bins = np.linspace(lo, hi, 60)
+    hi = max(gsd_c.max(), gsd_s.max()) * 1.02
+    bins = np.linspace(lo, hi, 80)
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(7, 5), sharex=True)
 
