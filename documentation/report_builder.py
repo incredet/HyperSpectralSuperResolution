@@ -1,23 +1,15 @@
-"""Markdown reporting and R² aggregation for pipeline runs."""
-
-from __future__ import annotations
-
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Sequence
 
-import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 
-import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from documentation.pairs_artifacts import ensure_dir, utc_now_iso
-
-if TYPE_CHECKING:
-    from documentation.config import PipelineConfig
 
 
 @dataclass
@@ -27,12 +19,12 @@ class R2Aggregator:
     r2_mean: list = field(default_factory=list)
     wavelengths_nm: np.ndarray | None = None
 
-    def add(self, idx: int, r2_bands: np.ndarray, r2_mean_val: float) -> None:
+    def add(self, idx, r2_bands, r2_mean_val):
         self.tile_indices.append(idx)
         self.r2_per_band.append(np.asarray(r2_bands, dtype=np.float64))
         self.r2_mean.append(float(r2_mean_val))
 
-    def summary(self) -> dict[str, Any]:
+    def summary(self):
         if not self.r2_mean:
             return {"n_tiles": 0, "n_bands": 0}
 
@@ -51,7 +43,7 @@ class R2Aggregator:
             "per_band_std": np.std(stacked, axis=0).tolist(),
         }
 
-    def to_markdown_table(self) -> str:
+    def to_markdown_table(self):
         if not self.r2_mean:
             return "_No tiles fitted._\n"
 
@@ -65,12 +57,7 @@ class R2Aggregator:
         return "\n".join(lines) + "\n"
 
 
-def plot_r2_histogram(
-    r2_means: Sequence[float],
-    out_path: str | Path,
-    *,
-    title: str = "R² distribution across tiles",
-) -> Path:
+def plot_r2_histogram(r2_means, out_path, *, title="R² distribution across tiles"):
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -97,13 +84,7 @@ def plot_r2_histogram(
     return out_path
 
 
-def plot_r2_per_band(
-    r2_per_band: Sequence[np.ndarray],
-    wavelengths_nm: np.ndarray | None,
-    out_path: str | Path,
-    *,
-    title: str = "R² by spectral band",
-) -> Path:
+def plot_r2_per_band(r2_per_band, wavelengths_nm, out_path, *, title="R² by spectral band"):
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -137,16 +118,7 @@ def plot_r2_per_band(
     return out_path
 
 
-def plot_side_by_side_rgb(
-    s2_path: str | Path,
-    emit_path: str | Path,
-    out_path: str | Path,
-    *,
-    wl_nm: np.ndarray | None = None,
-    title: str = "",
-    gamma: float = 1 / 2.2,
-) -> Path:
-    """Save a side-by-side S2 / EMIT true-colour comparison."""
+def plot_side_by_side_rgb(s2_path, emit_path, out_path, *, wl_nm=None, title="", gamma=1 / 2.2):
     from viz.plots import plot_s2_truecolor_from_stack, show_emit_rgb_from_envi
 
     out_path = Path(out_path)
@@ -172,12 +144,7 @@ def plot_side_by_side_rgb(
     return out_path
 
 
-def plot_realignment_summary(
-    tile_records: list,
-    out_path: str | Path,
-    *,
-    title: str = "Per-tile realignment shifts",
-) -> Path | None:
+def plot_realignment_summary(tile_records, out_path, *, title="Per-tile realignment shifts"):
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -238,13 +205,7 @@ def plot_realignment_summary(
     return out_path
 
 
-def plot_example_tiles(
-    tile_records: list,
-    out_dir: str | Path,
-    *,
-    n: int = 3,
-    wl_nm: np.ndarray | None = None,
-) -> list[Path]:
+def plot_example_tiles(tile_records, out_dir, *, n=3, wl_nm=None):
     from tiles_helpers.utils import plot_tile_pair_simple
 
     out_dir = Path(out_dir)
@@ -274,13 +235,13 @@ def plot_example_tiles(
 
 class ReportBuilder:
 
-    def __init__(self, path: str | Path, *, html_path=None, mode: str = "overwrite"):
+    def __init__(self, path, *, html_path=None, mode="overwrite"):
         self.path = Path(path)
         ensure_dir(self.path.parent)
         self.mode = mode
         self._started = False
 
-    def start(self, *, title: str = "EMIT and Sentinel-2 pairs report"):
+    def start(self, *, title="EMIT and Sentinel-2 pairs report"):
         if self._started:
             return self
         if self.mode.lower() in {"overwrite", "w", "write"} or not self.path.exists():
@@ -288,7 +249,7 @@ class ReportBuilder:
         self._started = True
         return self
 
-    def section(self, heading: str, lines) -> None:
+    def section(self, heading, lines):
         if not self._started:
             self.start()
         with self.path.open("a", encoding="utf-8") as f:
@@ -297,20 +258,20 @@ class ReportBuilder:
                 if ln is not None:
                     f.write(f"- {ln}\n")
 
-    def raw(self, text: str) -> None:
+    def raw(self, text):
         if not self._started:
             self.start()
         with self.path.open("a", encoding="utf-8") as f:
             f.write(text)
 
-    def add_config_table(self, config: "PipelineConfig") -> None:
+    def add_config_table(self, config):
         d = config.to_dict()
         lines = ["| Parameter | Value |", "|-----------:|:------|"]
         for k, v in d.items():
             lines.append(f"| `{k}` | `{v}` |")
         self.raw(f"\n## Pipeline Configuration\n\n" + "\n".join(lines) + "\n")
 
-    def add_image(self, heading: str, path: str | Path, caption: str = "") -> None:
+    def add_image(self, heading, path, caption=""):
         path = Path(path)
         alt = caption or heading
         try:
@@ -319,10 +280,10 @@ class ReportBuilder:
             rel = path
         self.raw(f"\n## {heading}\n\n![{alt}]({rel})\n")
 
-    def add_table(self, heading: str, markdown_table: str) -> None:
+    def add_table(self, heading, markdown_table):
         self.raw(f"\n## {heading}\n\n{markdown_table}\n")
 
-    def add_realignment_section(self, tile_records: list, *, plot_path=None) -> None:
+    def add_realignment_section(self, tile_records, *, plot_path=None):
         applied, rejected, total = 0, 0, 0
         dys, dxs = [], []
         for rec in tile_records:
@@ -348,7 +309,7 @@ class ReportBuilder:
             f"Shifts rejected (exceeded threshold): {rejected}",
         ]
         if dys:
-            mags = [np.sqrt(dy**2 + dx**2) for dy, dx in zip(dys, dxs)]
+            mags = [np.sqrt(dy ** 2 + dx ** 2) for dy, dx in zip(dys, dxs)]
             lines += [
                 f"Mean shift: dy={np.mean(dys):.4f}, dx={np.mean(dxs):.4f} EMIT px",
                 f"Mean magnitude: {np.mean(mags):.4f} EMIT px",
@@ -360,7 +321,7 @@ class ReportBuilder:
         if plot_path and Path(plot_path).exists():
             self.add_image("Realignment Shift Distribution", plot_path)
 
-    def add_r2_section(self, agg: R2Aggregator, *, histogram_path=None, per_band_path=None) -> None:
+    def add_r2_section(self, agg, *, histogram_path=None, per_band_path=None):
         s = agg.summary()
         if s["n_tiles"] == 0:
             self.section("Spectral Fitting — R² Quality", ["No tiles fitted."])
@@ -382,6 +343,6 @@ class ReportBuilder:
         if per_band_path and per_band_path.exists():
             self.add_image("R² by Spectral Band", per_band_path)
 
-    def finalise_html(self, title: str = "Run Report") -> Path | None:
-        """Kept for backward compatibility — returns the markdown path."""
+    def finalise_html(self, title="Run Report"):
+        # kept for backwards compatibility — returns markdown path
         return self.path

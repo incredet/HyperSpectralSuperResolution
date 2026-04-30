@@ -1,26 +1,22 @@
-from __future__ import annotations
-
 import contextlib
 import math
-from pathlib import Path
-from typing import Optional
+import sys
 import warnings
+from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import rasterio
 from rasterio.windows import Window
 from rasterio.windows import transform as window_transform
-from rasterio.transform import from_bounds
-import matplotlib.pyplot as plt
 
-import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from data.S2.s2_search import SCL_CLOUD_TILE
 from data.EMIT.emit_utils import closest_bands
 
 
-def _pixel_offset(emit_tf, s2_tf) -> tuple[int, int]:
+def _pixel_offset(emit_tf, s2_tf):
     s2_dx = abs(float(s2_tf.a))
     s2_dy = abs(float(s2_tf.e))
 
@@ -42,14 +38,9 @@ def _pixel_offset(emit_tf, s2_tf) -> tuple[int, int]:
     return s2_row0, s2_col0
 
 
-def _scl_cloud_frac(
-    scl_ds: rasterio.DatasetReader,
-    bounds: tuple[float, float, float, float],
-    cloud_classes: np.ndarray,
-) -> float:
+def _scl_cloud_frac(scl_ds, bounds, cloud_classes):
     try:
         win = scl_ds.window(*bounds)
-        # Clamp to dataset extent
         win = win.intersection(Window(0, 0, scl_ds.width, scl_ds.height))
         if win.width < 1 or win.height < 1:
             return 0.0
@@ -65,16 +56,15 @@ def _scl_cloud_frac(
 
 
 def find_valid_paired_tiles(
-    emit_path: str | Path,
-    s2_path: str | Path,
-    emit_tile_size: int = 120,
-    scale: int = 6,
-    max_black_frac: float = 0.0,
-    emit_check_bands: list[int] | np.ndarray | None = None,
-    scl_path: str | Path | None = None,
-    max_cloud_frac: float = 0.02,
-) -> list[dict]:
-    """Find valid tile positions with pixel correspondence and valid-data bbox."""
+    emit_path,
+    s2_path,
+    emit_tile_size=120,
+    scale=6,
+    max_black_frac=0.0,
+    emit_check_bands=None,
+    scl_path=None,
+    max_cloud_frac=0.02,
+):
     emit_path = str(emit_path)
     s2_path   = str(s2_path)
     s2_tile   = emit_tile_size * scale
@@ -215,25 +205,20 @@ def find_valid_paired_tiles(
     return valid
 
 
-# ---------------------------------------------------------------------------
-# Per-tile sub-pixel realignment
-# ---------------------------------------------------------------------------
-
 # RGB target wavelengths (nm) used for cross-correlation alignment
 _ALIGN_RGB_NM = (650.0, 550.0, 470.0)   # R, G, B
 
 
 def realign_s2_to_emit(
-    emit_tile: np.ndarray,
-    s2_tile: np.ndarray,
+    emit_tile,
+    s2_tile,
     *,
-    scale: int = 6,
-    emit_wavelengths_nm: np.ndarray | None = None,
-    s2_descriptions: list[str | None] | None = None,
-    upsample_factor: int = 100,
-    max_shift_emit_px: float = 1.0,
-) -> tuple[np.ndarray, dict]:
-    """Sub-pixel realignment via phase cross-correlation on RGB channels."""
+    scale=6,
+    emit_wavelengths_nm=None,
+    s2_descriptions=None,
+    upsample_factor=100,
+    max_shift_emit_px=1.0,
+):
     from skimage.registration import phase_cross_correlation
     from scipy.ndimage import shift as ndimage_shift
 
@@ -356,30 +341,25 @@ def realign_s2_to_emit(
     return s2_shifted, stats
 
 
-# ---------------------------------------------------------------------------
-# Tile saving
-# ---------------------------------------------------------------------------
-
 def save_tile_pair(
     emit_path,
     s2_path,
     tile_info,
     out_dir,
     *,
-    pair_id: str = "",
+    pair_id="",
     tiled=True,
     overwrite=True,
-    emit_wavelengths_nm: Optional[np.ndarray] = None,
+    emit_wavelengths_nm=None,
     emit_scale=10000.0,
     emit_nodata_u16=65535,
     compress="DEFLATE",
     zlevel=1,
     num_threads="ALL_CPUS",
-    realign: bool = False,
-    realign_max_shift: float = 1.0,
-) -> tuple[Path, Path, dict | None]:
-    """Write EMIT/S2 tile pair as GeoTIFFs with optional sub-pixel realignment."""
-    def _auto_block_size(width: int, height: int) -> int:
+    realign=False,
+    realign_max_shift=1.0,
+):
+    def _auto_block_size(width, height):
         m = min(width, height)
         if m >= 256:
             return 256
@@ -517,15 +497,14 @@ def save_tile_pair(
 
 
 def write_emit_b32_tile(
-    emit_tif_path: str | Path,
+    emit_tif_path,
     *,
-    num_keep: int = 32,
-    idx_0based: Optional[np.ndarray] = None,
-    overwrite: bool = False,
-    wavelengths_nm: Optional[np.ndarray] = None,
-    target_wavelengths_nm: Optional[list[float] | tuple[float, ...]] = None,
-) -> tuple[Path, np.ndarray]:
-    """Write a subset of EMIT bands, with smart band selection via target wavelengths."""
+    num_keep=32,
+    idx_0based=None,
+    overwrite=False,
+    wavelengths_nm=None,
+    target_wavelengths_nm=None,
+):
     src_path = Path(emit_tif_path)
     suffix   = f"_b{num_keep}" if num_keep != 32 else "_b32"
     dst_path = src_path.with_name(src_path.stem + suffix + ".tif")
@@ -590,19 +569,18 @@ def write_emit_b32_tile(
 
 
 def plot_tile_pair_simple(
-    emit_tile_path: str | Path,
-    s2_tile_path: str | Path,
+    emit_tile_path,
+    s2_tile_path,
     *,
-    title_suffix: str = "",
-    save_path: Optional[str | Path] = None,
-    show: bool = True,
-    emit_wavelengths_nm: Optional[np.ndarray] = None,
-    targets_nm: tuple[float, float, float] = (630.0, 532.0, 465.0),
-    percentile: tuple[float, float] = (2.0, 98.0),
-    gamma: float = 1 / 2.2,
-) -> None:
-    """Show EMIT and S2 tiles side-by-side as true-colour RGB images."""
-    def _stretch(arr: np.ndarray, p_lo: float, p_hi: float) -> np.ndarray:
+    title_suffix="",
+    save_path=None,
+    show=True,
+    emit_wavelengths_nm=None,
+    targets_nm=(630.0, 532.0, 465.0),
+    percentile=(2.0, 98.0),
+    gamma=1 / 2.2,
+):
+    def _stretch(arr, p_lo, p_hi):
         arr = arr.astype(np.float32, copy=False)
         out = np.zeros_like(arr)
         if arr.ndim == 3:

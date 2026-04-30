@@ -1,31 +1,23 @@
-from __future__ import annotations
 import re
 import sys
-
 import datetime as dt
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
-import pyproj
-from shapely.geometry import Point, box, Polygon
 
-import numpy as np
-import xarray as xr
 import earthaccess as ea
-from datetime import datetime, date, timezone, timedelta
+from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
 from data.download_utils import retry as _retry_download
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pairing.pairs_utils import (
-    _parse_iso_utc, 
-    _sun_vec_from_az_el
-    )
+from pairing.pairs_utils import _parse_iso_utc, _sun_vec_from_az_el
 
-EMIT_SHORT_NAME = "EMITL2ARFL" 
+EMIT_SHORT_NAME = "EMITL2ARFL"
 
-def _umm_additional_attr(umm: dict, name: str):
+
+def _umm_additional_attr(umm, name):
     want = name.strip().upper()
     for a in (umm.get("AdditionalAttributes") or []):
         if str(a.get("Name", "")).strip().upper() == want:
@@ -34,7 +26,7 @@ def _umm_additional_attr(umm: dict, name: str):
     return None
 
 
-def emit_sun_vec_from_umm(umm: dict):
+def emit_sun_vec_from_umm(umm):
     zen = _umm_additional_attr(umm, "SOLAR_ZENITH")
     az  = _umm_additional_attr(umm, "SOLAR_AZIMUTH")
     if zen is None or az is None:
@@ -44,13 +36,11 @@ def emit_sun_vec_from_umm(umm: dict):
         az  = float(az)
     except Exception:
         return None
-
     el = 90.0 - zen
     return _sun_vec_from_az_el(az, el)
 
 
-
-def emit_geom_wgs84_from_umm(umm: dict):
+def emit_geom_wgs84_from_umm(umm):
     gpolys = (
         (umm.get("SpatialExtent") or {})
         .get("HorizontalSpatialDomain", {})
@@ -84,7 +74,8 @@ def emit_geom_wgs84_from_umm(umm: dict):
     geoms = [g for g in getattr(geom, "geoms", []) if g.geom_type in ("Polygon", "MultiPolygon")]
     return unary_union(geoms) if geoms else None
 
-def emit_item_datetime_utc(item: dict) -> Optional[datetime]:
+
+def emit_item_datetime_utc(item):
     umm = item.get("umm") or {}
     begin = (umm.get("TemporalExtent") or {}).get("RangeDateTime", {}).get("BeginningDateTime")
     if begin:
@@ -100,11 +91,13 @@ def emit_item_datetime_utc(item: dict) -> Optional[datetime]:
                 pass
     return None
 
-def emit_item_date(item: dict) -> Optional[date]:
-    dt = emit_item_datetime_utc(item)
-    return dt.date() if dt else None
 
-def emit_cloud_pct(item: dict) -> float:
+def emit_item_date(item):
+    d = emit_item_datetime_utc(item)
+    return d.date() if d else None
+
+
+def emit_cloud_pct(item):
     umm = item.get("umm") or {}
     v = umm.get("CloudCover", None) or item.get("CloudCover", None)
     try:
@@ -113,11 +106,11 @@ def emit_cloud_pct(item: dict) -> float:
         return float("inf")
 
 
-def emit_latest_revision_time(item: dict) -> datetime:
+def emit_latest_revision_time(item):
     umm = item.get("umm") or {}
     pds = umm.get("ProviderDates") or []
 
-    def _pd_dt(pd: dict) -> Optional[datetime]:
+    def _pd_dt(pd):
         d = pd.get("Date")
         if not d:
             return None
@@ -126,7 +119,7 @@ def emit_latest_revision_time(item: dict) -> datetime:
         except Exception:
             return None
 
-    def _pd_type(pd: dict) -> str:
+    def _pd_type(pd):
         return str(pd.get("Type") or pd.get("DateType") or "").strip()
 
     updates = [_pd_dt(pd) for pd in pds if _pd_type(pd) == "Update"]
@@ -146,12 +139,12 @@ def emit_latest_revision_time(item: dict) -> datetime:
         except Exception:
             pass
 
-    dt = emit_item_datetime_utc(item)
-    return dt if dt else datetime(1970, 1, 1, tzinfo=timezone.utc)
+    d = emit_item_datetime_utc(item)
+    return d if d else datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
-def emit_dedupe_latest_revision(items: Iterable[dict], key_fn=None) -> List[dict]:
-    def _default_key(it: dict) -> str:
+def emit_dedupe_latest_revision(items, key_fn=None):
+    def _default_key(it):
         umm = it.get("umm") or {}
         for k in ("GranuleUR", "NativeId", "EntryTitle", "ShortName"):
             v = umm.get(k)
@@ -160,12 +153,12 @@ def emit_dedupe_latest_revision(items: Iterable[dict], key_fn=None) -> List[dict
         for k in ("concept_id", "id"):
             if it.get(k):
                 return str(it[k])
-        dt = emit_item_datetime_utc(it)
-        return f"emit_{dt.isoformat() if dt else 'unknown'}_{id(it)}"
+        d = emit_item_datetime_utc(it)
+        return f"emit_{d.isoformat() if d else 'unknown'}_{id(it)}"
 
     key_fn = key_fn or _default_key
 
-    best: Dict[str, dict] = {}
+    best = {}
     for it in items:
         k = key_fn(it)
         cur = best.get(k)
@@ -173,7 +166,8 @@ def emit_dedupe_latest_revision(items: Iterable[dict], key_fn=None) -> List[dict
             best[k] = it
     return list(best.values())
 
-def emit_keep_top_n_per_day(items: Iterable[dict], *, n_per_day: int = 5, max_cloud_pct: Optional[float] = None) -> List[dict]:
+
+def emit_keep_top_n_per_day(items, *, n_per_day=5, max_cloud_pct=None):
     buckets = {}
     for it in items:
         d = emit_item_date(it)
@@ -188,25 +182,16 @@ def emit_keep_top_n_per_day(items: Iterable[dict], *, n_per_day: int = 5, max_cl
     for d, arr in buckets.items():
         arr.sort(key=lambda it: emit_cloud_pct(it))
         out.extend(arr[:max(1, n_per_day)])
-    out.sort(key=lambda it: (emit_item_datetime_utc(it) or datetime(1970,1,1,tzinfo=timezone.utc), emit_cloud_pct(it)))
+    out.sort(key=lambda it: (emit_item_datetime_utc(it) or datetime(1970, 1, 1, tzinfo=timezone.utc), emit_cloud_pct(it)))
     return out
 
 
-def search(
-    *,
-    bbox,
-    start: dt.datetime,
-    end: dt.datetime,
-    short_name: str = EMIT_SHORT_NAME,
-    cloud_cover=None,
-    count: int = 200,
-    sort: bool = True,
-):
+def search(*, bbox, start, end, short_name=EMIT_SHORT_NAME, cloud_cover=None, count=200, sort=True):
     if start is None and end is None:
         import warnings
         warnings.warn(
             "EMIT search called with start=None and end=None — returning "
-            "ALL available granules.  This is non-reproducible; new "
+            "ALL available granules. This is non-reproducible; new "
             "granules ingested into the archive will change results.",
             stacklevel=2,
         )
@@ -231,12 +216,7 @@ def search(
     return result
 
 
-def find_obs_for_rfl(
-    rfl_pick,
-    *,
-    short_name: str = "EMITL1BRAD",
-    version: str = "001",
-):
+def find_obs_for_rfl(rfl_pick, *, short_name="EMITL1BRAD", version="001"):
     pattern = re.compile(
         r"EMIT_L2A_(?:RFL|RFLUNCERT|MASK)_\d{3}_"
         r"(\d{8}T\d{6}_\d{7}_\d{3})"
@@ -251,11 +231,11 @@ def find_obs_for_rfl(
         print("[WARN] Could not parse scene key from RFL granule links.")
         return None
 
-    pattern = f"EMIT_L1B_RAD_*_{scene_key}*"
+    pat = f"EMIT_L1B_RAD_*_{scene_key}*"
     res = ea.search_data(
         short_name=short_name,
         version=version,
-        granule_name=pattern,
+        granule_name=pat,
         count=5,
     )
     if not res:
@@ -265,7 +245,7 @@ def find_obs_for_rfl(
     return res[0]
 
 
-def _obs_links_from_l1b(l1b_granule) -> List[str]:
+def _obs_links_from_l1b(l1b_granule):
     links = []
     for url in l1b_granule.data_links():
         name = Path(url.split("?", 1)[0]).name
@@ -274,14 +254,7 @@ def _obs_links_from_l1b(l1b_granule) -> List[str]:
     return links
 
 
-def download_reflectance(
-    pick,
-    dest_dir: Path | str,
-    assets: List[str] = ["_RFL_", "_MASK_"],
-    *,
-    download_obs: bool = False,
-    obs_dest_dir: Optional[Path | str] = None,
-) -> List[Path]:
+def download_reflectance(pick, dest_dir, assets=["_RFL_", "_MASK_"], *, download_obs=False, obs_dest_dir=None):
     dest = Path(dest_dir)
     dest.mkdir(parents=True, exist_ok=True)
 
@@ -316,7 +289,7 @@ def download_reflectance(
     return downloaded
 
 
-def download_obs_from_l1b_granules(l1b_granules, dest_dir: Path | str):
+def download_obs_from_l1b_granules(l1b_granules, dest_dir):
     dest = Path(dest_dir)
     dest.mkdir(parents=True, exist_ok=True)
 
@@ -331,12 +304,7 @@ def download_obs_from_l1b_granules(l1b_granules, dest_dir: Path | str):
     return [Path(p) for p in files]
 
 
-def fetch_emit_umm_by_granuleur(
-    granuleur: str,
-    *,
-    short_name: str = "EMITL2ARFL",
-    version: str = "001",
-) -> dict:
+def fetch_emit_umm_by_granuleur(granuleur, *, short_name="EMITL2ARFL", version="001"):
     import requests
 
     CMR_GRANULES_UMM = "https://cmr.earthdata.nasa.gov/search/granules.umm_json"
@@ -355,12 +323,7 @@ def fetch_emit_umm_by_granuleur(
     return items[0]["umm"]
 
 
-def refetch_emit_pick(
-    granuleur: str,
-    *,
-    short_name: str = "EMITL2ARFL",
-    version: str = "001",
-):
+def refetch_emit_pick(granuleur, *, short_name="EMITL2ARFL", version="001"):
     res = ea.search_data(
         short_name=short_name,
         version=version,

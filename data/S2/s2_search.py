@@ -1,55 +1,48 @@
-from shapely.strtree import STRtree
-from pystac_client import Client
-from typing import Any, Dict, Optional, Tuple, List
-from pathlib import Path
-
-from datetime import datetime, timezone, timedelta
+import sys
+import time
 from dataclasses import dataclass
-from shapely.geometry import shape
-import rasterio
-from rasterio.mask import mask as rio_mask
-from shapely.geometry import mapping
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Any, List, Optional, Tuple
+
 import numpy as np
-from shapely.ops import transform
 import pyproj
-
-
-from rasterio.warp import reproject
-from rasterio.enums import Resampling
-
+import rasterio
 import requests
-
-from data.download_utils import retry as _retry_download
+from pystac_client import Client
+from rasterio.enums import Resampling
+from rasterio.mask import mask as rio_mask
+from rasterio.warp import reproject
+from shapely.geometry import mapping, shape
+from shapely.ops import transform
+from shapely.strtree import STRtree
 from tqdm import tqdm
 
+from data.download_utils import retry as _retry_download
 
-
-import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pairing.pairs_utils import (
-    _parse_iso_utc, 
-    _to_utc, 
-    _sun_vec_from_az_el, 
-    overlap_metrics_and_geom_wgs84, 
+    _parse_iso_utc,
+    _to_utc,
+    _sun_vec_from_az_el,
+    overlap_metrics_and_geom_wgs84,
     _angle_between_unit_vecs,
-    local_solar_time_hours, 
-    circ_hours_diff, 
-    _dt_hours
-    )
-
-from EMIT.emit_search import (
-    emit_item_datetime_utc, 
-    emit_geom_wgs84_from_umm,
-    emit_sun_vec_from_umm
+    local_solar_time_hours,
+    circ_hours_diff,
+    _dt_hours,
 )
-
-import time
+from EMIT.emit_search import (
+    emit_item_datetime_utc,
+    emit_geom_wgs84_from_umm,
+    emit_sun_vec_from_umm,
+)
 
 try:
     from pystac_client.exceptions import APIError
 except Exception:
     APIError = Exception
+
 
 def _stac_search_items_with_retries(client, *, collections, datetime_range, intersects=None, bbox=None, limit=200, retries=4):
     last_err = None
@@ -60,12 +53,11 @@ def _stac_search_items_with_retries(client, *, collections, datetime_range, inte
                 datetime=datetime_range,
                 intersects=intersects,
                 bbox=bbox,
-                limit=limit,      
+                limit=limit,
             )
-            return list(search.items()) 
+            return list(search.items())
         except APIError as e:
             last_err = e
-            msg = str(e)
             sleep_s = 1.5 * (2 ** a)
             time.sleep(sleep_s)
     raise last_err
@@ -80,7 +72,8 @@ def reproject_geom(geom_wgs84, dst_crs):
     tfm = pyproj.Transformer.from_crs(4326, dst_crs, always_xy=True).transform
     return transform(tfm, geom_wgs84)
 
-def count_cloud_pixels(scl_href: str, roi_geom_wgs84):
+
+def count_cloud_pixels(scl_href, roi_geom_wgs84):
     vsi_href = scl_href
     if scl_href.startswith("http://") or scl_href.startswith("https://"):
         vsi_href = f"/vsicurl/{scl_href}"
@@ -100,18 +93,19 @@ def count_cloud_pixels(scl_href: str, roi_geom_wgs84):
             total = int(valid.sum())
             clouds = int(np.isin(scl[valid], list(CLOUD_CLASSES)).sum())
             return clouds, total
-        
+
 
 @dataclass
 class S2Rec:
-    item: Any               
-    geom_wgs84: Any          
+    item: Any
+    geom_wgs84: Any
     dt_utc: datetime
     meta_cloud: float
-    sun_vec: Optional[Tuple[float,float,float]]
+    sun_vec: Optional[Tuple[float, float, float]]
     scl_href: Optional[str]
     key: str
     updated_utc: datetime
+
 
 @dataclass
 class S2Index:
@@ -119,7 +113,7 @@ class S2Index:
     tree: STRtree
 
 
-def _get_s2_sun_vec(props: Dict[str, Any]) -> Optional[Tuple[float, float, float]]:
+def _get_s2_sun_vec(props):
     az = props.get("view:sun_azimuth")
     el = props.get("view:sun_elevation")
     if az is not None and el is not None:
@@ -142,8 +136,7 @@ def _get_s2_sun_vec(props: Dict[str, Any]) -> Optional[Tuple[float, float, float
     return None
 
 
-
-def _s2_item_updated_time(item) -> datetime:
+def _s2_item_updated_time(item):
     p = item.properties or {}
     for k in ("updated", "created"):
         if p.get(k):
@@ -155,14 +148,16 @@ def _s2_item_updated_time(item) -> datetime:
         return _to_utc(item.datetime)
     return datetime(1970, 1, 1, tzinfo=timezone.utc)
 
-def _s2_dedupe_key(item) -> str:
+
+def _s2_dedupe_key(item):
     p = item.properties or {}
     for k in ("s2:product_uri", "sentinel:product_id", "s2:granule_id", "s2:datatake_id"):
         if p.get(k):
             return str(p[k])
     return str(getattr(item, "id", None) or "unknown")
 
-def _find_scl_href(item) -> Optional[str]:
+
+def _find_scl_href(item):
     assets = getattr(item, "assets", {}) or {}
     for k in ("scl", "SCL", "scl_20m", "SCL_20m"):
         if k in assets:
@@ -178,6 +173,7 @@ def _find_scl_href(item) -> Optional[str]:
             return href
     return None
 
+
 def build_s2_index(
     *,
     aoi_geom_wgs84,
@@ -185,15 +181,14 @@ def build_s2_index(
     dt_max_utc,
     s2_api,
     s2_collection,
-    limit=200,             
-    chunk_days=14,   
-    simplify_tol=0.0,  
+    limit=200,
+    chunk_days=14,
+    simplify_tol=0.0,
     prefer_intersects=True,
 ):
     dt_min_utc = _to_utc(dt_min_utc)
     dt_max_utc = _to_utc(dt_max_utc)
 
-    # Geometry to send to STAC
     geom = aoi_geom_wgs84
     if simplify_tol and simplify_tol > 0:
         try:
@@ -213,7 +208,7 @@ def build_s2_index(
         c0, c1 = cur, nxt
         time_range = f"{c0.isoformat().replace('+00:00','Z')}/{c1.isoformat().replace('+00:00','Z')}"
 
-        # Try intersects first (more precise)…
+        # Try intersects first (more precise); fall back to bbox if the server chokes
         if prefer_intersects:
             try:
                 items = _stac_search_items_with_retries(
@@ -228,7 +223,6 @@ def build_s2_index(
                 cur = nxt
                 continue
             except Exception:
-                # …fallback to bbox if the server chokes
                 pass
 
         items = _stac_search_items_with_retries(
@@ -277,23 +271,23 @@ def build_s2_index(
 
 
 def find_best_s2_for_emit_item(
-    emit_item: dict,
+    emit_item,
     *,
-    s2_index: S2Index,
-    days: float = 3.0,
-    sun_deg_max: Optional[float] = 5.0,
-    max_tod_diff_h: float = 1.5,
-    tile_m: float = 60000.0,
-    top_k_prefilter: int = 50,
-    meta_cc_max: Optional[float] = None,
-    scl_cloud_max: Optional[float] = None,
+    s2_index,
+    days=3.0,
+    sun_deg_max=5.0,
+    max_tod_diff_h=1.5,
+    tile_m=60000.0,
+    top_k_prefilter=50,
+    meta_cc_max=None,
+    scl_cloud_max=None,
 ):
     umm = emit_item.get("umm") or {}
     emit_dt = emit_item_datetime_utc(emit_item)
     if emit_dt is None:
         return None, None, {"reason": "emit_missing_time"}
 
-    emit_geom = emit_geom_wgs84_from_umm(umm) 
+    emit_geom = emit_geom_wgs84_from_umm(umm)
     if emit_geom is None:
         return None, None, {"reason": "emit_missing_polygon"}
     anchor_lon = float(emit_geom.centroid.x)
@@ -485,7 +479,7 @@ def download_asset(href, out_path):
     )
 
 
-def _download_band(item, key: str, out_dir: Path, stem: str) -> Path:
+def _download_band(item, key, out_dir, stem):
     href = item.assets[key].href
     base = href.split("?", 1)[0]
     suf = Path(base).suffix.lower()
@@ -495,7 +489,8 @@ def _download_band(item, key: str, out_dir: Path, stem: str) -> Path:
         download_asset(href, out)
     return out
 
-def _inpaint_bad_pixels(stack: np.ndarray, bad_mask: np.ndarray, physical_max: int = 20000) -> np.ndarray:
+
+def _inpaint_bad_pixels(stack, bad_mask, physical_max=20000):
     if not bad_mask.any():
         return stack
 
@@ -528,9 +523,7 @@ def _inpaint_bad_pixels(stack: np.ndarray, bad_mask: np.ndarray, physical_max: i
     return stack
 
 
-def download_s2_spectral_stack(
-    item, s2_dir: Path, *, return_scl: bool = False,
-) -> Path | tuple[Path, Path | None]:
+def download_s2_spectral_stack(item, s2_dir, *, return_scl=False):
     s2_dir = Path(s2_dir)
     s2_dir.mkdir(parents=True, exist_ok=True)
 
@@ -575,7 +568,7 @@ def download_s2_spectral_stack(
         ref_crs = ref.crs
         out_dtype = ref.dtypes[0]
 
-    def warp_to_ref(src_path: Path, resampling, *, nodata=0):
+    def warp_to_ref(src_path, resampling, *, nodata=0):
         with rasterio.open(src_path) as src:
             dst = np.full((H, W), nodata, dtype=out_dtype)
             reproject(
@@ -675,7 +668,7 @@ def download_s2_spectral_stack(
     return out_stack
 
 
-def fetch_s2_item_by_id(s2_id: str, *, stac_api: str, collection: str):
+def fetch_s2_item_by_id(s2_id, *, stac_api, collection):
     import requests
     from pystac import Item
 

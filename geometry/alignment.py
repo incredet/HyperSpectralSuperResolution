@@ -1,15 +1,9 @@
-"""Consolidated EMIT–S2 spatial alignment pipeline."""
-
-from __future__ import annotations
-
-import logging
-from dataclasses import dataclass, field
+import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import numpy as np
 
-import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from geometry.EMIT_proj import convert_emit_nc_to_envi, crop_s2_stack_to_te
@@ -23,14 +17,6 @@ from geometry.arosics_coreg import (
     coregister_s2_granule_to_emit_granule,
     s2_bandmap_from_template,
 )
-
-if TYPE_CHECKING:
-    from documentation.config import PipelineConfig
-    from documentation.pairs_artifacts import ReportWriter
-
-log = logging.getLogger(__name__)
-
-
 
 
 @dataclass
@@ -48,22 +34,19 @@ class AlignmentResult:
     s2_overlap_path: Path | None = None
 
 
-
-
 def align_emit_s2_pair(
     *,
-    emit_nc: str | Path,
-    s2_stack: str | Path,
-    out_dir: str | Path,
-    config: "PipelineConfig",
-    wl_nm: np.ndarray,
-    emit_obs_nc: str | Path | None = None,
-    report: "ReportWriter | None" = None,
-    keep_intermediate: bool = False,
-    emit_info_save_path: str | Path | None = None,
-    trim: bool = False,
-) -> AlignmentResult:
-    """Full EMIT-S2 alignment: orthorectify, crop, coregister, trim"""
+    emit_nc,
+    s2_stack,
+    out_dir,
+    config,
+    wl_nm,
+    emit_obs_nc=None,
+    report=None,
+    keep_intermediate=False,
+    emit_info_save_path=None,
+    trim=False,
+):
     emit_nc = Path(emit_nc)
     s2_stack = Path(s2_stack)
     out_dir = Path(out_dir)
@@ -74,8 +57,7 @@ def align_emit_s2_pair(
     emit_utm_dir.mkdir(parents=True, exist_ok=True)
     s2_dir.mkdir(parents=True, exist_ok=True)
 
-
-    log.info("Step 1/4: EMIT orthorectification")
+    print("Step 1/4: EMIT orthorectification")
     envi_bin, emit_conv_info = convert_emit_nc_to_envi(
         emit_nc_paths=[emit_nc],
         s2_visual_path=s2_stack,
@@ -105,8 +87,7 @@ def align_emit_s2_pair(
             f"DEM correction: {config.apply_dem_correction}",
         ])
 
-
-    log.info("Step 2/4: Crop S2 to EMIT extent")
+    print("Step 2/4: Crop S2 to EMIT extent")
     s2_overlap_name = s2_stack.name.replace("S2_10band_10m", "overlap", 1)
     s2_overlap_path = s2_dir / s2_overlap_name
 
@@ -129,11 +110,12 @@ def align_emit_s2_pair(
             f"Window: {s2_overlap_info.get('window')}",
         ])
 
-
-    log.info("Step 3/4: AROSICS co-registration")
-    out_s2_coreg = s2_dir / s2_overlap.stem.replace("overlap", "coreg") \
-        if "overlap" in s2_overlap.stem \
+    print("Step 3/4: AROSICS co-registration")
+    out_s2_coreg = (
+        s2_dir / s2_overlap.stem.replace("overlap", "coreg")
+        if "overlap" in s2_overlap.stem
         else s2_dir / (s2_overlap.stem + "_coreg.tif")
+    )
     if not str(out_s2_coreg).endswith(".tif"):
         out_s2_coreg = out_s2_coreg.with_suffix(".tif")
 
@@ -174,7 +156,7 @@ def align_emit_s2_pair(
         ])
 
     if not coreg_ok:
-        log.error("Co-registration failed: %s", coreg_result["final"])
+        print(f"Co-registration failed: {coreg_result['final']}")
         return AlignmentResult(
             emit_envi_trimmed=envi_bin,
             s2_tif_trimmed=s2_overlap,
@@ -189,9 +171,8 @@ def align_emit_s2_pair(
             s2_overlap_path=s2_overlap,
         )
 
-
     if trim:
-        log.info("Step 4/4: Trim to common valid extent")
+        print("Step 4/4: Trim to common valid extent")
         valid_te = valid_bbox_in_map_coords(str(out_s2_coreg), margin_px=2)
         te_trim = intersect_bounds(TE_overlap, valid_te)
         te_trim = snap_bounds_to_grid(te_trim, x0=x0, y0=y0, grid_m=60.0)
@@ -213,14 +194,10 @@ def align_emit_s2_pair(
                 f"Grid anchor: ({x0}, {y0}), step 60 m",
             ])
 
-        # Clean up un-trimmed co-registered S2
-        if not keep_intermediate:
-            if out_s2_coreg.exists():
-                out_s2_coreg.unlink()
-                log.debug("Removed intermediate: %s", out_s2_coreg)
+        if not keep_intermediate and out_s2_coreg.exists():
+            out_s2_coreg.unlink()
 
-        log.info("Alignment complete (trimmed).  EMIT: %s  S2: %s",
-                 envi_trimmed.name, s2_trimmed.name)
+        print(f"Alignment complete (trimmed). EMIT: {envi_trimmed.name}  S2: {s2_trimmed.name}")
 
         return AlignmentResult(
             emit_envi_trimmed=envi_trimmed,
@@ -236,7 +213,6 @@ def align_emit_s2_pair(
             s2_overlap_path=s2_overlap if keep_intermediate else None,
         )
 
-
     if report:
         report.section("Spatial Trimming", [
             "Trim disabled — tiling will handle nodata edges.",
@@ -244,15 +220,14 @@ def align_emit_s2_pair(
             f"S2 (co-registered): {out_s2_coreg.name}",
         ])
 
-    log.info("Alignment complete (no trim).  EMIT: %s  S2: %s",
-             envi_bin.name, out_s2_coreg.name)
+    print(f"Alignment complete (no trim). EMIT: {envi_bin.name}  S2: {out_s2_coreg.name}")
 
     return AlignmentResult(
-        emit_envi_trimmed=envi_bin,          # not trimmed, but field name kept
-        s2_tif_trimmed=out_s2_coreg,         # not trimmed, but field name kept
+        emit_envi_trimmed=envi_bin,  
+        s2_tif_trimmed=out_s2_coreg,  
         emit_utm_tif=emit_utm_tif,
         emit_envi_full=envi_bin,
-        bounds_trimmed=TE_overlap,           # full overlap extent
+        bounds_trimmed=TE_overlap,       
         anchor_x0=x0,
         anchor_y0=y0,
         emit_conv_info=emit_conv_info,

@@ -1,39 +1,29 @@
- 
-from __future__ import annotations
-
 import json
-from typing import List, Dict, Any, Optional
-
+import sys
 from datetime import timedelta
 from pathlib import Path
 
-
-import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from S2.s2_search import (
-    find_best_s2_for_emit_item,
-    build_s2_index
-)
-
+from S2.s2_search import find_best_s2_for_emit_item, build_s2_index
 from EMIT.emit_search import (
     emit_cloud_pct,
     emit_dedupe_latest_revision,
     emit_keep_top_n_per_day,
-    emit_item_datetime_utc
-
+    emit_item_datetime_utc,
 )
 
+
 def pair_emit_to_s2(
-    emit_items: List[dict],
+    emit_items,
     *,
     aoi_geom_wgs84,
-    s2_api: str,
-    s2_collection: str,
-    days: float = 3.0,
-    emit_max_cloud_pct: Optional[float] = None,
-    emit_top_n_per_day: Optional[int] = None,
-    s2_limit: int = 5000,
+    s2_api,
+    s2_collection,
+    days=3.0,
+    emit_max_cloud_pct=None,
+    emit_top_n_per_day=None,
+    s2_limit=5000,
     **matcher_kwargs,
 ):
     emit_dedup = emit_dedupe_latest_revision(emit_items)
@@ -44,12 +34,10 @@ def pair_emit_to_s2(
             n_per_day=int(emit_top_n_per_day),
             max_cloud_pct=emit_max_cloud_pct,
         )
+    elif emit_max_cloud_pct is not None:
+        emit_sel = [it for it in emit_dedup if emit_cloud_pct(it) <= emit_max_cloud_pct]
     else:
-        # optional cloud filter only
-        if emit_max_cloud_pct is not None:
-            emit_sel = [it for it in emit_dedup if emit_cloud_pct(it) <= emit_max_cloud_pct]
-        else:
-            emit_sel = list(emit_dedup)
+        emit_sel = list(emit_dedup)
 
     dts = [emit_item_datetime_utc(it) for it in emit_sel]
     dts = [dt for dt in dts if dt is not None]
@@ -93,12 +81,12 @@ def pair_emit_to_s2(
     }
 
 
-def _emit_time_batches(emit_items: List[dict], window_days: int) -> List[List[dict]]:
+def _emit_time_batches(emit_items, window_days):
     items = [(emit_item_datetime_utc(it), it) for it in emit_items]
     items = [(dt, it) for dt, it in items if dt is not None]
     items.sort(key=lambda x: x[0])
 
-    batches: List[List[dict]] = []
+    batches = []
     i = 0
     while i < len(items):
         start_dt = items[i][0]
@@ -113,25 +101,25 @@ def _emit_time_batches(emit_items: List[dict], window_days: int) -> List[List[di
 
 def pair_emit_to_s2_batched(
     *,
-    emit_items: List[dict],
+    emit_items,
     aoi_geom_wgs84,
-    out_dir: str,
-    s2_api: str,
-    s2_collection: str,
-    days: float = 3.0,
-    window_days: int = 14,
-    resume: bool = True,
-    emit_top_n_per_day: Optional[int] = 5,
-    emit_max_cloud_pct: Optional[float] = None,
-    s2_limit: int = 200,
-    s2_chunk_days: int = 14,
-    sun_deg_max: float = 5.0,
-    max_tod_diff_h: float = 1.5,
-    tile_m: float = 6000.0,
-    top_k_prefilter: int = 50,
-    meta_cc_max: Optional[float] = None,
-    scl_cloud_max: Optional[float] = None,
-) -> Dict[str, Any]:
+    out_dir,
+    s2_api,
+    s2_collection,
+    days=3.0,
+    window_days=14,
+    resume=True,
+    emit_top_n_per_day=5,
+    emit_max_cloud_pct=None,
+    s2_limit=200,
+    s2_chunk_days=14,
+    sun_deg_max=5.0,
+    max_tod_diff_h=1.5,
+    tile_m=6000.0,
+    top_k_prefilter=50,
+    meta_cc_max=None,
+    scl_cloud_max=None,
+):
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 

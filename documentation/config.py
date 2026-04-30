@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -77,7 +77,7 @@ class PipelineConfig:
     local_root: str
     drive_root: Optional[str]
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self):
         d = {}
         for f in fields(self):
             val = getattr(self, f.name)
@@ -88,14 +88,14 @@ class PipelineConfig:
             d[f.name] = val
         return d
 
-    def to_json(self, path: str | Path) -> Path:
+    def to_json(self, path):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(self.to_dict(), indent=2))
         return path
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "PipelineConfig":
+    def from_dict(cls, d):
         d = d.copy()
 
         # Backwards-compat defaults for keys added after initial config
@@ -130,17 +130,12 @@ class PipelineConfig:
         return cls(**{k: v for k, v in d.items() if k in known})
 
     @classmethod
-    def from_json(cls, path: str | Path) -> "PipelineConfig":
+    def from_json(cls, path):
         with open(path) as f:
             return cls.from_dict(json.load(f))
 
     @classmethod
-    def from_yaml(
-        cls,
-        path: str | Path,
-        *,
-        overrides: dict[str, Any] | None = None,
-    ) -> "PipelineConfig":
+    def from_yaml(cls, path, *, overrides=None):
         import yaml
 
         path = Path(path)
@@ -159,7 +154,7 @@ class PipelineConfig:
         return cls.from_dict(d)
 
     @property
-    def tile_params(self) -> dict[str, Any]:
+    def tile_params(self):
         return {
             "emit_tile_size": self.emit_tile_size,
             "scale": self.tile_scale,
@@ -168,7 +163,7 @@ class PipelineConfig:
         }
 
     @property
-    def qc_params(self) -> dict[str, Any]:
+    def qc_params(self):
         return {
             "min_r2": self.qc_min_r2,
             "max_emit_cloud_frac": self.qc_max_emit_cloud_frac,
@@ -177,7 +172,7 @@ class PipelineConfig:
         }
 
     @property
-    def cnmf_params(self) -> dict[str, Any]:
+    def cnmf_params(self):
         return {
             "max_endmembers": self.cnmf_max_endmembers,
             "inner_iters": self.cnmf_inner_iters,
@@ -189,15 +184,15 @@ class PipelineConfig:
         }
 
     @property
-    def scale_factor_dn(self) -> float:
+    def scale_factor_dn(self):
         return self.reflectance_scale
 
     @property
-    def nodata_emit(self) -> int:
+    def nodata_emit(self):
         return self.nodata_uint16
 
     @property
-    def spectral_params(self) -> dict[str, Any]:
+    def spectral_params(self):
         return {
             "scale": self.tile_scale,
             "degree": self.spectral_degree,
@@ -207,7 +202,7 @@ class PipelineConfig:
         }
 
     @property
-    def run_fingerprint(self) -> str:
+    def run_fingerprint(self):
         d = self.to_dict()
         for k in ("local_root", "drive_root"):
             d.pop(k, None)
@@ -215,11 +210,11 @@ class PipelineConfig:
         return hashlib.sha256(blob).hexdigest()[:12]
 
     @property
-    def search_bounds(self) -> tuple[Optional[datetime], Optional[datetime]]:
+    def search_bounds(self):
         import warnings
         from datetime import datetime as _dt
 
-        def _parse(s: Optional[str]) -> Optional[datetime]:
+        def _parse(s):
             if s is None:
                 return None
             s = s.strip()

@@ -1,38 +1,29 @@
-from __future__ import annotations
-
+import json
 import re
+import shutil
+import subprocess
+import sys
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Optional
 
-import json
-import shutil
-import subprocess
-
+import numpy as np
+import pandas as pd
 import rasterio
 from rasterio.warp import transform_bounds
 
-import pandas as pd
-import numpy as np
-import warnings
-
-import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from data.EMIT.emit_search import emit_geom_wgs84_from_umm
 
 
-def utc_now_iso() -> str:
+def utc_now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
-
-def load_pairs_sorted(
-    pairs_dir: str | Path,
-    *,
-    sort_by: str = "expected_clear_km2",
-) -> list[dict]:
+def load_pairs_sorted(pairs_dir, *, sort_by="expected_clear_km2"):
     import glob as _glob
 
     pairs_dir = Path(pairs_dir)
@@ -60,16 +51,14 @@ def load_pairs_sorted(
     return pairs
 
 
-
-def _fmt(v: float):
+def _fmt(v):
     s = f"{v:.6f}".rstrip("0")
     if s.endswith("."):
         s += "0"
     return s
 
 
-def aoi_slug(lat: float, lon: float) -> str:
-    """Build a filesystem-safe AOI folder name from coordinates."""
+def aoi_slug(lat, lon):
     return f"aoi_lat{_fmt(lat)}_lon{_fmt(lon)}"
 
 
@@ -83,12 +72,7 @@ class AoiPaths:
     registry_jsonl: Path
 
     @classmethod
-    def build(
-        cls,
-        drive_root: str | Path,
-        lat: float,
-        lon: float,
-    ) -> "AoiPaths":
+    def build(cls, drive_root, lat, lon):
         slug = aoi_slug(lat, lon)
         root = ensure_dir(Path(drive_root) / slug)
         return cls(
@@ -100,12 +84,7 @@ class AoiPaths:
         )
 
 
-def write_aoi_pairs_csv(
-    aoi: AoiPaths,
-    pairs: list[dict],
-    *,
-    config_dict: Optional[dict] = None,
-) -> Path:
+def write_aoi_pairs_csv(aoi, pairs, *, config_dict=None):
     if config_dict is not None:
         write_json(aoi.config_json, config_dict)
 
@@ -132,7 +111,7 @@ def write_aoi_pairs_csv(
     return aoi.pairs_csv
 
 
-def load_aoi_pairs_csv(aoi: AoiPaths) -> pd.DataFrame:
+def load_aoi_pairs_csv(aoi):
     if not aoi.pairs_csv.exists():
         raise FileNotFoundError(
             f"No pairs.csv found for AOI {aoi.slug}. "
@@ -141,17 +120,13 @@ def load_aoi_pairs_csv(aoi: AoiPaths) -> pd.DataFrame:
     return pd.read_csv(aoi.pairs_csv)
 
 
-def pick_pair_by_rank(
-    pairs: list[dict],
-    rank: int,
-) -> dict:
+def pick_pair_by_rank(pairs, rank):
     if rank < 0 or rank >= len(pairs):
         raise IndexError(
             f"Pair rank {rank} out of range [0, {len(pairs) - 1}]. "
             f"Check pairs.csv for available ranks."
         )
     return pairs[rank]
-
 
 
 _AOIS_CATALOGUE_FILENAME = "aois.csv"
@@ -174,10 +149,7 @@ def load_aois_catalogue(drive_root):
     return df.sort_values("name").reset_index(drop=True)
 
 
-def save_aois_catalogue(
-    drive_root: str | Path,
-    aois: list[dict] | pd.DataFrame,
-) -> Path:
+def save_aois_catalogue(drive_root, aois):
     df = pd.DataFrame(aois) if not isinstance(aois, pd.DataFrame) else aois.copy()
     for col in _AOIS_CATALOGUE_COLUMNS:
         if col not in df.columns:
@@ -192,10 +164,7 @@ def save_aois_catalogue(
     return csv_path
 
 
-def get_aoi_by_name(
-    drive_root: str | Path,
-    name: str,
-) -> dict:
+def get_aoi_by_name(drive_root, name):
     df = load_aois_catalogue(drive_root)
     matches = df.loc[df["name"] == name]
     if matches.empty:
@@ -206,10 +175,7 @@ def get_aoi_by_name(
     return matches.iloc[0].to_dict()
 
 
-def get_aoi_by_index(
-    drive_root: str | Path,
-    index: int,
-) -> dict:
+def get_aoi_by_index(drive_root, index):
     df = load_aois_catalogue(drive_root)
     if index < 0 or index >= len(df):
         raise IndexError(
@@ -219,13 +185,11 @@ def get_aoi_by_index(
     return df.iloc[index].to_dict()
 
 
-
 _PIPELINE_CONFIG_FILENAME = "pipeline_config.yaml"
-
 _PIPELINE_DEFAULTS_FILENAME = "pipeline_defaults.json"
 
 
-def load_pipeline_config(drive_root: str | Path) -> dict:
+def load_pipeline_config(drive_root):
     import yaml
 
     root = Path(drive_root)
@@ -249,10 +213,7 @@ def load_pipeline_config(drive_root: str | Path) -> dict:
         return yaml.safe_load(f) or {}
 
 
-def save_pipeline_config(
-    drive_root: str | Path,
-    config_dict: dict,
-) -> Path:
+def save_pipeline_config(drive_root, config_dict):
     import yaml
 
     path = Path(drive_root) / _PIPELINE_CONFIG_FILENAME
@@ -260,7 +221,6 @@ def save_pipeline_config(
     with open(path, "w") as f:
         yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)
     return path
-
 
 
 def load_pipeline_defaults(drive_root):
@@ -279,11 +239,10 @@ def save_pipeline_defaults(drive_root, defaults):
     return save_pipeline_config(drive_root, defaults)
 
 
-
 REGISTRY_FILENAME = "pair_registry.jsonl"
 
 
-def load_pair_registry(drive_root: str | Path | "AoiPaths") -> list[dict]:
+def load_pair_registry(drive_root):
     if isinstance(drive_root, AoiPaths):
         path = drive_root.registry_jsonl
     else:
@@ -299,14 +258,7 @@ def load_pair_registry(drive_root: str | Path | "AoiPaths") -> list[dict]:
     return entries
 
 
-def registry_has_pair(
-    drive_root: str | Path | "AoiPaths",
-    emit_granuleur: str,
-    s2_id: str,
-    *,
-    config_fingerprint: Optional[str] = None,
-    status: str = "completed",
-) -> Optional[dict]:
+def registry_has_pair(drive_root, emit_granuleur, s2_id, *, config_fingerprint=None, status="completed"):
     for entry in load_pair_registry(drive_root):
         if entry.get("emit_granuleur") != emit_granuleur:
             continue
@@ -320,15 +272,7 @@ def registry_has_pair(
     return None
 
 
-def register_pair(
-    drive_root: str | Path | "AoiPaths",
-    *,
-    pair: dict,
-    pair_id: str,
-    run_uid: Optional[str] = None,
-    config_fingerprint: str = "",
-    status: str = "started",
-) -> dict:
+def register_pair(drive_root, *, pair, pair_id, run_uid=None, config_fingerprint="", status="started"):
     if isinstance(drive_root, AoiPaths):
         reg_path = drive_root.registry_jsonl
         ensure_dir(drive_root.root)
@@ -360,16 +304,7 @@ def register_pair(
     return entry
 
 
-
-def save_run_lock(
-    pair_drive_root: str | Path,
-    *,
-    pair: dict,
-    pair_id: str,
-    run_uid: str,
-    config_fingerprint: str = "",
-    config_dict: Optional[dict] = None,
-):
+def save_run_lock(pair_drive_root, *, pair, pair_id, run_uid, config_fingerprint="", config_dict=None):
     path = Path(pair_drive_root) / "run_lock.json"
     ensure_dir(path.parent)
 
@@ -398,31 +333,30 @@ def save_run_lock(
     return path
 
 
-def load_run_lock(pair_drive_root: str | Path) -> Optional[dict]:
+def load_run_lock(pair_drive_root):
     path = Path(pair_drive_root) / "run_lock.json"
     if not path.exists():
         return None
     return json.loads(path.read_text())
 
 
-def ensure_dir(p: str | Path) -> Path:
+def ensure_dir(p):
     p = Path(p)
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 
-def write_json(path: str | Path, obj: Any, *, indent: int = 2) -> Path:
+def write_json(path, obj, *, indent=2):
     path = Path(path)
     ensure_dir(path.parent)
     path.write_text(json.dumps(obj, indent=indent, default=str))
     return path
 
 
-
 _EMIT_DT_RE = re.compile(r"(\d{8}T\d{6})")
 
 
-def _s2_tile_id_from_item(s2_item: dict) -> str:
+def _s2_tile_id_from_item(s2_item):
     props = s2_item.get("properties", {}) or {}
     grid_code = props.get("grid:code")
     if grid_code:
@@ -444,7 +378,7 @@ def _s2_tile_id_from_item(s2_item: dict) -> str:
     return "TUNKNOWN"
 
 
-def _s2_date_from_item(s2_item: dict) -> str:
+def _s2_date_from_item(s2_item):
     props = s2_item.get("properties", {}) or {}
     dt_str = props.get("datetime", "")
     if dt_str:
@@ -465,7 +399,7 @@ def _s2_date_from_item(s2_item: dict) -> str:
     return "00000000"
 
 
-def make_pair_id(emit_nc: str | Path, s2_item: dict) -> str:
+def make_pair_id(emit_nc, s2_item):
     stem = Path(emit_nc).stem
     m = _EMIT_DT_RE.search(stem)
     emit_dt = m.group(1) if m else stem
@@ -474,15 +408,12 @@ def make_pair_id(emit_nc: str | Path, s2_item: dict) -> str:
     return f"{emit_dt}_{s2_tile}_{s2_date}"
 
 
-
-
 @dataclass(frozen=True)
 class RunPaths:
 
     run_id: str
     pair_id: str
 
-    # ── Per-pair root ──────────────────────────────────────────────────────
     local_root: Path
     local_emit: Path
     local_s2: Path
@@ -500,7 +431,7 @@ class RunPaths:
     drive_root: Optional[Path] = None
     drive_emit: Optional[Path] = None
     drive_s2: Optional[Path] = None
-    drive_alignment: Optional[Path] = None   
+    drive_alignment: Optional[Path] = None
     drive_plots: Optional[Path] = None
     drive_tiles: Optional[Path] = None
     drive_regression_synth: Optional[Path] = None
@@ -510,30 +441,13 @@ class RunPaths:
     drive_report_md: Optional[Path] = None
     drive_manifest_csv: Optional[Path] = None
 
-
-    # ── ID extraction ──────────────────────────────────────────────────────
-
     @staticmethod
-    def emit_id_from_nc(emit_nc: str | Path) -> str:
+    def emit_id_from_nc(emit_nc):
         stem = Path(emit_nc).stem
         return stem.replace("EMIT_L2A_RFL_", "", 1)
 
-    # ── Builder ────────────────────────────────────────────────────────────
-
     @classmethod
-    def build(
-        cls,
-        *,
-        emit_nc: str | Path,
-        local_root: str | Path,
-        drive_base: str | Path | None = None,
-        aoi: "AoiPaths | None" = None,
-        pair_id: str | None = None,
-        s2_item: dict | None = None,
-    ):
-        """Create folder layout for one pair.
-        """
-        # If AoiPaths provided, use it as drive_base
+    def build(cls, *, emit_nc, local_root, drive_base=None, aoi=None, pair_id=None, s2_item=None):
         if aoi is not None:
             drive_base = aoi.root
         run_id = cls.emit_id_from_nc(emit_nc)
@@ -544,7 +458,6 @@ class RunPaths:
             else:
                 pair_id = run_id  # backward compat
 
-        # ── local dirs ─────────────────────────────────────────────────
         local_root = ensure_dir(local_root)
         local_emit = ensure_dir(local_root / "emit")
         local_s2 = ensure_dir(local_root / "s2")
@@ -563,8 +476,8 @@ class RunPaths:
                 run_id=run_id,
                 pair_id=pair_id,
                 local_root=local_root,
-                local_emit = local_emit,
-                local_s2 = local_s2,
+                local_emit=local_emit,
+                local_s2=local_s2,
                 local_alignment=local_alignment,
                 local_plots=local_plots,
                 local_tiles=local_tiles,
@@ -576,7 +489,6 @@ class RunPaths:
                 local_manifest_csv=local_manifest_csv,
             )
 
-        # ── drive dirs (under pair_id subfolder) ───────────────────────
         drive_root = ensure_dir(Path(drive_base) / pair_id)
         drive_emit = ensure_dir(local_root / "emit")
         drive_s2 = ensure_dir(local_root / "s2")
@@ -592,9 +504,9 @@ class RunPaths:
             run_id=run_id,
             pair_id=pair_id,
             local_root=local_root,
-            local_emit = local_emit,
-            local_s2 = local_s2,
-            local_alignment=local_alignment,            
+            local_emit=local_emit,
+            local_s2=local_s2,
+            local_alignment=local_alignment,
             local_plots=local_plots,
             local_tiles=local_tiles,
             local_regression_synth=local_regression_synth,
@@ -604,8 +516,8 @@ class RunPaths:
             local_report_md=local_report_md,
             local_manifest_csv=local_manifest_csv,
             drive_root=drive_root,
-            drive_emit = drive_emit,
-            drive_s2 = drive_s2,
+            drive_emit=drive_emit,
+            drive_s2=drive_s2,
             drive_alignment=drive_alignment,
             drive_plots=drive_plots,
             drive_tiles=drive_tiles,
@@ -618,37 +530,24 @@ class RunPaths:
         )
 
 
-# ReportWriter lives in report_builder.py now; alias set at end of file to avoid circular import
+# ReportWriter lives in report_builder.py; alias set at end of file to avoid circular import
 ReportWriter = None
 
 
-# -----------------------------------------------------------------------------
-# EMIT helpers
-# -----------------------------------------------------------------------------
-
-
-def emit_file_records(umm: dict):
-    """
-    EMIT UMM sizes and stuff
-    """
+def emit_file_records(umm):
     recs = umm.get("DataGranule", {}).get("ArchiveAndDistributionInformation", [])
     out = []
     for r in recs:
-        out.append(
-            {
-                "name": r.get("Name"),
-                "size_bytes": r.get("SizeInBytes"),
-                "format": r.get("Format"),
-                "checksum": r.get("Checksum", {}),
-            }
-        )
+        out.append({
+            "name": r.get("Name"),
+            "size_bytes": r.get("SizeInBytes"),
+            "format": r.get("Format"),
+            "checksum": r.get("Checksum", {}),
+        })
     return out
 
 
-def emit_related_urls(umm: dict):
-    """
-    URLs for report
-    """
+def emit_related_urls(umm):
     urls = umm.get("RelatedUrls", []) or []
     keep = []
     for u in urls:
@@ -666,15 +565,7 @@ def emit_related_urls(umm: dict):
     return keep
 
 
-def write_emit_metadata(
-    emit_item: dict,
-    out_dir: str | Path,
-    *,
-    report: ReportWriter | None = None,
-) -> dict:
-    """
-    Metadata and summary for EMIT
-    """
+def write_emit_metadata(emit_item, out_dir, *, report=None):
     out_dir = ensure_dir(out_dir)
 
     meta_raw_path = out_dir / "emit_meta_raw.json"
@@ -696,7 +587,6 @@ def write_emit_metadata(
         minx, miny, maxx, maxy = geom.bounds
         bounds_wgs84 = [minx, miny, maxx, maxy]
         centroid_wgs84 = {"lon": float(geom.centroid.x), "lat": float(geom.centroid.y)}
-
 
     add_attrs = {
         a["Name"]: a.get("Values")
@@ -750,26 +640,21 @@ def write_emit_metadata(
     return summary
 
 
-# -----------------------------------------------------------------------------
-# S2 helpers
-# -----------------------------------------------------------------------------
-
-
-def bounds_from_bbox(bbox: Any) -> Optional[list[float]]:
+def bounds_from_bbox(bbox):
     if not bbox or len(bbox) != 4:
         return None
     xmin, ymin, xmax, ymax = map(float, bbox)
     return [xmin, ymin, xmax, ymax]
 
 
-def centroid_from_bounds(bounds: Optional[list[float]]) -> Optional[dict[str, float]]:
+def centroid_from_bounds(bounds):
     if not bounds:
         return None
     xmin, ymin, xmax, ymax = bounds
     return {"lon": (xmin + xmax) / 2.0, "lat": (ymin + ymax) / 2.0}
 
 
-def pick_s2_assets_minimal(s2_dict: dict) -> dict:
+def pick_s2_assets_minimal(s2_dict):
     assets = s2_dict.get("assets", {}) or {}
     keep_keys = ["visual", "B02", "B03", "B04", "B08", "B11", "B12", "SCL"]
     out = {}
@@ -780,15 +665,7 @@ def pick_s2_assets_minimal(s2_dict: dict) -> dict:
     return out
 
 
-def write_s2_metadata(
-    s2_item: Any,
-    out_dir: str | Path,
-    *,
-    report: ReportWriter | None = None,
-) -> dict:
-    """
-    Metadata and summary
-    """
+def write_s2_metadata(s2_item, out_dir, *, report=None):
     out_dir = ensure_dir(out_dir)
 
     s2_dict = s2_item if isinstance(s2_item, dict) else (s2_item.to_dict() if hasattr(s2_item, "to_dict") else {})
@@ -870,16 +747,7 @@ def write_s2_metadata(
     return summary
 
 
-# -----------------------------------------------------------------------------
-# this one is for tiles
-# -----------------------------------------------------------------------------
-
-
 def tif_geo_summary(path):
-    """
-    get geoTIFF spatial summary
-    """
-
     p = Path(path)
     if not p.exists():
         return {"path": str(p), "error": "not found"}
@@ -927,7 +795,7 @@ class TileRecord:
 
     realign_stats: dict | None = None
 
-    def to_manifest_row(self) -> dict:
+    def to_manifest_row(self):
         row = {
             "pair_id": self.pair_id,
             "idx": int(self.idx),
@@ -948,7 +816,7 @@ class TileRecord:
             row["realign_shift_s2_dy"] = dy_s
             row["realign_shift_s2_dx"] = dx_s
 
-        def _pull(prefix: str, g: Optional[dict]):
+        def _pull(prefix, g):
             if not isinstance(g, dict):
                 return
             row[f"{prefix}_crs"] = g.get("crs")
@@ -961,19 +829,8 @@ class TileRecord:
         return row
 
 
-def write_tile_metadata(
-    record: TileRecord,
-    tile_info: dict,
-    out_dir: str | Path,
-    *,
-    emit_granule = None,
-    emit_time = None,
-    s2_id = None,
-    s2_datetime = None,
-    params = None,
-):
-    """Write per-tile metadata JSON.
-    """
+def write_tile_metadata(record, tile_info, out_dir, *, emit_granule=None, emit_time=None,
+                        s2_id=None, s2_datetime=None, params=None):
     out_dir = ensure_dir(out_dir)
 
     doc = {
@@ -1015,9 +872,7 @@ def write_tile_metadata(
     return path, record.to_manifest_row()
 
 
-def write_manifest_csv(path: str | Path, rows: list[dict] | list[TileRecord]) -> Path:
-    """Write per-pair manifest.csv."""
-
+def write_manifest_csv(path, rows):
     path = Path(path)
     ensure_dir(path.parent)
 
@@ -1034,13 +889,7 @@ def write_manifest_csv(path: str | Path, rows: list[dict] | list[TileRecord]) ->
     return path
 
 
-def write_global_manifest(
-    output_root: str | Path | "AoiPaths",
-    pair_manifests: list[str | Path] | None = None,
-    *,
-    filename: str = "global_manifest.csv",
-) -> Path:
-    """concatenate per-pair manifests into a single global manifest."""
+def write_global_manifest(output_root, pair_manifests=None, *, filename="global_manifest.csv"):
     if isinstance(output_root, AoiPaths):
         output_root = output_root.root
     output_root = Path(output_root)
@@ -1070,22 +919,7 @@ def write_global_manifest(
     return out_path
 
 
-# -----------------------------------------------------------------------------
-# Drive stuff
-# -----------------------------------------------------------------------------
-
-
-def copy_any(
-    src: str | Path,
-    dst: str | Path,
-    *,
-    overwrite: bool = False,
-    use_rsync: bool = True,
-    exclude: list[str] | None = None,
-):
-    """
-    copy file/dir
-    """
+def copy_any(src, dst, *, overwrite=False, use_rsync=True, exclude=None):
     src = Path(src)
     dst = Path(dst)
     if not src.exists():
@@ -1134,7 +968,7 @@ def copy_any(
         shutil.copy2(src, target)
 
 
-def write_archive_map(path: str | Path, mapping: dict[str, Any], *, report: ReportWriter | None = None):
+def write_archive_map(path, mapping, *, report=None):
     path = Path(path)
     write_json(path, mapping)
 
@@ -1167,7 +1001,7 @@ def describe_tif(path):
         print("Res:", ds.res)
         print("Nodata:", ds.nodata)
 
-        dtypes = ds.dtypes  # list per band
+        dtypes = ds.dtypes
         uniq = sorted(set(dtypes))
         print("\nDtype(s):", uniq)
 
