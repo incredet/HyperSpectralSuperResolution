@@ -13,6 +13,8 @@ from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
 from data.EMIT.emit_utils import closest_bands
 
+DN_SCALE = np.float32(10000.0)
+
 
 def align_s2_to_emit_grid(s2_cube, scale=6, *, s2_profile=None, emit_profile=None):
     s2_cube = np.asarray(s2_cube, dtype=np.float32)
@@ -180,8 +182,6 @@ class S2ToEMITRegressor:
         ])
 
     def apply_to_tile(self, s2_tile_path, *, out_path=None, out_nodata=65535):
-        DN_SCALE = np.float32(10000.0)
-
         s2_cube, s2_prof, s2_nodata = _read_raster(s2_tile_path)
         B, H, W = s2_cube.shape
         n_out = self.n_output_bands_
@@ -259,8 +259,6 @@ def fit_tile(
     mode="upsample",
 ):
     assert mode in ("upsample", "downsample"), mode
-
-    DN_SCALE = np.float32(10000.0)
 
     s2_cube,  s2_prof,   s2_nodata   = _read_raster(s2_tile_path)
     emit_b32, emit_prof, emit_nodata = _read_raster(emit_b32_tile_path)
@@ -343,111 +341,6 @@ def fit_tile(
 
     if verbose:
         print(f"R² mean={stats['r2_mean']:.4f}  min={stats['r2_min']:.4f}")
-
-    return regressor, stats
-
-
-def fit_tiles_batch(
-    tile_pairs,
-    *,
-    scale=6,
-    degree=2,
-    alpha=1.0,
-    max_cv=0.25,
-    verbose=True,
-    emit_upsample_order=1,
-):
-    DN_SCALE = np.float32(10000.0)
-
-    all_X = []
-    all_Y = []
-    band_indices = None
-    wavelengths_nm = None
-    n_s2_bands = None
-
-    for s2_path, emit_path in tile_pairs:
-        s2_cube,  s2_prof,   s2_nodata   = _read_raster(s2_path)
-        emit_b32, emit_prof, emit_nodata = _read_raster(emit_path)
-
-        emit_at_s2 = zoom(emit_b32, (1, scale, scale), order=emit_upsample_order)
-
-        if band_indices is None:
-            band_indices, wavelengths_nm = _read_emit_band_meta(emit_path)
-            n_s2_bands = s2_cube.shape[0]
-
-        valid = _build_valid_mask(s2_cube, emit_at_s2, s2_nodata, emit_nodata)
-
-        homo = _block_homogeneity_mask(s2_cube, scale, max_cv=max_cv,
-                                       s2_nodata=s2_nodata)
-        valid &= homo
-
-        s2_cube    = s2_cube    / DN_SCALE
-        emit_at_s2 = emit_at_s2 / DN_SCALE
-
-        B_s2, H, W = s2_cube.shape
-        X = s2_cube.reshape(B_s2, H * W).T
-        Y = emit_at_s2.reshape(emit_at_s2.shape[0], H * W).T
-
-        all_X.append(X[valid])
-        all_Y.append(Y[valid])
-
-        if verbose:
-            print(f"  {Path(s2_path).name:<50s}  {valid.sum():>6,} valid px")
-
-    X_train = np.concatenate(all_X, axis=0)
-    Y_train = np.concatenate(all_Y, axis=0)
-    n_out   = Y_train.shape[1]
-
-    if verbose:
-        print(
-            f"Total: {X_train.shape[0]:,} pixels  |  "
-            f"{X_train.shape[1]} S2 bands  →  {n_out} EMIT bands"
-        )
-
-    poly   = PolynomialFeatures(degree=degree, include_bias=False)
-    scaler = StandardScaler()
-    ridge  = Ridge(alpha=alpha, random_state=42)
-
-    X_poly   = poly.fit_transform(X_train.astype(np.float64))
-    X_scaled = scaler.fit_transform(X_poly)
-    ridge.fit(X_scaled, Y_train)
-
-    regressor = S2ToEMITRegressor(
-        band_indices_0based_ = band_indices,
-        wavelengths_nm_      = wavelengths_nm,
-        n_s2_bands_          = n_s2_bands or 10,
-        n_output_bands_      = n_out,
-        scale_               = scale,
-        degree_              = degree,
-        alpha_               = alpha,
-        _poly_               = poly,
-        _scaler_             = scaler,
-        _W_                  = ridge.coef_.astype(np.float64),
-        _b_                  = ridge.intercept_.astype(np.float64),
-        _y_max_              = Y_train.max(axis=0).astype(np.float32),
-    )
-
-    Y_pred      = regressor.predict(X_train)
-    r2_per_band = np.array([
-        r2_score(Y_train[:, i], Y_pred[:, i]) for i in range(n_out)
-    ])
-
-    stats = {
-        "n_tiles":        len(tile_pairs),
-        "n_train_pixels": int(X_train.shape[0]),
-        "n_emit_bands":   n_out,
-        "r2_per_band":    r2_per_band.tolist(),
-        "r2_mean":        float(r2_per_band.mean()),
-        "r2_min":         float(r2_per_band.min()),
-        "wavelengths_nm": wavelengths_nm.tolist() if wavelengths_nm is not None else None,
-    }
-
-    if verbose:
-        print(
-            f"Done.     R² mean={stats['r2_mean']:.4f}  "
-            f"min={stats['r2_min']:.4f}  "
-            f"max={max(stats['r2_per_band']):.4f}"
-        )
 
     return regressor, stats
 
