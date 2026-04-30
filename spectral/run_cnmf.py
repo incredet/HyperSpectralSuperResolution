@@ -1,45 +1,14 @@
 #!/usr/bin/env python3
-"""
-run_cnmf.py — CNMF fusion GT generation for SR training.
-
-Reads QC-filtered tiles from tiles_clean.csv, runs CNMF fusion with the
-analytical R matrix, and writes fused GeoTIFFs + per-tile R² CSV.
-
-All algorithm parameters come from pipeline_config.yaml on Drive.
-Colab/runtime parameters (paths, parallelism, tile range) are CLI args.
-
-Usage from Colab
-----------------
-    # All tiles
-    !python spectral/run_cnmf.py --drive-root /content/drive/Shareddrives/HyperResData/EMIT_S-2_Matches --run-tag 2026-04-02
-
-    # First 500 tiles (for parallel notebooks)
-    !python spectral/run_cnmf.py --drive-root ... --run-tag 2026-04-02 --start 0 --stop 500
-
-    # Tiles 500-1000
-    !python spectral/run_cnmf.py --drive-root ... --run-tag 2026-04-02 --start 500 --stop 1000
-
-    # Merge partial CSVs after all notebooks finish
-    !python spectral/run_cnmf.py --drive-root ... --run-tag 2026-04-02 --merge-only
-"""
-
 import argparse
 import os
 import sys
 import time
 from pathlib import Path
 
-# Ensure repo root is on sys.path so `documentation` and `spectral` are importable
-# regardless of how the script is invoked.
-_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
-
 import numpy as np
 import pandas as pd
 
-# Limit BLAS threads before any numpy/scipy import via env vars
-# (set early, before library init; workers will inherit these)
+# Limit BLAS threads before any numpy/scipy import; workers will inherit these
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
@@ -63,19 +32,10 @@ _S2A_BANDS = [
 EMIT_FWHM_NM = 7.5  # EMIT spectral FWHM (all bands)
 
 
-def compute_analytical_R(emit_centers: np.ndarray) -> np.ndarray:
-    """
-    Compute the spectral response matrix R analytically.
-
-    Both S2 and EMIT bands are modelled as Gaussians. For each pair (i, j):
-        R[i,j] = integral( S2_i(λ) × EMIT_j(λ) dλ )
-    Rows normalised to sum to 1.
-
-    For two Gaussians with centres μ1, μ2 and sigmas σ1, σ2 the product
-    integral has a closed-form proportional to:
-        exp( -(μ1-μ2)² / (2(σ1²+σ2²)) )
-    which avoids numerical integration entirely.
-    """
+def compute_analytical_R(emit_centers):
+    # Closed-form Gaussian-product integral instead of numerical: for two
+    # Gaussians with centres μ1, μ2 and sigmas σ1, σ2 the integral of their
+    # product is proportional to exp(-(μ1-μ2)² / (2(σ1²+σ2²))).
     sigma_emit = EMIT_FWHM_NM / 2.35482
     n_s2 = len(_S2A_BANDS)
     n_emit = len(emit_centers)
@@ -94,23 +54,15 @@ def compute_analytical_R(emit_centers: np.ndarray) -> np.ndarray:
 
 
 def parse_args():
-    ap = argparse.ArgumentParser(
-        description="Run CNMF fusion on QC-clean tiles.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
-    )
+    ap = argparse.ArgumentParser(description="Run CNMF fusion on QC-clean tiles.")
     ap.add_argument("--drive-root", required=True,
                     help="Path to EMIT_S-2_Matches on Drive")
     ap.add_argument("--run-tag", required=True,
                     help="Date tag subfolder (e.g. 2026-04-02)")
-
-    # Tile slicing
     ap.add_argument("--start", type=int, default=None,
                     help="Start index in tiles_clean.csv (inclusive)")
     ap.add_argument("--stop", type=int, default=None,
                     help="Stop index in tiles_clean.csv (exclusive)")
-
-    # Runtime
     ap.add_argument("--workers", type=int, default=4,
                     help="Number of parallel workers (default: 4)")
     ap.add_argument("--blas-threads", type=int, default=2,
@@ -119,19 +71,14 @@ def parse_args():
                     help="Run first N tiles with verbose output (default: 3)")
     ap.add_argument("--no-skip-existing", action="store_true",
                     help="Reprocess tiles even if output exists")
-
-    # Analytical R
     ap.add_argument("--srf-mat", type=str, default=None,
                     help="Path to srf_R.mat (default: hif-benchmarking/data/srf_R.mat)")
-
-    # Merge mode
     ap.add_argument("--merge-only", action="store_true",
                     help="Only merge partial CSVs, skip processing")
-
     return ap.parse_args()
 
 
-def merge_partial_csvs(drive_base: Path):
+def merge_partial_csvs(drive_base):
     parts = sorted(drive_base.glob("r2_cnmf_tiles_*.csv"))
     if not parts:
         print("No partial CSVs found to merge.")
@@ -150,7 +97,7 @@ def merge_partial_csvs(drive_base: Path):
               f"median={ok['r2_cnmf_mean'].median():.4f}")
 
 
-def build_tile_list(drive_base: Path, clean_df: pd.DataFrame):
+def build_tile_list(drive_base, clean_df):
     tiles = []
     for _, row in clean_df.iterrows():
         aoi_slug = row["aoi_slug"]
@@ -178,12 +125,10 @@ def main():
     if not drive_base.exists():
         sys.exit(f"Drive base not found: {drive_base}")
 
-    # ── Merge-only mode ──
     if args.merge_only:
         merge_partial_csvs(drive_base)
         return
 
-    # ── Load config from Drive ──
     from documentation.config import PipelineConfig
     from documentation.pairs_artifacts import load_pipeline_config
 
@@ -202,7 +147,6 @@ def main():
     print(f"CNMF params:  {cnmf_params}")
     print(f"Scale factor: {scale_factor}, nodata: {nodata_val}")
 
-    # ── Load QC-clean tiles ──
     clean_csv = drive_base / "tiles_clean.csv"
     if not clean_csv.exists():
         sys.exit(f"tiles_clean.csv not found at {clean_csv}")
@@ -212,14 +156,12 @@ def main():
           f"({clean_df['aoi_slug'].nunique()} AOIs, "
           f"{clean_df['pair_id'].nunique()} pairs)")
 
-    # ── Apply slice ──
     tile_df = clean_df.iloc[args.start:args.stop].copy().reset_index(drop=True)
     slice_tag = f"[{args.start or 0}:{args.stop or len(clean_df)}]"
     print(f"Slice {slice_tag}: {len(tile_df)} tiles")
 
     tile_list = build_tile_list(drive_base, tile_df)
 
-    # ── Analytical R matrix ──
     if args.srf_mat:
         import scipy.io
         srf_data = scipy.io.loadmat(args.srf_mat)
@@ -231,14 +173,12 @@ def main():
     print(f"\nAnalytical R: {pre_R.shape}, "
           f"row sums: {pre_R.sum(axis=1).round(4).tolist()}")
 
-    # ── Output CSV path ──
     if args.start is not None or args.stop is not None:
         suffix = f"_{args.start or 0}_{args.stop or 'end'}"
     else:
         suffix = ""
     csv_path = drive_base / f"r2_cnmf_tiles{suffix}.csv"
 
-    # ── Run CNMF ──
     from spectral.cnmf import cnmf_fuse_tiles
 
     tic = time.time()
@@ -255,7 +195,6 @@ def main():
     )
     elapsed = time.time() - tic
 
-    # Write CSV once at end
     cnmf_df = pd.DataFrame(all_rows)
     cnmf_df.to_csv(csv_path, index=False)
 
@@ -277,7 +216,6 @@ def main():
             print(f"  Mean:   {times.mean():.1f}s")
             print(f"  Median: {times.median():.1f}s")
 
-    # Status breakdown
     print(f"\nStatus counts:")
     for status, count in cnmf_df["status"].value_counts().items():
         print(f"  {status}: {count}")

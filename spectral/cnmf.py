@@ -1,18 +1,15 @@
-from __future__ import annotations
-
 import time as _time
 import warnings
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 from scipy.ndimage import gaussian_filter
 from scipy.optimize import lsq_linear
 from scipy.stats import norm
 
-# Module-level deadline for NMF early exit.  Set by cnmf_fuse() before
-# calling NMF helpers; checked inside inner loops.  0 = no limit.
-_deadline: float = 0.0
+# Module-level deadline for NMF early exit. Set by cnmf_fuse() before
+# calling NMF helpers; checked inside inner loops. 0 = no limit.
+_deadline = 0.0
 
 try:
     import cv2
@@ -26,11 +23,7 @@ except ImportError:
     rasterio = None
 
 
-
-def _gaussian_downsample(img: np.ndarray, factor: int) -> np.ndarray:
-    """
-    Gaussian-PSF downsampling matching 
-    """
+def _gaussian_downsample(img, factor):
     sigma = factor / 2.35482
     h, w, b = img.shape
     h_out = h // factor
@@ -44,8 +37,7 @@ def _gaussian_downsample(img: np.ndarray, factor: int) -> np.ndarray:
     return out
 
 
-def _gaussian_downsample_2d(img_2d: np.ndarray, factor: int) -> np.ndarray:
-    """Downsample a single 2D image (H, W) → (H//factor, W//factor)."""
+def _gaussian_downsample_2d(img_2d, factor):
     sigma = factor / 2.35482
     h_out = img_2d.shape[0] // factor
     w_out = img_2d.shape[1] // factor
@@ -54,48 +46,35 @@ def _gaussian_downsample_2d(img_2d: np.ndarray, factor: int) -> np.ndarray:
     return smoothed[offset::factor, offset::factor][:h_out, :w_out]
 
 
-def _virtual_dimensionality(data: np.ndarray, alpha: float = 1e-3) -> int:
-    """
-    Estimate the number of spectrally distinct signal sources
-    """
+def _virtual_dimensionality(data, alpha=1e-3):
     L, N = data.shape
     R = (data @ data.T) / N
-    K = np.cov(data)  # (L, L)
+    K = np.cov(data)
 
     e_r = np.sort(np.linalg.eigvalsh(R))[::-1]
     e_k = np.sort(np.linalg.eigvalsh(K))[::-1]
 
     diff = e_r - e_k
     variance = np.sqrt(2.0 * (e_r ** 2 + e_k ** 2) / N)
-    # Avoid zero variance
     variance = np.maximum(variance, 1e-30)
     tau = -norm.ppf(alpha, loc=0.0, scale=variance)
 
     return int(np.sum(diff > tau))
 
 
-# ---------------------------------------------------------------------------
-# Helper: Vertex Component Analysis (VCA)
-# ---------------------------------------------------------------------------
-
-def _vca(data: np.ndarray, p: int, seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Vertex Component Analysis for endmember extraction (port of vca.m).
-    """
+def _vca(data, p, seed=0):
     rng = np.random.RandomState(seed)
     L, N = data.shape
 
-    # --- SNR estimation ---
-    r_m = data.mean(axis=1, keepdims=True)     # (L, 1)
-    R_o = data - r_m                            # zero-mean
-    cov_mat = (R_o @ R_o.T) / N                # (L, L)
+    r_m = data.mean(axis=1, keepdims=True)
+    R_o = data - r_m
+    cov_mat = (R_o @ R_o.T) / N
 
-    # p-dim SVD
     eigvals, eigvecs = np.linalg.eigh(cov_mat)
     idx = np.argsort(eigvals)[::-1][:p]
-    Ud = eigvecs[:, idx]                        # (L, p)
+    Ud = eigvecs[:, idx]
 
-    x_p = Ud.T @ R_o                            # (p, N)
+    x_p = Ud.T @ R_o
     P_y = float(np.sum(data ** 2)) / N
     P_x = float(np.sum(x_p ** 2)) / N + float(r_m.T @ r_m)
     denom_snr = P_y - P_x
@@ -115,11 +94,11 @@ def _vca(data: np.ndarray, p: int, seed: int = 0) -> tuple[np.ndarray, np.ndarra
         eigvals_f, eigvecs_f = np.linalg.eigh(cov_full)
         idx_f = np.argsort(eigvals_f)[::-1][:d]
         Ud = eigvecs_f[:, idx_f]
-        X = Ud.T @ data                         # (d, N)
-        u = X.mean(axis=1, keepdims=True)        # (d, 1)
-        denom_arr = (u.T @ X).ravel()            # (N,)
+        X = Ud.T @ data
+        u = X.mean(axis=1, keepdims=True)
+        denom_arr = (u.T @ X).ravel()
         denom_arr[np.abs(denom_arr) < 1e-16] = 1e-16
-        Y = X / denom_arr[np.newaxis, :]         # (d, N)
+        Y = X / denom_arr[np.newaxis, :]
     else:
         # Low-SNR branch: project onto (p-1)-dim subspace, augment
         d = p - 1
@@ -129,9 +108,9 @@ def _vca(data: np.ndarray, p: int, seed: int = 0) -> tuple[np.ndarray, np.ndarra
         eigvals2, eigvecs2 = np.linalg.eigh(cov2)
         idx2 = np.argsort(eigvals2)[::-1][:d]
         Ud = eigvecs2[:, idx2]
-        X = Ud.T @ R_o2                         # (d, N)
+        X = Ud.T @ R_o2
         c = np.sqrt(np.max(np.sum(X ** 2, axis=0)))
-        Y = np.vstack([X, c * np.ones((1, N))])  # (p, N)
+        Y = np.vstack([X, c * np.ones((1, N))])
 
     e_u = np.zeros(p)
     e_u[p - 1] = 1.0
@@ -147,38 +126,28 @@ def _vca(data: np.ndarray, p: int, seed: int = 0) -> tuple[np.ndarray, np.ndarra
         if f_norm < 1e-16:
             f_norm = 1e-16
         f = f / f_norm
-        v = f @ Y                      
+        v = f @ Y
         indices[i] = np.argmax(np.abs(v))
         A[:, i] = Y[:, indices[i]]
 
     if SNR > SNRth:
-        U = Ud @ X[:, indices]            
+        U = Ud @ X[:, indices]
     else:
-        U = Ud @ X[:, indices] + r_m2      
+        U = Ud @ X[:, indices] + r_m2
 
     return U, indices
 
 
-def _estimate_srf(
-    hsi: np.ndarray,
-    msi: np.ndarray,
-    scale_factor: int,
-    eps: float = 1e-7,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Estimate the spectral response function (SRF) via constrained LS
-    """
+def _estimate_srf(hsi, msi, scale_factor, eps=1e-7):
     rows_lr, cols_lr, bands_hs = hsi.shape
     _, _, bands_ms = msi.shape
 
-    # Gaussian-downsample MSI to HS resolution
     lr_ms = _gaussian_downsample(msi, scale_factor)
 
-    # Build predictor matrix A = [HS_pixels | mask_col]
-    # mask_col = 1 everywhere (no masking) → acts as intercept
+    # Predictor matrix A = [HS_pixels | mask_col]; mask_col=1 → intercept
     mask = np.ones((rows_lr, cols_lr, 1), dtype=np.float64)
-    hs_with_mask = np.concatenate([hsi, mask], axis=2)  # (H_lr, W_lr, bands_hs+1)
-    A = hs_with_mask.reshape(-1, bands_hs + 1)          # (N_lr, bands_hs+1)
+    hs_with_mask = np.concatenate([hsi, mask], axis=2)
+    A = hs_with_mask.reshape(-1, bands_hs + 1)
 
     R_full = np.zeros((bands_ms, bands_hs + 1), dtype=np.float64)
     error = np.zeros(bands_ms, dtype=np.float64)
@@ -186,16 +155,15 @@ def _estimate_srf(
     for k in range(bands_ms):
         b_vec = lr_ms[:, :, k].ravel().astype(np.float64)
 
-        # Bounds: HS weights >= 0, offset unconstrained
+        # HS weights ≥ 0, offset unconstrained
         lb = np.zeros(bands_hs + 1)
         ub = np.full(bands_hs + 1, np.inf)
-        lb[-1] = -np.inf  # offset unconstrained
+        lb[-1] = -np.inf
 
         result = lsq_linear(A, b_vec, bounds=(lb, ub), method='bvls',
                             max_iter=500)
         R_full[k, :] = result.x
 
-        # Relative RMSE
         residual = b_vec - A @ result.x
         mean_b = np.mean(b_vec)
         if mean_b > eps:
@@ -203,66 +171,21 @@ def _estimate_srf(
         else:
             error[k] = 0.0
 
-    # Extract offsets (last column) and truncate R
     offsets = R_full[:, -1].astype(np.float32)
-    R = R_full[:, :-1].astype(np.float32)  # (B_ms, B_hs)
+    R = R_full[:, :-1].astype(np.float32)
 
     return R, offsets, error.astype(np.float32)
 
 
-# ---------------------------------------------------------------------------
-# Helper: NMF multiplicative update — H only (W fixed)
-# ---------------------------------------------------------------------------
+def _nmf_update_H(W, H, D, *, n_bands_orig, max_iter, threshold, eps=1e-7, cost_stride=5):
+    # Algebraic identity for fast cost: ‖D − WH‖² = ‖D‖² − 2·sum(WᵀD ⊙ H) + sum(WᵀW ⊙ HHᵀ)
+    WtD = W.T @ D
+    WtW = W.T @ W
 
-def _nmf_update_H(
-    W: np.ndarray,
-    H: np.ndarray,
-    D: np.ndarray,
-    *,
-    n_bands_orig: int,
-    max_iter: int,
-    threshold: float,
-    eps: float = 1e-7,
-    cost_stride: int = 5,
-) -> tuple[np.ndarray, float]:
-    """
-    NMF update for H with W fixed (init phase, i==1 branch in MATLAB).
-
-    W includes the sum-to-one row.  Cost is computed on the first
-    ``n_bands_orig`` rows only (excluding the constraint row).
-
-    Uses the algebraic identity:
-
-        ‖D − WH‖² = ‖D‖² − 2·sum(WᵀD ⊙ H) + sum(WᵀW ⊙ HHᵀ)
-
-    Cost + convergence check runs every ``cost_stride`` iterations to
-    reduce overhead on the MS path (H is M × 360 000).
-
-    Parameters
-    ----------
-    W : (bands+1, M) — endmember matrix with sum-to-one row
-    H : (M, N) — abundance matrix
-    D : (bands+1, N) — data matrix with sum-to-one row
-    n_bands_orig : number of spectral bands (excluding constraint row)
-    max_iter : maximum iterations
-    threshold : convergence threshold on relative cost change
-    eps : small constant to avoid division by zero
-    cost_stride : check convergence every N iterations (default 5)
-
-    Returns
-    -------
-    H : updated abundance matrix
-    cost : final reconstruction cost
-    """
-    # Precompute for the multiplicative update (W is fixed)
-    WtD = W.T @ D          # (M, N)
-    WtW = W.T @ W          # (M, M)
-
-    # Precompute for the fast cost formula (band-only slices, all constant)
     W_band = W[:n_bands_orig, :]
-    WbandtD = W_band.T @ D[:n_bands_orig, :]   # (M, N)  — once
-    WbandtWband = W_band.T @ W_band             # (M, M)  — once
-    D_sqnorm = float(np.sum(D[:n_bands_orig, :] ** 2))  # scalar — once
+    WbandtD = W_band.T @ D[:n_bands_orig, :]
+    WbandtWband = W_band.T @ W_band
+    D_sqnorm = float(np.sum(D[:n_bands_orig, :] ** 2))
 
     cost_prev = 0.0
     H_saved = H.copy()
@@ -271,11 +194,10 @@ def _nmf_update_H(
         denom = WtW @ H + eps
         H = H * WtD / denom
 
-        # Convergence check only every cost_stride iterations
         if (q + 1) % cost_stride == 0 or q == max_iter - 1:
-            HHt = H @ H.T                                          # (M, M)
-            cross = float(np.dot(WbandtD.ravel(), H.ravel()))       # scalar
-            gram = float(np.sum(WbandtWband * HHt))                 # scalar
+            HHt = H @ H.T
+            cross = float(np.dot(WbandtD.ravel(), H.ravel()))
+            gram = float(np.sum(WbandtWband * HHt))
             cost = D_sqnorm - 2.0 * cross + gram
 
             if cost_prev > 0 and (cost_prev - cost) / (cost + eps) < threshold:
@@ -290,53 +212,11 @@ def _nmf_update_H(
     return H, cost
 
 
-# ---------------------------------------------------------------------------
-# Helper: NMF multiplicative update — W and H (joint update)
-# ---------------------------------------------------------------------------
-
-def _nmf_update_WH(
-    W: np.ndarray,
-    H: np.ndarray,
-    D: np.ndarray,
-    *,
-    n_bands_orig: int,
-    max_iter: int,
-    threshold: float,
-    eps: float = 1e-7,
-    update_W: bool = True,
-    min_ms_bands: int = 3,
-    n_spectral_bands: int = 0,
-    cost_stride: int = 5,
-) -> tuple[np.ndarray, np.ndarray, float]:
-    """
-    NMF joint update for W (spectral rows) and H (i>1 branch in MATLAB).
-
-    Uses cost-check stride + fast cost formula to avoid forming the
-    (bands, N) residual every iteration.  Mathematically identical to the
-    naïve version (same MU steps, same convergence criterion).
-
-    Parameters
-    ----------
-    W : (bands+1, M) — endmember matrix (sum-to-one row at end)
-    H : (M, N) — abundance matrix
-    D : (bands+1, N) — data matrix
-    n_bands_orig : number of spectral bands (rows to update in W)
-    max_iter : maximum iterations for the joint loop
-    threshold : convergence threshold
-    update_W : whether to update W (set False for H-only update modes)
-    min_ms_bands : minimum MS bands to allow W update (MATLAB MIN_MS_BANDS)
-    n_spectral_bands : number of bands for the MIN_MS_BANDS check;
-                       if <= min_ms_bands, W update is skipped
-    cost_stride : check convergence every *cost_stride* iterations (default 5)
-
-    Returns
-    -------
-    W, H : updated matrices
-    cost : final cost
-    """
+def _nmf_update_WH(W, H, D, *, n_bands_orig, max_iter, threshold, eps=1e-7,
+                   update_W=True, min_ms_bands=3, n_spectral_bands=0, cost_stride=5):
     do_update_W = update_W and n_spectral_bands > min_ms_bands
     D_band = D[:n_bands_orig, :]
-    D_sqnorm = float(np.sum(D_band ** 2))            # scalar — constant
+    D_sqnorm = float(np.sum(D_band ** 2))
 
     cost_prev = 0.0
     W_saved = W.copy()
@@ -344,24 +224,21 @@ def _nmf_update_WH(
 
     for i in range(max_iter):
         if do_update_W:
-            HHt = H @ H.T                                   # (M, M)
-            W_n = D_band @ H.T                               # (bands, M)
-            W_d = W[:n_bands_orig, :] @ HHt + eps            # (bands, M)
+            HHt = H @ H.T
+            W_n = D_band @ H.T
+            W_d = W[:n_bands_orig, :] @ HHt + eps
             W[:n_bands_orig, :] = W[:n_bands_orig, :] * W_n / W_d
 
-        # Update H
-        WtW = W.T @ W                                       # (M, M)
-        WtD = W.T @ D                                       # (M, N)
-        WtWH = WtW @ H + eps                                # (M, N)
+        WtW = W.T @ W
+        WtD = W.T @ D
+        WtWH = WtW @ H + eps
         H = H * WtD / WtWH
 
-        # Convergence check (only every cost_stride iterations)
         if (i + 1) % cost_stride == 0 or i == max_iter - 1:
-            # Fast cost: ‖D_band − W_band H‖² via traces
             W_band = W[:n_bands_orig, :]
-            WbandtWband = W_band.T @ W_band                  # (M, M)
-            WbandtD = W_band.T @ D_band                      # (M, N)
-            HHt_c = H @ H.T                                  # (M, M)
+            WbandtWband = W_band.T @ W_band
+            WbandtD = W_band.T @ D_band
+            HHt_c = H @ H.T
             cross = float(np.dot(WbandtD.ravel(), H.ravel()))
             gram = float(np.sum(WbandtWband * HHt_c))
             cost = D_sqnorm - 2.0 * cross + gram
@@ -380,33 +257,12 @@ def _nmf_update_WH(
     return W, H, cost
 
 
-# ---------------------------------------------------------------------------
-# Helper: NMF for HS in iteration (i==1 updates W with H fixed)
-# ---------------------------------------------------------------------------
-
-def _nmf_update_W_fixed_H(
-    W: np.ndarray,
-    H: np.ndarray,
-    D: np.ndarray,
-    *,
-    n_bands_orig: int,
-    max_iter: int,
-    threshold: float,
-    eps: float = 1e-7,
-    cost_stride: int = 5,
-) -> tuple[np.ndarray, float]:
-    """
-    NMF update for W with H fixed (CNMF_ite i==1 branch).
-
-    Only updates the first n_bands_orig rows of W.
-    Uses fast cost formula + cost-check stride.
-    """
+def _nmf_update_W_fixed_H(W, H, D, *, n_bands_orig, max_iter, threshold,
+                          eps=1e-7, cost_stride=5):
     D_band = D[:n_bands_orig, :]
-    HHt = H @ H.T                       # (M, M) — fixed
-    DHt = D_band @ H.T                   # (bands, M) — fixed
-    D_sqnorm = float(np.sum(D_band ** 2))  # scalar — fixed
-    # For fast cost: ‖D_band − W_band H‖² needs W_band.T @ D_band (varies)
-    # and W_band.T @ W_band (varies).  H @ H.T = HHt is already precomputed.
+    HHt = H @ H.T
+    DHt = D_band @ H.T
+    D_sqnorm = float(np.sum(D_band ** 2))
 
     cost_prev = 0.0
     W_saved = W.copy()
@@ -417,8 +273,8 @@ def _nmf_update_W_fixed_H(
 
         if (q + 1) % cost_stride == 0 or q == max_iter - 1:
             W_band = W[:n_bands_orig, :]
-            WbandtWband = W_band.T @ W_band        # (M, M)
-            WbandtD = W_band.T @ D_band             # (M, N)
+            WbandtWband = W_band.T @ W_band
+            WbandtD = W_band.T @ D_band
             cross = float(np.dot(WbandtD.ravel(), H.ravel()))
             gram = float(np.sum(WbandtWband * HHt))
             cost = D_sqnorm - 2.0 * cross + gram
@@ -435,28 +291,8 @@ def _nmf_update_W_fixed_H(
     return W, cost
 
 
-# ---------------------------------------------------------------------------
-# Helper: NMF for HS in iteration (i>1 updates H then W)
-# ---------------------------------------------------------------------------
-
-def _nmf_ite_hs_joint(
-    W: np.ndarray,
-    H: np.ndarray,
-    D: np.ndarray,
-    *,
-    n_bands_orig: int,
-    max_iter: int,
-    threshold: float,
-    eps: float = 1e-7,
-    min_ms_bands: int = 3,
-    multi_band: int = 0,
-    cost_stride: int = 5,
-) -> tuple[np.ndarray, np.ndarray, float]:
-    """
-    NMF joint update for HS in CNMF_ite (i>1 branch).
-    Updates H first (if multi_band > min_ms_bands), then W.
-    Uses fast cost formula + cost-check stride.
-    """
+def _nmf_ite_hs_joint(W, H, D, *, n_bands_orig, max_iter, threshold, eps=1e-7,
+                     min_ms_bands=3, multi_band=0, cost_stride=5):
     do_update_H = multi_band > min_ms_bands
     D_band = D[:n_bands_orig, :]
     D_sqnorm = float(np.sum(D_band ** 2))
@@ -466,13 +302,11 @@ def _nmf_ite_hs_joint(
     H_saved = H.copy()
 
     for i in range(max_iter):
-        # Update H (only if multi_band > MIN_MS_BANDS, matching MATLAB)
         if do_update_H:
             WtD = W.T @ D
             WtWH = W.T @ W @ H + eps
             H = H * WtD / WtWH
 
-        # Update W (spectral rows only)
         HHt = H @ H.T
         W_n = D_band @ H.T
         W_d = W[:n_bands_orig, :] @ HHt + eps
@@ -501,52 +335,12 @@ def _nmf_ite_hs_joint(
     return W, H, cost
 
 
-
-# ---------------------------------------------------------------------------
-# Core:  cnmf_fuse
-# ---------------------------------------------------------------------------
-
-def cnmf_fuse(
-    hs: np.ndarray,
-    ms: np.ndarray,
-    *,
-    pre_R: np.ndarray | None = None,
-    max_endmembers: int = 20,
-    inner_iters: int = 200,
-    outer_iters: int = 1,
-    th_h: float = 1e-8,
-    th_m: float = 1e-8,
-    th_outer: float = 1e-2,
-    eps: float = 1e-7,
-    verbose: bool = False,
-    seed: int = 0,
-    tile_timeout: float = 0,
-) -> tuple[np.ndarray, dict]:
-    """
-    CNMF hyperspectral–multispectral fusion.
-
-    Parameters
-    ----------
-    hs : (H_lr, W_lr, B_hs) float32
-    ms : (H_hr, W_hr, B_ms) float32
-    pre_R : (B_ms, B_hs) float64/32, optional
-        Pre-computed spectral response matrix (rows sum to 1).
-        When provided, skips per-tile SRF estimation and offset
-        subtraction — matches MATLAB CNMF with analytical R.
-    max_endmembers, inner_iters, outer_iters : int
-    th_h, th_m : float
-        Convergence threshold for inner NMF loops (default 1e-8,
-        matches MATLAB CNMF_fusion.m).
-    th_outer : float
-        Convergence threshold for the outer loop.
-    tile_timeout : float
-        Max wall-clock seconds for this tile. 0 = no limit.
-        When exceeded, NMF loops exit early with current best.
-    eps, verbose, seed : see defaults.
-    """
+def cnmf_fuse(hs, ms, *, pre_R=None, max_endmembers=20, inner_iters=200,
+              outer_iters=1, th_h=1e-8, th_m=1e-8, th_outer=1e-2, eps=1e-7,
+              verbose=False, seed=0, tile_timeout=0):
     rows_lr, cols_lr, bands_hs = hs.shape
     rows_hr, cols_hr, bands_ms = ms.shape
-    w = rows_hr // rows_lr  # scale factor
+    w = rows_hr // rows_lr
 
     global _deadline
     _deadline = (_time.monotonic() + tile_timeout) if tile_timeout > 0 else 0.0
@@ -554,10 +348,8 @@ def cnmf_fuse(
     if verbose:
         print(f"CNMF: HS={hs.shape} MS={ms.shape} scale={w}")
 
-    # ── Step 1: SRF (R matrix) ──
     if pre_R is not None:
-        # Analytical R provided — no per-tile estimation, no offset subtraction.
-        # Matches MATLAB CNMF_fusion.m with Pre_R (lines 57-60).
+        # Analytical R provided — skip per-tile estimation and offset subtraction
         R_srf = np.asarray(pre_R, dtype=np.float32)
         assert R_srf.shape == (bands_ms, bands_hs), (
             f"pre_R shape {R_srf.shape} != expected ({bands_ms}, {bands_hs})")
@@ -567,7 +359,6 @@ def cnmf_fuse(
             print(f"  Using pre-computed R ({bands_ms}×{bands_hs}), "
                   f"row sums={R_srf.sum(axis=1).round(4).tolist()}")
     else:
-        # Estimate SRF from data and subtract offsets from MSI
         R_srf, offsets, srf_error = _estimate_srf(hs, ms, w, eps=eps)
         ms = ms.copy()
         for b in range(bands_ms):
@@ -577,14 +368,11 @@ def cnmf_fuse(
             print(f"  SRF error: {srf_error}")
             print(f"  SRF offsets: {offsets}")
 
-    # ── Step 2: Determine number of endmembers M ──
-    # Clip negative values
     hs = np.clip(hs.copy(), 0.0, None)
     ms = np.clip(ms, 0.0, None)
 
-    # Reshape to 2D: (bands, pixels)
-    HSI_2d = hs.reshape(-1, bands_hs).T.astype(np.float32)  # (bands_hs, N_lr)
-    MSI_2d = ms.reshape(-1, bands_ms).T.astype(np.float32)  # (bands_ms, N_hr)
+    HSI_2d = hs.reshape(-1, bands_hs).T.astype(np.float32)
+    MSI_2d = ms.reshape(-1, bands_ms).T.astype(np.float32)
 
     eff_rank = int(np.linalg.matrix_rank(HSI_2d))
 
@@ -605,29 +393,21 @@ def cnmf_fuse(
     if verbose:
         print(f"  eff_rank={eff_rank} vd={vd_est} → M={M}")
 
-    # ── Step 3: Initialize W_hyper via VCA ──
-    W_vca, _ = _vca(HSI_2d, M, seed=seed)  # (bands_hs, M)
+    W_vca, _ = _vca(HSI_2d, M, seed=seed)
 
     N_lr = rows_lr * cols_lr
     N_hr = rows_hr * cols_hr
 
-    W_hyper = W_vca.astype(np.float32)                              # (bands_hs, M)
-
-    H_hyper = np.full((M, N_lr), 1.0 / M, dtype=np.float32)        # (M, N_lr)
+    W_hyper = W_vca.astype(np.float32)
+    H_hyper = np.full((M, N_lr), 1.0 / M, dtype=np.float32)
 
     # Sum-to-one constraint parameter
     delta = np.float32(2.0 * (np.mean(MSI_2d) / 0.7455) ** 0.5 / bands_ms ** 3)
 
-    # Append sum-to-one row
     delta_row = np.full((1, M), delta, dtype=np.float32)
-    W_hyper = np.vstack([W_hyper, delta_row])                       # (bands_hs+1, M)
-    hyper = np.vstack([HSI_2d, delta * np.ones((1, N_lr), dtype=np.float32)])  # (bands_hs+1, N_lr)
+    W_hyper = np.vstack([W_hyper, delta_row])
+    hyper = np.vstack([HSI_2d, delta * np.ones((1, N_lr), dtype=np.float32)])
 
-    # ═══════════════════════════════════════════════════════════════
-    #  CNMF_init:  NMF for H_hyper (W fixed), then NMF for H_multi
-    # ═══════════════════════════════════════════════════════════════
-
-    # ── NMF for H_hyper (phase 1, W fixed) ──
     H_hyper, _ = _nmf_update_H(
         W_hyper, H_hyper, hyper,
         n_bands_orig=bands_hs,
@@ -635,7 +415,6 @@ def cnmf_fuse(
         threshold=th_h, eps=eps,
     )
 
-    # ── NMF for H_hyper (phase 2, joint W+H) ──
     W_hyper, H_hyper, _ = _nmf_update_WH(
         W_hyper, H_hyper, hyper,
         n_bands_orig=bands_hs,
@@ -643,7 +422,7 @@ def cnmf_fuse(
         threshold=th_h, eps=eps,
         update_W=True,
         min_ms_bands=3,
-        n_spectral_bands=bands_hs,  # always > 3 for HS
+        n_spectral_bands=bands_hs,
     )
 
     rmse_h = np.sqrt(
@@ -654,13 +433,11 @@ def cnmf_fuse(
     if verbose:
         print(f"  CNMF init: RMSE_h={rmse_h:.6f}")
 
-    # ── Initialize W_multi from SRF ──
-    W_multi_real = R_srf @ W_hyper[:bands_hs, :]            # (bands_ms, M)
+    W_multi_real = R_srf @ W_hyper[:bands_hs, :]
     delta_row_ms = np.full((1, M), delta, dtype=np.float32)
-    W_multi = np.vstack([W_multi_real, delta_row_ms])        # (bands_ms+1, M)
-    multi = np.vstack([MSI_2d, delta * np.ones((1, N_hr), dtype=np.float32)])  # (bands_ms+1, N_hr)
+    W_multi = np.vstack([W_multi_real, delta_row_ms])
+    multi = np.vstack([MSI_2d, delta * np.ones((1, N_hr), dtype=np.float32)])
 
-    # ── Initialize H_multi by interpolation ──
     H_multi = np.zeros((M, N_hr), dtype=np.float32)
     for i in range(M):
         h_lr = H_hyper[i, :].reshape(rows_lr, cols_lr)
@@ -674,7 +451,6 @@ def cnmf_fuse(
         H_multi[i, :] = h_hr.ravel()
     H_multi = np.clip(H_multi, 0.0, None)
 
-    # ── NMF for H_multi (phase 1, W fixed) ──
     H_multi, _ = _nmf_update_H(
         W_multi, H_multi, multi,
         n_bands_orig=bands_ms,
@@ -682,7 +458,6 @@ def cnmf_fuse(
         threshold=th_m, eps=eps,
     )
 
-    # ── NMF for H_multi (phase 2, joint W+H) ──
     W_multi, H_multi, _ = _nmf_update_WH(
         W_multi, H_multi, multi,
         n_bands_orig=bands_ms,
@@ -705,10 +480,6 @@ def cnmf_fuse(
         _report_nan("W_multi", W_multi)
         _report_nan("H_multi", H_multi)
 
-    # ═══════════════════════════════════════════════════════════════
-    #  CNMF_ite:  Outer iteration loop
-    # ═══════════════════════════════════════════════════════════════
-
     cost_h = [rmse_h]
     cost_m = [rmse_m]
 
@@ -716,12 +487,10 @@ def cnmf_fuse(
         if verbose:
             print(f"  Outer iteration {i_out + 1}/{outer_iters}")
 
-        # ── Gaussian-downsample H_multi → H_hyper ──
-        H_multi_3d = H_multi.T.reshape(rows_hr, cols_hr, M)  # (H_hr, W_hr, M)
-        H_hyper_3d = _gaussian_downsample(H_multi_3d, w)    # (H_lr, W_lr, M)
-        H_hyper = H_hyper_3d.reshape(-1, M).T               # (M, N_lr)
+        H_multi_3d = H_multi.T.reshape(rows_hr, cols_hr, M)
+        H_hyper_3d = _gaussian_downsample(H_multi_3d, w)
+        H_hyper = H_hyper_3d.reshape(-1, M).T
 
-        # ── NMF for HS: phase 1 (update W with H fixed) ──
         W_hyper, _ = _nmf_update_W_fixed_H(
             W_hyper, H_hyper, hyper,
             n_bands_orig=bands_hs,
@@ -729,7 +498,6 @@ def cnmf_fuse(
             threshold=th_h, eps=eps,
         )
 
-        # ── NMF for HS: phase 2 (joint H then W) ──
         W_hyper, H_hyper, _ = _nmf_ite_hs_joint(
             W_hyper, H_hyper, hyper,
             n_bands_orig=bands_hs,
@@ -747,12 +515,10 @@ def cnmf_fuse(
         if verbose:
             print(f"    RMSE_h = {rmse_h_new:.6f}")
 
-        # ── Optionally re-unmix MS (only if outer_iters > 1) ──
         rmse_m_new = rmse_m
         if outer_iters > 1:
             W_multi[:bands_ms, :] = R_srf @ W_hyper[:bands_hs, :]
 
-            # NMF for MS: phase 1 (update H with W fixed)
             H_multi, _ = _nmf_update_H(
                 W_multi, H_multi, multi,
                 n_bands_orig=bands_ms,
@@ -760,7 +526,6 @@ def cnmf_fuse(
                 threshold=th_m, eps=eps,
             )
 
-            # NMF for MS: phase 2 (joint W+H)
             W_multi, H_multi, _ = _nmf_update_WH(
                 W_multi, H_multi, multi,
                 n_bands_orig=bands_ms,
@@ -779,7 +544,6 @@ def cnmf_fuse(
             if verbose:
                 print(f"    RMSE_m = {rmse_m_new:.6f}")
 
-        # ── Check outer convergence ──
         cost_h.append(rmse_h_new)
         cost_m.append(rmse_m_new)
 
@@ -787,21 +551,15 @@ def cnmf_fuse(
             cost_h[-2] > 0 and cost_m[-2] > 0 and
             (cost_h[-2] - rmse_h_new) / cost_h[-2] > th_outer and
             (cost_m[-2] - rmse_m_new) / cost_m[-2] > th_outer):
-            # Continue iterating
             pass
         elif i_out < outer_iters - 1:
             if verbose:
                 print(f"  Outer loop converged at iteration {i_out + 1}")
             break
 
-    # ═══════════════════════════════════════════════════════════════
-    #  Final reconstruction
-    # ═══════════════════════════════════════════════════════════════
-
-    fused_2d = W_hyper[:bands_hs, :] @ H_multi  # (bands_hs, N_hr)
+    fused_2d = W_hyper[:bands_hs, :] @ H_multi
     fused = fused_2d.T.reshape(rows_hr, cols_hr, bands_hs)
 
-    # Clip to non-negative
     fused = np.clip(fused, 0.0, None)
 
     info = {
@@ -815,8 +573,7 @@ def cnmf_fuse(
     return fused, info
 
 
-def _report_nan(name: str, arr: np.ndarray):
-    """Print NaN/range diagnostic for an array."""
+def _report_nan(name, arr):
     n_nan = int(np.sum(np.isnan(arr)))
     if n_nan > 0:
         print(f"    {name}: NaN={n_nan} range=[{np.nanmin(arr):.4g}, {np.nanmax(arr):.4g}]")
@@ -824,12 +581,7 @@ def _report_nan(name: str, arr: np.ndarray):
         print(f"    {name}: range=[{arr.min():.4g}, {arr.max():.4g}]")
 
 
-# ---------------------------------------------------------------------------
-# Helper: R² computation for CNMF output
-# ---------------------------------------------------------------------------
-
-def _compute_r2(actual: np.ndarray, predicted: np.ndarray) -> np.ndarray:
-    """Per-column R² between actual and predicted. Shape: (B,)."""
+def _compute_r2(actual, predicted):
     ss_res = np.sum((actual - predicted) ** 2, axis=0)
     ss_tot = np.sum((actual - actual.mean(axis=0, keepdims=True)) ** 2, axis=0)
     r2 = np.ones(actual.shape[1], dtype=np.float32)
@@ -838,69 +590,30 @@ def _compute_r2(actual: np.ndarray, predicted: np.ndarray) -> np.ndarray:
     return r2
 
 
-# ---------------------------------------------------------------------------
-# File-based wrapper
-# ---------------------------------------------------------------------------
-
-def cnmf_fuse_tile(
-    hs_path: str | Path,
-    ms_path: str | Path,
-    out_path: str | Path | None = None,
-    *,
-    scale_factor: float = 10_000.0,
-    nodata_val: int = 65535,
-    **cnmf_kwargs,
-) -> dict:
-    """
-    File-based CNMF wrapper. Same return dict structure as sfim_fuse_tile.
-
-    Parameters
-    ----------
-    hs_path : path to EMIT-b32 GeoTIFF (B_hs, H_lr, W_lr), uint16 DN
-    ms_path : path to S2 GeoTIFF (B_ms, H_hr, W_hr), uint16 DN
-    out_path : if given, write fused GeoTIFF here (uint16, DN scale)
-    scale_factor : DN → reflectance divisor (default 10000)
-    nodata_val : nodata sentinel for EMIT tiles (default 65535)
-    **cnmf_kwargs : passed to cnmf_fuse()
-
-    Returns
-    -------
-    dict with keys:
-        "fused"      : (B_hs, H_hr, W_hr) uint16 or None if error
-        "r2"         : (B_hs,) per-band R² (self-consistency check)
-        "r2_mean"    : float
-        "r2_per_band": list[float]
-        "status"     : "OK" | "ERROR"
-        "out_path"   : str or None
-        "info"       : dict with CNMF diagnostics
-    """
+def cnmf_fuse_tile(hs_path, ms_path, out_path=None, *,
+                   scale_factor=10_000.0, nodata_val=65535, **cnmf_kwargs):
     assert rasterio is not None, "rasterio is required for file-based CNMF"
 
-    # Read tiles
     with rasterio.open(hs_path) as ds:
-        hs_raw = ds.read().astype(np.float32)  # (B_hs, H_lr, W_lr)
+        hs_raw = ds.read().astype(np.float32)
         hs_profile = ds.profile.copy()
 
     with rasterio.open(ms_path) as ds:
-        ms_raw = ds.read().astype(np.float32)  # (B_ms, H_hr, W_hr)
+        ms_raw = ds.read().astype(np.float32)
         ms_profile = ds.profile.copy()
 
-    # Mask nodata, convert to reflectance
     hs_raw[hs_raw == nodata_val] = np.nan
     ms_raw[ms_raw == 0] = np.nan  # S2 nodata sentinel
 
     hs_refl = hs_raw / scale_factor
     ms_refl = ms_raw / scale_factor
 
-    # Replace NaN with 0 for the fusion
     hs_refl = np.nan_to_num(hs_refl, nan=0.0)
     ms_refl = np.nan_to_num(ms_refl, nan=0.0)
 
-    # Transpose to (H, W, B) for cnmf_fuse
     hs_hwb = np.transpose(hs_refl, (1, 2, 0))
     ms_hwb = np.transpose(ms_refl, (1, 2, 0))
 
-    # Run CNMF
     try:
         fused_hwb, info = cnmf_fuse(hs_hwb, ms_hwb, **cnmf_kwargs)
     except Exception as e:
@@ -911,7 +624,6 @@ def cnmf_fuse_tile(
             "info": {},
         }
 
-    # Handle degenerate tile (HS data too sparse for CNMF)
     if info.get("status") == "DEGENERATE_HS":
         return {
             "fused": None, "r2": np.zeros(hs_hwb.shape[2]),
@@ -920,29 +632,25 @@ def cnmf_fuse_tile(
             "info": info,
         }
 
-    # ── R² self-consistency check ──
-    # Gaussian-downsample fused output back to LR, compare against original HS
+    # R² self-consistency: downsample fused HR back to LR, compare to original HS
     rows_lr, cols_lr, bands_hs = hs_hwb.shape
     rows_hr, cols_hr, bands_ms = ms_hwb.shape
     w = rows_hr // rows_lr
 
-    fused_lr = _gaussian_downsample(fused_hwb, w)  # (H_lr, W_lr, B_hs)
+    fused_lr = _gaussian_downsample(fused_hwb, w)
     r2 = _compute_r2(
         hs_hwb.reshape(-1, bands_hs),
         fused_lr.reshape(-1, bands_hs),
     )
 
-    # Convert back to (B, H, W) uint16
-    fused_bhw = np.transpose(fused_hwb, (2, 0, 1))  # (B_hs, H_hr, W_hr)
+    fused_bhw = np.transpose(fused_hwb, (2, 0, 1))
     fused_dn = np.clip(fused_bhw * scale_factor, 0, 65534).astype(np.uint16)
 
-    # Write output
     out_str = None
     if out_path is not None:
         out_path = Path(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Read wavelength tags from HS tile
         wavelengths_nm = None
         with rasterio.open(hs_path) as ds:
             wl_list = []
@@ -986,44 +694,12 @@ def cnmf_fuse_tile(
     }
 
 
-# ---------------------------------------------------------------------------
-# Parallel tile processing — streaming producer / consumer pipeline
-# ---------------------------------------------------------------------------
-#
-# Drive FUSE performs best with single-threaded sequential I/O.  Running
-# multiple processes that each read/write to Drive causes severe contention
-# (~10 s/tile vs ~1 s sequential).
-#
-# Architecture:
-#   Reader thread ──→ [bounded queue] ──→ N worker processes ──→ Writer thread
-#
-# - Reader thread reads HS+MS GeoTIFFs from Drive sequentially into a
-#   bounded queue (``prefetch`` slots, ~250 MB at 16 tiles).
-# - N CPU worker processes pull arrays from the queue, run cnmf_fuse
-#   (pure compute, zero I/O), and return results via futures.
-# - The main thread writes fused GeoTIFFs back to Drive sequentially as
-#   results arrive.
-#
-# Reading (~0.06 s/tile) is ~20× faster than compute (~1-2 s/tile), so
-# the reader easily stays ahead.  Memory stays bounded at ~prefetch tiles
-# in the queue + ~n_workers tiles being processed.
+# Drive FUSE prefers single-threaded sequential I/O — running multiple
+# processes that each read/write to Drive causes severe contention
+# (~10 s/tile vs ~1 s sequential). So we keep I/O in the main thread
+# and only farm out the pure-compute cnmf_fuse to worker processes.
 
-
-def _read_tile_arrays(
-    hs_path: str,
-    ms_path: str,
-    scale_factor: float = 10_000.0,
-    nodata_val: int = 65535,
-) -> tuple[np.ndarray, np.ndarray, dict]:
-    """
-    Read a tile pair from GeoTIFF and return reflectance arrays + write metadata.
-
-    Returns
-    -------
-    hs_hwb : (H_lr, W_lr, B_hs) float32 reflectance
-    ms_hwb : (H_hr, W_hr, B_ms) float32 reflectance
-    write_meta : dict with 'ms_profile' and 'wavelengths_nm' for writing output
-    """
+def _read_tile_arrays(hs_path, ms_path, scale_factor=10_000.0, nodata_val=65535):
     with rasterio.open(hs_path) as ds:
         hs_raw = ds.read().astype(np.float32)
         wl_list = []
@@ -1048,14 +724,8 @@ def _read_tile_arrays(
     return hs_hwb, ms_hwb, write_meta
 
 
-def _write_fused_tile(
-    fused_hwb: np.ndarray,
-    out_path: str,
-    write_meta: dict,
-    scale_factor: float = 10_000.0,
-    nodata_val: int = 65535,
-) -> None:
-    """Write fused result to GeoTIFF on Drive."""
+def _write_fused_tile(fused_hwb, out_path, write_meta,
+                      scale_factor=10_000.0, nodata_val=65535):
     fused_bhw = np.transpose(fused_hwb, (2, 0, 1))
     fused_dn = np.clip(fused_bhw * scale_factor, 0, 65534).astype(np.uint16)
 
@@ -1067,7 +737,7 @@ def _write_fused_tile(
         count=fused_dn.shape[0], dtype="uint16", nodata=nodata_val,
         driver="GTiff", compress="DEFLATE", predictor=2,
     )
-    # Strip any tags that are invalid for 32-band output or break MemoryFile reads
+    # Strip tags that are invalid for 32-band output or break MemoryFile reads
     for key in ("interleave", "photometric", "tiled", "blockxsize", "blockysize",
                 "BIGTIFF"):
         profile.pop(key, None)
@@ -1082,7 +752,6 @@ def _write_fused_tile(
 
 def _process_tile(hs_path, ms_path, out_path, row,
                    scale_factor, nodata_val, cnmf_kwargs):
-    """Read one tile → run CNMF → write result.  Populates *row* in-place."""
     import time as _t
     tic = _t.time()
     try:
@@ -1110,44 +779,17 @@ def _process_tile(hs_path, ms_path, out_path, row,
 
 
 def _process_tile_mp(args):
-    """Multiprocessing wrapper — unpacks tuple for Pool.imap.
-    args = (hs_path, ms_path, out_path, row, scale_factor, nodata_val,
-            cnmf_kwargs, blas_threads)
-    """
     from threadpoolctl import threadpool_limits
     *tile_args, blas_threads = args
     with threadpool_limits(limits=blas_threads):
         return _process_tile(*tile_args)
 
 
-def cnmf_fuse_tiles(
-    tile_list: list[dict],
-    *,
-    n_workers: int = 1,
-    blas_threads: int = 2,
-    scale_factor: float = 10_000.0,
-    nodata_val: int = 65535,
-    max_endmembers: int = 20,
-    inner_iters: int = 200,
-    outer_iters: int = 1,
-    th_h: float = 1e-8,
-    th_m: float = 1e-8,
-    th_outer: float = 1e-2,
-    tile_timeout: float = 120,
-    pre_R: np.ndarray | None = None,
-    verbose_first: int = 2,
-    skip_existing: bool = True,
-) -> list[dict]:
-    """
-    Process CNMF fusion for a list of tiles.
-
-    pre_R : (B_ms, B_hs) optional analytical spectral response matrix.
-            Passed through to cnmf_fuse(); when set, skips per-tile
-            SRF estimation (consistent with MATLAB + compute_srf.py).
-    th_h, th_m : inner NMF convergence threshold (default 1e-8, matches MATLAB).
-    th_outer : outer loop convergence threshold.
-    tile_timeout : max wall-clock seconds per tile (default 120). 0 = no limit.
-    """
+def cnmf_fuse_tiles(tile_list, *, n_workers=1, blas_threads=2,
+                    scale_factor=10_000.0, nodata_val=65535,
+                    max_endmembers=20, inner_iters=200, outer_iters=1,
+                    th_h=1e-8, th_m=1e-8, th_outer=1e-2, tile_timeout=120,
+                    pre_R=None, verbose_first=2, skip_existing=True):
     import time as _time
     try:
         from tqdm import tqdm
@@ -1161,7 +803,6 @@ def cnmf_fuse_tiles(
                        tile_timeout=tile_timeout,
                        verbose=False, pre_R=pre_R)
 
-    # ── Build work list, skip existing / missing ──
     work = []
     results = [None] * len(tile_list)
 
@@ -1195,7 +836,7 @@ def cnmf_fuse_tiles(
     if not work:
         return [r for r in results if r is not None]
 
-    # ── Verbose warm-up (first N tiles, sequential with verbose=True) ──
+    # Verbose warm-up: first N tiles run sequentially with verbose=True
     verbose_kw = {**cnmf_kwargs, "verbose": True}
     for j in range(min(verbose_first, len(work))):
         idx, hs_p, ms_p, out_p, row = work[j]
@@ -1209,7 +850,6 @@ def cnmf_fuse_tiles(
     if not remaining:
         return [r for r in results if r is not None]
 
-    # ── Process tiles ──
     pbar = tqdm(total=len(remaining), desc="CNMF fusion") if tqdm else None
     name_to_idx = {row["tile_name"]: idx
                    for idx, _, _, _, row in work[verbose_first:]}
@@ -1235,7 +875,6 @@ def cnmf_fuse_tiles(
 
 
 def _fill_result_row(base_row, status, r2, info, elapsed, out_path):
-    """Populate a result row dict in-place."""
     base_row["status"] = status
     base_row["r2_cnmf_mean"] = float(np.mean(r2)) if r2 is not None else None
     base_row["time_s"] = elapsed
