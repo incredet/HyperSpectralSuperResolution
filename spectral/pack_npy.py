@@ -108,11 +108,6 @@ def load_pair(row, drive_base, gt_suffix):
     return idx, lr, gt
 
 
-def write_full(zf, idx, lr, gt, gt_suffix):
-    zf.writestr(f"tile{idx:03d}__emit_b32.npy", npy_bytes(lr))
-    zf.writestr(f"tile{idx:03d}{gt_suffix}.npy", npy_bytes(gt))
-
-
 def write_patched(zf, idx, lr, gt, gt_suffix, gt_patch):
     lr_patch = gt_patch // SCALE
     n = LR_FULL // lr_patch
@@ -192,7 +187,8 @@ def main():
         if need_full:
             with zipfile.ZipFile(full_path, "w", zipfile.ZIP_STORED) as zf:
                 for idx, lr, gt in loaded:
-                    write_full(zf, idx, lr, gt, gt_suffix)
+                    zf.writestr(f"tile{idx:03d}__emit_b32.npy", npy_bytes(lr))
+                    zf.writestr(f"tile{idx:03d}{gt_suffix}.npy", npy_bytes(gt))
             n_full += 1
         for out_path, gt_sz in patched_todo:
             with zipfile.ZipFile(out_path, "w", zipfile.ZIP_STORED) as zf:
