@@ -1,12 +1,9 @@
 import json
-import sys
 from datetime import timedelta
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from S2.s2_search import find_best_s2_for_emit_item, build_s2_index
-from EMIT.emit_search import (
+from data.S2.s2_search import find_best_s2_for_emit_item, build_s2_index
+from data.EMIT.emit_search import (
     emit_cloud_pct,
     emit_dedupe_latest_revision,
     emit_keep_top_n_per_day,

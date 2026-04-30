@@ -1,5 +1,4 @@
 import re
-import sys
 import datetime as dt
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,10 +8,7 @@ from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
 from data.download_utils import retry as _retry_download
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from pairing.pairs_utils import _parse_iso_utc, _sun_vec_from_az_el
+from data.pairing.pairs_utils import _parse_iso_utc, _sun_vec_from_az_el
 
 EMIT_SHORT_NAME = "EMITL2ARFL"
 

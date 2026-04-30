@@ -1,4 +1,3 @@
-import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
@@ -19,10 +18,7 @@ from shapely.strtree import STRtree
 from tqdm import tqdm
 
 from data.download_utils import retry as _retry_download
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from pairing.pairs_utils import (
+from data.pairing.pairs_utils import (
     _parse_iso_utc,
     _to_utc,
     _sun_vec_from_az_el,
@@ -32,7 +28,7 @@ from pairing.pairs_utils import (
     circ_hours_diff,
     _dt_hours,
 )
-from EMIT.emit_search import (
+from data.EMIT.emit_search import (
     emit_item_datetime_utc,
     emit_geom_wgs84_from_umm,
     emit_sun_vec_from_umm,

@@ -1,6 +1,5 @@
 import contextlib
 import math
-import sys
 import warnings
 from pathlib import Path
 
@@ -9,8 +8,6 @@ import numpy as np
 import rasterio
 from rasterio.windows import Window
 from rasterio.windows import transform as window_transform
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from data.S2.s2_search import SCL_CLOUD_TILE
 from data.EMIT.emit_utils import closest_bands

@@ -1,4 +1,3 @@
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -6,8 +5,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from documentation.pairs_artifacts import ensure_dir, utc_now_iso
 

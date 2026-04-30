@@ -1,10 +1,7 @@
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from geometry.EMIT_proj import convert_emit_nc_to_envi, crop_s2_stack_to_te
 from geometry.crop_utils import (

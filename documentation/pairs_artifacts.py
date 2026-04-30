@@ -2,7 +2,6 @@ import json
 import re
 import shutil
 import subprocess
-import sys
 import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -13,8 +12,6 @@ import numpy as np
 import pandas as pd
 import rasterio
 from rasterio.warp import transform_bounds
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from data.EMIT.emit_search import emit_geom_wgs84_from_umm
 
@@ -530,10 +527,6 @@ class RunPaths:
         )
 
 
-# ReportWriter lives in report_builder.py; alias set at end of file to avoid circular import
-ReportWriter = None
-
-
 def emit_file_records(umm):
     recs = umm.get("DataGranule", {}).get("ArchiveAndDistributionInformation", [])
     out = []
@@ -1024,12 +1017,3 @@ def describe_tif(path):
             print("Block size:", blockx, "x", blocky)
 
         print("Profile keys:", {k: ds.profile.get(k) for k in ["dtype", "count", "interleave", "bigtiff", "driver"]})
-
-
-# deferred to avoid circular import (report_builder imports from this file)
-def _init_report_writer():
-    global ReportWriter
-    from documentation.report_builder import ReportBuilder
-    ReportWriter = ReportBuilder
-
-_init_report_writer()
