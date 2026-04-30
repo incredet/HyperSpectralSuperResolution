@@ -1,36 +1,8 @@
 #!/usr/bin/env python3
-"""
-run_sfim.py — SFIM fusion GT generation for SR training.
-
-Reads QC-filtered tiles from tiles_clean.csv, runs SFIM hypersharpening
-fusion, and writes fused GeoTIFFs + per-tile R² CSV.
-
-All algorithm parameters come from pipeline_config.yaml on Drive.
-Colab/runtime parameters (paths, tile range) are CLI args.
-
-Usage from Colab
-----------------
-    # All tiles
-    !python spectral/run_sfim.py --drive-root /content/drive/Shareddrives/HyperResData/EMIT_S-2_Matches --run-tag 2026-04-02
-
-    # First 500 tiles (for parallel notebooks)
-    !python spectral/run_sfim.py --drive-root ... --run-tag 2026-04-02 --start 0 --stop 500
-
-    # Tiles 500-1000
-    !python spectral/run_sfim.py --drive-root ... --run-tag 2026-04-02 --start 500 --stop 1000
-
-    # Merge partial CSVs after all notebooks finish
-    !python spectral/run_sfim.py --drive-root ... --run-tag 2026-04-02 --merge-only
-"""
-
 import argparse
 import sys
 import time
 from pathlib import Path
-
-_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
 
 import numpy as np
 import pandas as pd
@@ -38,38 +10,27 @@ from tqdm import tqdm
 
 
 def parse_args():
-    ap = argparse.ArgumentParser(
-        description="Run SFIM fusion on QC-clean tiles.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
-    )
+    ap = argparse.ArgumentParser(description="Run SFIM fusion on QC-clean tiles.")
     ap.add_argument("--drive-root", required=True,
                     help="Path to EMIT_S-2_Matches on Drive")
     ap.add_argument("--run-tag", required=True,
                     help="Date tag subfolder (e.g. 2026-04-02)")
-
-    # Tile slicing
     ap.add_argument("--start", type=int, default=None,
                     help="Start index in tiles_clean.csv (inclusive)")
     ap.add_argument("--stop", type=int, default=None,
                     help="Stop index in tiles_clean.csv (exclusive)")
-
-    # Runtime
     ap.add_argument("--workers", type=int, default=4,
                     help="Number of tiles to log progress for (unused, kept for CLI parity)")
     ap.add_argument("--verbose-first", type=int, default=3,
                     help="Print detailed output for first N tiles (default: 3)")
     ap.add_argument("--no-skip-existing", action="store_true",
                     help="Reprocess tiles even if output exists")
-
-    # Merge mode
     ap.add_argument("--merge-only", action="store_true",
                     help="Only merge partial CSVs, skip processing")
-
     return ap.parse_args()
 
 
-def merge_partial_csvs(drive_base: Path):
+def merge_partial_csvs(drive_base):
     parts = sorted(drive_base.glob("r2_sfim_tiles_*.csv"))
     if not parts:
         print("No partial CSVs found to merge.")
@@ -88,7 +49,7 @@ def merge_partial_csvs(drive_base: Path):
               f"median={ok['r2_sfim_mean'].median():.4f}")
 
 
-def build_tile_list(drive_base: Path, clean_df: pd.DataFrame):
+def build_tile_list(drive_base, clean_df):
     tiles = []
     for _, row in clean_df.iterrows():
         aoi_slug = row["aoi_slug"]
@@ -117,12 +78,10 @@ def main():
     if not drive_base.exists():
         sys.exit(f"Drive base not found: {drive_base}")
 
-    # ── Merge-only mode ──
     if args.merge_only:
         merge_partial_csvs(drive_base)
         return
 
-    # ── Load config from Drive ──
     from documentation.config import PipelineConfig
     from documentation.pairs_artifacts import load_pipeline_config
 
@@ -139,7 +98,6 @@ def main():
     print(f"Drive base:    {drive_base}")
     print(f"Scale factor:  {scale_factor}, nodata: {nodata_val}")
 
-    # ── Load QC-clean tiles ──
     clean_csv = drive_base / "tiles_clean.csv"
     if not clean_csv.exists():
         sys.exit(f"tiles_clean.csv not found at {clean_csv}")
@@ -149,21 +107,18 @@ def main():
           f"({clean_df['aoi_slug'].nunique()} AOIs, "
           f"{clean_df['pair_id'].nunique()} pairs)")
 
-    # ── Apply slice ──
     tile_df = clean_df.iloc[args.start:args.stop].copy().reset_index(drop=True)
     slice_tag = f"[{args.start or 0}:{args.stop or len(clean_df)}]"
     print(f"Slice {slice_tag}: {len(tile_df)} tiles")
 
     tile_list = build_tile_list(drive_base, tile_df)
 
-    # ── Output CSV path ──
     if args.start is not None or args.stop is not None:
         suffix = f"_{args.start or 0}_{args.stop or 'end'}"
     else:
         suffix = ""
     csv_path = drive_base / f"r2_sfim_tiles{suffix}.csv"
 
-    # ── Run SFIM ──
     from spectral.sfim import sfim_fuse_tile
 
     skip_existing = not args.no_skip_existing
@@ -191,14 +146,12 @@ def main():
             "out_path":          str(out_path),
         }
 
-        # Skip existing
         if skip_existing and out_path.exists():
             row["status"] = "SKIPPED"
             n_skipped += 1
             all_rows.append(row)
             continue
 
-        # Check inputs exist
         if not tile["hs_path"].exists() or not tile["ms_path"].exists():
             row["status"] = "MISSING_INPUT"
             n_error += 1
@@ -222,7 +175,6 @@ def main():
             row["time_s"]            = round(dt, 3)
             row["out_path"]          = result.get("out_path") or str(out_path)
 
-            # Per-band R² (both Wald and NNLS)
             for b, val in enumerate(result.get("r2_wald_per_band", [])):
                 row[f"r2_sfim_wald_band_{b:02d}"] = round(val, 6)
             for b, val in enumerate(result.get("r2_nnls_per_band", [])):
@@ -231,7 +183,6 @@ def main():
             if result["status"] == "OK":
                 n_ok += 1
 
-            # Verbose output for first N tiles
             if i < args.verbose_first:
                 print(f"  [{i}] {tile_name}: {result['status']}, "
                       f"R²_wald={row['r2_sfim_mean']:.4f}, "
@@ -247,7 +198,6 @@ def main():
 
     elapsed = time.time() - tic
 
-    # ── Write CSV once at end ──
     sfim_df = pd.DataFrame(all_rows)
     sfim_df.to_csv(csv_path, index=False)
 
@@ -272,7 +222,6 @@ def main():
             print(f"  Mean:   {times.mean():.1f}s")
             print(f"  Median: {times.median():.1f}s")
 
-    # Status breakdown
     print(f"\nStatus counts:")
     for status, count in sfim_df["status"].value_counts().items():
         print(f"  {status}: {count}")
