@@ -1,0 +1,33 @@
+# Pinned (fragile — known-good versions)
+py-tools-ds==0.24.1
+arosics==1.13.2
+geoarray==0.19.2
+
+# Core scientific stack
+numpy
+pandas
+scipy
+scikit-learn
+joblib
+matplotlib
+tqdm
+pyyaml
+
+# Raster / geospatial
+rasterio
+rioxarray
+xarray
+shapely
+pyproj
+netCDF4
+spectral
+pystac-client
+earthaccess
+POT
+git+https://github.com/EnSpec/hytools.git
+
+# Deep learning (SR training)
+torch>=2.0
+wandb
+einops
+timm
