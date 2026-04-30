@@ -1,17 +1,13 @@
-"""Per-tile cloud / brightness QC using EMIT L2A mask layer."""
-from __future__ import annotations
-import json, shutil, subprocess, sys
+import json
+import shutil
+import subprocess
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 import pandas as pd
 import rasterio
 from rasterio.transform import Affine
 
-
-# ── EMIT mask I/O ──────────────────────────────────────────────────────
 
 def read_emit_mask(nc_path, bands=(0, 2)):
     import netCDF4 as nc4
@@ -24,8 +20,6 @@ def read_emit_mask(nc_path, bands=(0, 2)):
     ds.close()
     return out, lon, lat
 
-
-# ── mask reprojection ──────────────────────────────────────────────────
 
 def _write_lonlat_tifs(lon, lat, tmp_dir):
     id_tf = Affine(1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
@@ -104,7 +98,6 @@ def _extract_crs(conv_info):
 
 
 def reproject_mask(mask_bands, lon, lat, conv_info, tmp_dir):
-    """Reproject EMIT mask bands to the same UTM grid as the reflectance data."""
     tmp = Path(tmp_dir)
     nodata = 255
 
@@ -136,8 +129,6 @@ def reproject_mask(mask_bands, lon, lat, conv_info, tmp_dir):
     with rasterio.open(dst_tif) as ds:
         return ds.read(), ds.profile.copy()
 
-
-# ── per-tile metrics ──────────────────────────────────────────────────
 
 def tile_cloud_frac(mask_utm, mask_profile, tile_tif):
     nodata = mask_profile.get("nodata", 255)
@@ -188,7 +179,6 @@ def s2_bright_frac(s2_tif, threshold=0.25):
 
 
 def reverse_r2(emit_tif, s2_tif, scale=6, degree=2, alpha=1.0):
-    """EMIT→S2 R² at 60m. Downsample S2 by block-averaging, fit Ridge."""
     from sklearn.linear_model import Ridge
     from sklearn.metrics import r2_score
     from sklearn.preprocessing import PolynomialFeatures, StandardScaler
@@ -231,10 +221,7 @@ def reverse_r2(emit_tif, s2_tif, scale=6, degree=2, alpha=1.0):
     return float(np.mean(r2s))
 
 
-# ── visual diagnostics ───────────────────────────────────────────────
-
 def plot_tile_examples(qc_df, n=4, out_path=None):
-    """Plot S2 true-color for sample tiles in each QC category."""
     import matplotlib.pyplot as plt
 
     categories = {
@@ -283,7 +270,7 @@ def plot_tile_examples(qc_df, n=4, out_path=None):
 
 
 def _plot_s2_rgb(s2_tif, ax):
-    """Quick S2 true-color (B4=band3, B3=band2, B2=band1 in 0-indexed 10-band stack)."""
+    # B4=band3, B3=band2, B2=band1 in the 0-indexed 10-band S2 stack
     with rasterio.open(s2_tif) as ds:
         rgb = ds.read([3, 2, 1]).astype(np.float32) / 10000.0
     rgb = np.moveaxis(rgb, 0, -1)
@@ -292,10 +279,7 @@ def _plot_s2_rgb(s2_tif, ax):
     ax.imshow(rgb)
 
 
-# ── pair-level orchestration ──────────────────────────────────────────
-
 def download_emit_mask(granule_ur, dest_dir):
-    """Fetch the EMIT L2A MASK NC for a given granule UR. Returns Path."""
     from data.EMIT.emit_search import refetch_emit_pick, download_reflectance
 
     pick = refetch_emit_pick(granule_ur)
@@ -308,11 +292,6 @@ def download_emit_mask(granule_ur, dest_dir):
 
 def qc_pair(pair_dir, tile_rows_df, manifest_df, *,
             mask_dl_dir, tmp_dir, cloud_band=0, cirrus_band=2):
-    """Run cloud + brightness QC for all tiles in one pair.
-
-    Returns list of dicts (one per tile) with cloud fractions + s2 brightness.
-    Raises on metadata / download / reprojection failures.
-    """
     pair_dir = Path(pair_dir)
     summary_path = pair_dir / "metadata" / "emit_summary.json"
     conv_path = pair_dir / "alignment" / "emit_conversion.json"
@@ -385,8 +364,6 @@ def qc_pair(pair_dir, tile_rows_df, manifest_df, *,
     shutil.rmtree(tmp, ignore_errors=True)
     return rows
 
-
-# ── CLI ───────────────────────────────────────────────────────────────
 
 def run_qc(drive_base, *, min_r2, max_emit_cloud_frac, min_r2_reverse,
            max_s2_bright_frac, cloud_band=0, cirrus_band=2):
