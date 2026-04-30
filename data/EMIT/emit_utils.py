@@ -2,7 +2,7 @@ from pathlib import Path
 import json
 import numpy as np
 
-def load_emit_wavelengths_nm_from_nc(emit_nc_path: str) -> np.ndarray:
+def load_emit_wavelengths_nm_from_nc(emit_nc_path):
     emit_nc_path = str(emit_nc_path)
 
     try:
@@ -53,7 +53,7 @@ def load_emit_wavelengths_nm_from_nc(emit_nc_path: str) -> np.ndarray:
     return wl_nm
 
 
-def cache_wavelengths_json(wavelengths_nm: np.ndarray, out_path: str):
+def cache_wavelengths_json(wavelengths_nm, out_path):
     out = {
         "wavelength_units": "nm",
         "wavelengths_nm": [float(x) for x in np.asarray(wavelengths_nm).ravel()],
@@ -62,7 +62,7 @@ def cache_wavelengths_json(wavelengths_nm: np.ndarray, out_path: str):
     Path(out_path).write_text(json.dumps(out, indent=2))
 
 
-S2_BAND_WAVELENGTHS_NM: dict[str, float] = {
+S2_BAND_WAVELENGTHS_NM = {
     "B02": 490.0,   # Blue
     "B03": 560.0,   # Green
     "B04": 665.0,   # Red
@@ -76,18 +76,13 @@ S2_BAND_WAVELENGTHS_NM: dict[str, float] = {
 }
 
 # Water vapour absorption windows to exclude (wider than nominal due to zero-fill artifacts)
-ATMOSPHERIC_EXCLUDE_NM: list[tuple[float, float]] = [
+ATMOSPHERIC_EXCLUDE_NM = [
     (1310.0, 1455.0),  # Water vapour (EMIT zeroes 1327-1432 nm)
     (1755.0, 1980.0),  # Water vapour (EMIT zeroes 1774-1960 nm)
 ]
 
 
-def select_emit_bands(
-    wavelengths_nm: np.ndarray,
-    num_keep: int = 32,
-    s2_targets_nm: dict[str, float] | None = None,
-    exclude_ranges_nm: list[tuple[float, float]] | None = None,
-) -> np.ndarray:
+def select_emit_bands(wavelengths_nm, num_keep=32, s2_targets_nm=None, exclude_ranges_nm=None):
     wl = np.asarray(wavelengths_nm, dtype=np.float64)
     n_bands = len(wl)
 

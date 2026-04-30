@@ -1,35 +1,20 @@
-"""S2→EMIT polynomial Ridge regression: fit per-tile, apply at 10 m."""
-
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Optional
 
 import joblib
 import numpy as np
 import rasterio
 from rasterio.warp import reproject, Resampling
+from scipy.ndimage import zoom
 from sklearn.linear_model import Ridge
 from sklearn.metrics import r2_score
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
 from data.EMIT.emit_utils import closest_bands
-from scipy.ndimage import zoom
 
 
-
-def align_s2_to_emit_grid(
-    s2_cube: np.ndarray,
-    scale: int = 6,
-    *,
-    s2_profile: dict | None = None,
-    emit_profile: dict | None = None,
-) -> np.ndarray:
-    """Block-average S2 to EMIT grid. Falls back to rasterio if not exact multiples."""
+def align_s2_to_emit_grid(s2_cube, scale=6, *, s2_profile=None, emit_profile=None):
     s2_cube = np.asarray(s2_cube, dtype=np.float32)
     B, H_s2, W_s2 = s2_cube.shape
 
@@ -60,8 +45,7 @@ def align_s2_to_emit_grid(
     return out
 
 
-
-def _read_raster(path: str | Path) -> tuple[np.ndarray, dict, float | None]:
+def _read_raster(path):
     with rasterio.open(path) as ds:
         arr     = ds.read().astype(np.float32)
         profile = ds.profile.copy()
@@ -69,12 +53,7 @@ def _read_raster(path: str | Path) -> tuple[np.ndarray, dict, float | None]:
     return arr, profile, nodata
 
 
-def _build_valid_mask(
-    s2_on_emit: np.ndarray,
-    emit_b32: np.ndarray,
-    s2_nodata: float | None,
-    emit_nodata: float | None,
-) -> np.ndarray:
+def _build_valid_mask(s2_on_emit, emit_b32, s2_nodata, emit_nodata):
     B_s2, H, W = s2_on_emit.shape
     N = H * W
     X = s2_on_emit.reshape(B_s2, N).T          # (N, B_s2)
@@ -90,62 +69,48 @@ def _build_valid_mask(
     return valid
 
 
-def _block_homogeneity_mask(
-    s2_cube: np.ndarray,
-    scale: int = 6,
-    *,
-    max_cv: float = 0.25,
-    s2_nodata: float | None = None,
-) -> np.ndarray:
-    """Per-block CV filter at 10 m. Returns flat bool mask (H*W,)."""
+def _block_homogeneity_mask(s2_cube, scale=6, *, max_cv=0.25, s2_nodata=None):
     B, H_s2, W_s2 = s2_cube.shape
     H_e = H_s2 // scale
     W_e = W_s2 // scale
 
-    # Reshape into (B, H_e, scale, W_e, scale)
     blocks = s2_cube[:, :H_e * scale, :W_e * scale].reshape(
         B, H_e, scale, W_e, scale,
-    )  # (B, H_e, scale, W_e, scale)
+    )
 
-    # Per-block mean and std across the scale×scale spatial dims
     block_mean = blocks.mean(axis=(2, 4))    # (B, H_e, W_e)
     block_std  = blocks.std(axis=(2, 4))     # (B, H_e, W_e)
 
     # Coefficient of variation per band per block; avoid /0
     safe_mean = np.where(np.abs(block_mean) > 1e-8, block_mean, 1e-8)
-    cv = np.abs(block_std / safe_mean)       # (B, H_e, W_e)
+    cv = np.abs(block_std / safe_mean)
 
     # A block is homogeneous if ALL bands have CV < max_cv
-    homo_block = np.all(cv < max_cv, axis=0)  # (H_e, W_e) bool
+    homo_block = np.all(cv < max_cv, axis=0)
 
-    # If nodata is present, reject blocks that contain any nodata pixel
     if s2_nodata is not None:
         has_nodata = np.any(
             np.isclose(blocks, s2_nodata), axis=(0, 2, 4),
-        )  # (H_e, W_e)
+        )
         homo_block &= ~has_nodata
 
-    # Also reject all-zero blocks
     all_zero = np.all(blocks == 0, axis=(0, 2, 4))
     homo_block &= ~all_zero
 
-    # Expand back to 10 m resolution: each EMIT block → scale×scale True/False
+    # Expand back to 10 m: each EMIT block → scale×scale True/False at 10m grid
     homo_10m = np.repeat(
         np.repeat(homo_block, scale, axis=0),
         scale, axis=1,
-    )  # (H_e*scale, W_e*scale)
+    )
 
-    # Handle edge pixels if S2 tile isn't exactly divisible
+    # Edge pixels if S2 tile isn't exactly divisible
     mask_full = np.zeros((H_s2, W_s2), dtype=bool)
     mask_full[:H_e * scale, :W_e * scale] = homo_10m
 
     return mask_full.ravel()
 
 
-
-def _read_emit_band_meta(
-    emit_b32_path: str | Path,
-) -> tuple[np.ndarray | None, np.ndarray | None]:
+def _read_emit_band_meta(emit_b32_path):
     with rasterio.open(emit_b32_path) as ds:
         n = ds.count
         wavelengths, indices = [], []
@@ -162,12 +127,8 @@ def _read_emit_band_meta(
     return idx_arr, wl_arr
 
 
-
-
-
 @dataclass
 class S2ToEMITRegressor:
-    """Fitted S2→EMIT polynomial Ridge. Use fit_tile() or fit_tiles_batch()."""
 
     band_indices_0based_:  Optional[np.ndarray] = None
     wavelengths_nm_:       Optional[np.ndarray] = None
@@ -177,33 +138,31 @@ class S2ToEMITRegressor:
     degree_:               int             = 2
     alpha_:                float           = 1.0
 
-    # Core fitted objects
     _poly_:    object           = field(default=None, repr=False)
     _scaler_:  object           = field(default=None, repr=False)
     _W_:       Optional[np.ndarray] = field(default=None, repr=False)
     _b_:       Optional[np.ndarray] = field(default=None, repr=False)
     _y_max_:   Optional[np.ndarray] = field(default=None, repr=False)  # per-band training max
 
-    # Legacy — only populated when loading old serialised regressors
+    # populated only when loading old serialised regressors
     models_:               list = field(default_factory=list, repr=False)
 
-    def _build_fast_weights(self) -> None:
+    def _build_fast_weights(self):
         if self._W_ is not None or not self.models_:
             return
         self._poly_   = self.models_[0].named_steps["poly"]
         self._scaler_ = self.models_[0].named_steps["scaler"]
         self._W_ = np.stack(
             [m.named_steps["ridge"].coef_ for m in self.models_]
-        ).astype(np.float64)          # (B_out, P)
+        ).astype(np.float64)
         self._b_ = np.array(
             [m.named_steps["ridge"].intercept_ for m in self.models_],
             dtype=np.float64,
         )
         self.n_output_bands_ = self._W_.shape[0]
 
-    def predict(self, X_s2: np.ndarray) -> np.ndarray:
+    def predict(self, X_s2):
         if self._W_ is None:
-            # Try legacy path
             self._build_fast_weights()
         if self._W_ is None:
             raise RuntimeError("Regressor has not been fitted yet.")
@@ -213,21 +172,14 @@ class S2ToEMITRegressor:
         X_scaled = self._scaler_.transform(X_poly)
         return (X_scaled @ self._W_.T + self._b_).astype(np.float32)
 
-    def score(self, X_s2: np.ndarray, Y_emit: np.ndarray) -> np.ndarray:
+    def score(self, X_s2, Y_emit):
         Y_pred = self.predict(X_s2)
         return np.array([
             r2_score(Y_emit[:, i], Y_pred[:, i])
             for i in range(Y_emit.shape[1])
         ])
 
-    def apply_to_tile(
-        self,
-        s2_tile_path: str | Path,
-        *,
-        out_path: str | Path | None = None,
-        out_nodata: int = 65535,
-    ) -> np.ndarray:
-        """Apply model to S2 tile → uint16 synthetic EMIT cube (DN×10000)."""
+    def apply_to_tile(self, s2_tile_path, *, out_path=None, out_nodata=65535):
         DN_SCALE = np.float32(10000.0)
 
         s2_cube, s2_prof, s2_nodata = _read_raster(s2_tile_path)
@@ -280,34 +232,32 @@ class S2ToEMITRegressor:
 
         return result
 
-    def save(self, path: str | Path) -> None:
+    def save(self, path):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         joblib.dump(self, path)
         print(f"Regressor saved → {path}")
 
     @staticmethod
-    def load(path: str | Path) -> "S2ToEMITRegressor":
+    def load(path):
         return joblib.load(path)
 
 
 S2ToEMITMatcher = S2ToEMITRegressor  # legacy alias
 
 
-
 def fit_tile(
-    s2_tile_path: str | Path,
-    emit_b32_tile_path: str | Path,
+    s2_tile_path,
+    emit_b32_tile_path,
     *,
-    scale: int = 6,
-    degree: int = 2,
-    alpha: float = 1.0,
-    max_cv: float = 0.25,
-    verbose: bool = True,
-    emit_upsample_order: int = 1,
-    mode: str = "upsample",
-) -> tuple[S2ToEMITRegressor, dict]:
-    """Fit polynomial Ridge from one tile pair. mode='upsample' | 'downsample'."""
+    scale=6,
+    degree=2,
+    alpha=1.0,
+    max_cv=0.25,
+    verbose=True,
+    emit_upsample_order=1,
+    mode="upsample",
+):
     assert mode in ("upsample", "downsample"), mode
 
     DN_SCALE = np.float32(10000.0)
@@ -397,31 +347,28 @@ def fit_tile(
     return regressor, stats
 
 
-
 def fit_tiles_batch(
-    tile_pairs: Sequence[tuple[str | Path, str | Path]],
+    tile_pairs,
     *,
-    scale: int = 6,
-    degree: int = 2,
-    alpha: float = 1.0,
-    max_cv: float = 0.25,
-    verbose: bool = True,
-    emit_upsample_order: int = 1,
-) -> tuple[S2ToEMITRegressor, dict]:
-    """Fit by pooling pixels from multiple tile pairs."""
+    scale=6,
+    degree=2,
+    alpha=1.0,
+    max_cv=0.25,
+    verbose=True,
+    emit_upsample_order=1,
+):
     DN_SCALE = np.float32(10000.0)
 
     all_X = []
     all_Y = []
-    band_indices:  np.ndarray | None = None
-    wavelengths_nm: np.ndarray | None = None
-    n_s2_bands: int | None = None
+    band_indices = None
+    wavelengths_nm = None
+    n_s2_bands = None
 
     for s2_path, emit_path in tile_pairs:
         s2_cube,  s2_prof,   s2_nodata   = _read_raster(s2_path)
         emit_b32, emit_prof, emit_nodata = _read_raster(emit_path)
 
-        # Upsample EMIT to 10 m using the configured interpolation order.
         emit_at_s2 = zoom(emit_b32, (1, scale, scale), order=emit_upsample_order)
 
         if band_indices is None:
@@ -505,25 +452,23 @@ def fit_tiles_batch(
     return regressor, stats
 
 
-
 def plot_spectral_match(
-    s2_tile_path: str | Path,
-    synth_emit_path: str | Path,
-    emit_b32_tile_path: str | Path,
+    s2_tile_path,
+    synth_emit_path,
+    emit_b32_tile_path,
     *,
-    wavelengths_nm: Optional[np.ndarray] = None,
-    targets_nm: tuple[float, float, float] = (650.0, 550.0, 470.0),
-    percentile: tuple[float, float] = (2.0, 98.0),
-    gamma: float = 1 / 2.2,
-    title_suffix: str = "",
-    r2_mean: float | None = None,
-    save_path: str | Path | None = None,
-    show: bool = True,
-) -> None:
-    """3-panel comparison: S2 | regression synth | EMIT GT."""
+    wavelengths_nm=None,
+    targets_nm=(650.0, 550.0, 470.0),
+    percentile=(2.0, 98.0),
+    gamma=1 / 2.2,
+    title_suffix="",
+    r2_mean=None,
+    save_path=None,
+    show=True,
+):
     import matplotlib.pyplot as plt
 
-    def _stretch_rgb(rgb: np.ndarray) -> np.ndarray:
+    def _stretch_rgb(rgb):
         rgb = rgb.astype(np.float32, copy=True)
         out = np.zeros_like(rgb)
         for c in range(rgb.shape[2]):
@@ -536,7 +481,7 @@ def plot_spectral_match(
                 out[..., c] = np.clip((ch - lo) / (hi - lo), 0, 1)
         return np.clip(out ** gamma, 0, 1)
 
-    def _read_wl_tags(ds) -> np.ndarray | None:
+    def _read_wl_tags(ds):
         tags = [ds.tags(b) for b in range(1, ds.count + 1)]
         vals = [float(t["wavelength"]) for t in tags if "wavelength" in t]
         return np.array(vals) if len(vals) == ds.count else None
@@ -577,17 +522,14 @@ def plot_spectral_match(
             s2_rgb = np.moveaxis(s2_ds.read(list(range(1, min(3, s2_ds.count) + 1))).astype(np.float32), 0, -1)
         s2_nodata = s2_ds.nodata
 
-        # Synthetic EMIT
         bands_1based = [i + 1 for i in rgb_idxs]
         pred_rgb  = np.moveaxis(syn_ds.read(bands_1based).astype(np.float32), 0, -1)
         pred_nodata = syn_ds.nodata
 
-        # EMIT ground truth
         emit_rgb  = np.moveaxis(emit_ds.read(bands_1based).astype(np.float32), 0, -1)
         emit_nodata = emit_ds.nodata
 
-    # All three panels may be uint16 DN (scaled by 10000) or float32
-    # reflectance.  Auto-detect and normalize consistently.
+    # All three panels may be uint16 DN (scaled by 10000) or float32 reflectance — auto-detect
     for rgb, nd in [(s2_rgb, s2_nodata), (pred_rgb, pred_nodata), (emit_rgb, emit_nodata)]:
         if nd is not None:
             rgb[rgb == nd] = np.nan
@@ -625,14 +567,7 @@ def plot_spectral_match(
         plt.close(fig)
 
 
-def plot_r2_spectrum(
-    stats: dict,
-    *,
-    title: str = "S2 → EMIT spectral matching — R² per band",
-    save_path: str | Path | None = None,
-    show: bool = True,
-) -> None:
-    """R² vs EMIT wavelength plot."""
+def plot_r2_spectrum(stats, *, title="S2 → EMIT spectral matching — R² per band", save_path=None, show=True):
     import matplotlib.pyplot as plt
 
     r2  = np.array(stats["r2_per_band"])
@@ -662,18 +597,7 @@ def plot_r2_spectrum(
         plt.close(fig)
 
 
-def scatter_band(
-    matcher: S2ToEMITRegressor,
-    X_s2: np.ndarray,
-    Y_emit: np.ndarray,
-    band_idx: int = 0,
-    *,
-    sample: int = 20_000,
-    seed: int = 0,
-    save_path: str | Path | None = None,
-    show: bool = True,
-) -> float:
-    """Predicted vs GT scatter for one band. Returns R²."""
+def scatter_band(matcher, X_s2, Y_emit, band_idx=0, *, sample=20_000, seed=0, save_path=None, show=True):
     import matplotlib.pyplot as plt
 
     y_true = Y_emit[:, band_idx].astype(np.float32)
