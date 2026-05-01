@@ -1,8 +1,6 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
-import matplotlib
-matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 
