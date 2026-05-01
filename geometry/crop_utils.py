@@ -1,24 +1,18 @@
-"""Raster trimming and GDAL-based cropping for EMIT–Sentinel-2 alignment."""
-
-from __future__ import annotations
 
 import math
 import subprocess
-from pathlib import Path
 
 import numpy as np
 import rasterio
 from rasterio.transform import xy
 
 
-
 def valid_bbox_in_map_coords(
-    raster_path: str | Path,
-    margin_px: int = 0,
-) -> tuple[float, float, float, float]:
-    """Bbox of valid (non-nodata) pixels in map coordinates."""
+    raster_path,
+    margin_px = 0,
+):
     with rasterio.open(raster_path) as ds:
-        m = ds.dataset_mask()          # shape (H, W): 0 invalid, 255 valid
+        m = ds.dataset_mask()   
         ys, xs = np.where(m > 0)
         if len(xs) == 0:
             raise RuntimeError(
@@ -45,12 +39,10 @@ def valid_bbox_in_map_coords(
     return float(left), float(bottom), float(right), float(top)
 
 
-
 def intersect_bounds(
-    a: tuple[float, float, float, float],
-    b: tuple[float, float, float, float],
-) -> tuple[float, float, float, float]:
-    """Intersection of two (L, B, R, T) extents."""
+    a,
+    b,
+):
     L = max(a[0], b[0])
     B = max(a[1], b[1])
     R = min(a[2], b[2])
@@ -63,13 +55,12 @@ def intersect_bounds(
 
 
 def snap_bounds_to_grid(
-    bounds: tuple[float, float, float, float],
+    bounds,
     *,
-    x0: float,
-    y0: float,
-    grid_m: float = 60.0,
-) -> tuple[float, float, float, float]:
-    """Snap (L, B, R, T) to an anchored regular grid."""
+    x0,
+    y0,
+    grid_m = 60.0,
+):
     L, B, R, T = map(float, bounds)
     g = float(grid_m)
 
@@ -87,15 +78,13 @@ def snap_bounds_to_grid(
     return (L2, B2, R2, T2)
 
 
-
 def gdal_crop_projwin(
-    src: str | Path,
-    dst: str | Path,
-    te: tuple[float, float, float, float],
-    out_format: str | None = None,
-    extra: list[str] | None = None,
-) -> None:
-    """Crop *src* to extent *te* = (L, B, R, T) using gdal_translate."""
+    src,
+    dst,
+    te,
+    out_format = None,
+    extra = None,
+):
     L, B, R, T = te
     cmd = ["gdal_translate"]
     if out_format:

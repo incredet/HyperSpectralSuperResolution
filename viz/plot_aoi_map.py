@@ -1,19 +1,3 @@
-"""
-AOI world map and land-cover distribution — pre- and post-QC versions.
-
-Reads  {DRIVE_ROOT}/figures/aoi_pair_counts.csv     (from ingest_aoi_counts.py)
-       {DRIVE_ROOT}/figures/aoi_postqc_counts.csv   (from ingest_postqc.py)
-Writes {DRIVE_ROOT}/figures/fig_aoi_map_preqc.{pdf,png}
-       {DRIVE_ROOT}/figures/fig_aoi_landcover_preqc.{pdf,png}
-       {DRIVE_ROOT}/figures/fig_aoi_map_postqc.{pdf,png}      (if postqc CSV exists)
-       {DRIVE_ROOT}/figures/fig_aoi_landcover_postqc.{pdf,png} (if postqc CSV exists)
-
-Usage (Colab):
-    !pip -q install cartopy
-    !python viz/plot_aoi_map.py
-"""
-
-from __future__ import annotations
 
 import os
 from pathlib import Path
@@ -50,7 +34,7 @@ plt.rcParams.update({
     "ps.fonttype": 42,
 })
 
-# --- land-cover grouping ----------------------------------------------------
+# land-cover grouping
 GROUP_RULES = [
     ("forest", {
         "tropical_forest", "temperate_forest", "boreal_forest",
@@ -83,7 +67,7 @@ GROUP_COLOR = {
 }
 
 
-def assign_group(lc: str) -> str:
+def assign_group(lc):
     head = (lc or "").split("/")[0].strip()
     for name, members in GROUP_RULES:
         if head in members:
@@ -95,15 +79,15 @@ def assign_group(lc: str) -> str:
     return "other"
 
 
-# --- shared plot functions --------------------------------------------------
+# shared plot functions
 
 def plot_world_map(
-    df: pd.DataFrame,
-    out_path: Path,
-    covered_col: str,
-    no_pair_label: str,
-    summary: str,
-) -> None:
+    df,
+    out_path,
+    covered_col,
+    no_pair_label,
+    summary,
+):
     covered   = df[df[covered_col] > 0]
     uncovered = df[df[covered_col] == 0]
 
@@ -170,11 +154,11 @@ def plot_world_map(
 
 
 def plot_landcover_distribution(
-    df: pd.DataFrame,
-    out_path: Path,
-    covered_col: str,
-    annotation: str,
-) -> None:
+    df,
+    out_path,
+    covered_col,
+    annotation,
+):
     covered = (df[df[covered_col] > 0]
                .groupby("group").size().reindex(GROUP_ORDER).fillna(0).astype(int))
     uncov   = (df[df[covered_col] == 0]
@@ -215,12 +199,12 @@ def plot_landcover_distribution(
     print(f"  saved {out_path.with_suffix('.pdf').name}")
 
 
-# --- main -------------------------------------------------------------------
+# main
 
-def main() -> None:
+def main():
     FIG_DIR.mkdir(parents=True, exist_ok=True)
 
-    # --- pre-QC -------------------------------------------------------------
+    # pre-QC
     pre_csv = FIG_DIR / "aoi_pair_counts.csv"
     df_pre = pd.read_csv(pre_csv)
     df_pre["group"] = df_pre["land_cover"].map(assign_group)
@@ -249,7 +233,7 @@ def main() -> None:
         annotation="coloured: AOIs with ≥1 pair     grey: no pair",
     )
 
-    # --- post-QC ------------------------------------------------------------
+    # post-QC
     post_csv = FIG_DIR / "aoi_postqc_counts.csv"
     if not post_csv.exists():
         print(f"  post-QC CSV not found ({post_csv.name}), skipping post-QC figures")

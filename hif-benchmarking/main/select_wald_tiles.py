@@ -1,29 +1,4 @@
 #!/usr/bin/env python3
-"""
-select_wald_tiles.py — Select tiles for Wald's protocol evaluation.
-
-Reads tiles_clean.csv (QC-filtered by R², reverse R², EMIT cloud fraction)
-and aois.csv, then performs proportional stratified subsampling by land-cover
-group to produce an evaluation set (~400 tiles).
-
-Usage
------
-    python main/select_wald_tiles.py \
-        --tiles-csv /path/to/tiles_clean.csv \
-        --aois-csv /path/to/aois.csv \
-        --drive-root /path/to/drive/data \
-        --max-total 400 \
-        --output wald_tile_list.csv
-
-Output
-------
-    A CSV with columns:
-        scene, aoi_slug, pair_id, tile_idx, r2_mean, land_cover,
-        land_cover_group, emit_b32_path, s2_path
-
-    This CSV can be passed to tif2mat_wald.py via --tile-list.
-"""
-
 import argparse
 import sys
 from pathlib import Path
@@ -134,25 +109,14 @@ LAND_COVER_GROUPS = {
 }
 
 
-def group_land_cover(lc: str) -> str:
-    """Map a fine-grained land_cover label to a broad group."""
+def group_land_cover(lc):
     if pd.isna(lc):
         return "other"
     lc = lc.strip().lower()
     return LAND_COVER_GROUPS.get(lc, "other")
 
 
-def derive_scene_name(row: pd.Series, drive_root: Path) -> tuple:
-    """
-    Reconstruct tile file paths and scene name from r2_all_tiles.csv row.
-
-    The tile naming convention is:
-        {aoi_slug}/{pair_id}/tiles/{pair_id}_tile{idx:03d}_emit_b32.tif
-        {aoi_slug}/{pair_id}/tiles/{pair_id}_tile{idx:03d}_s2.tif
-
-    The scene name must be globally unique across all AOIs, so we construct
-    it as: {aoi_short}_{pair_short}_t{idx:03d}
-    """
+def derive_scene_name(row, drive_root):
     aoi_slug = row["aoi_slug"]
     pair_id  = row["pair_id"]
     tile_idx = int(row["tile_idx"])

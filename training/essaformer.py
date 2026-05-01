@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 
 class ESSAttn(nn.Module):
-    """Polynomial (degree-2) spectral-spatial attention — no softmax."""
+    # Polynomial (degree-2) spectral-spatial attention — no softmax.
 
     def __init__(self, dim):
         super().__init__()

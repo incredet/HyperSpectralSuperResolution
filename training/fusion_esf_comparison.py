@@ -1,5 +1,3 @@
-"""ESF comparison of CNMF vs SFIM fused tiles — histogram + summary table."""
-
 import argparse
 from pathlib import Path
 
@@ -85,7 +83,6 @@ def make_summary_table(merged, cnmf, sfim, out_path):
 
 
 def make_paired_histogram(cnmf, sfim, out_path):
-    """Side-by-side GSDe histograms for both methods."""
     gsd_c = cnmf['gsd_eff_m'].dropna()
     gsd_s = sfim['gsd_eff_m'].dropna()
 

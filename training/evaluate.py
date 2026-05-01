@@ -12,8 +12,7 @@ from tqdm import tqdm
 
 from dataset import build_index, split_aois, read_tif_from_zip, EMIT_SCALE, EMIT_NODATA
 from model import build_model, load_checkpoint
-from viz import (compute_psnr, compute_sam, compute_ergas, compute_all_metrics,
-                 compute_per_band_correlation, compute_per_band_rmse, to_rgb,
+from viz import (compute_all_metrics, compute_per_band_correlation, compute_per_band_rmse,
                  make_main_figure, make_perband_figure, make_zoom_figure)
 
 

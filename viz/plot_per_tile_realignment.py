@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import os
 import warnings
@@ -48,7 +47,7 @@ plt.rcParams.update({
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-def find_pair_dir_drive(aoi_dir: Path) -> Path:
+def find_pair_dir_drive(aoi_dir):
     for p in aoi_dir.iterdir():
         if p.is_dir() and (p / "manifest.csv").exists() or (p / "tiles").is_dir():
             if (p / "manifest.csv").exists() or (p / "tiles").is_dir():
@@ -56,15 +55,14 @@ def find_pair_dir_drive(aoi_dir: Path) -> Path:
     raise FileNotFoundError(f"no pair dir under {aoi_dir}")
 
 
-def find_pair_dir_viz(interm_dir: Path) -> Path:
+def find_pair_dir_viz(interm_dir):
     for p in sorted(interm_dir.iterdir()):
         if p.is_dir() and not p.name.startswith("_"):
             return p
     raise FileNotFoundError(f"no viz pair dir under {interm_dir}")
 
 
-def pct_stretch(arr: np.ndarray, plo: float = 2.0, phi: float = 98.0) -> np.ndarray:
-    """Shared percentile stretch across all channels — preserves colour ratios."""
+def pct_stretch(arr, plo=2.0, phi = 98.0):
     valid = arr[np.isfinite(arr)]
     if not len(valid):
         return np.zeros_like(arr, dtype=np.float32)
@@ -72,8 +70,7 @@ def pct_stretch(arr: np.ndarray, plo: float = 2.0, phi: float = 98.0) -> np.ndar
     return np.clip((arr - lo) / max(hi - lo, 1e-9), 0.0, 1.0).astype(np.float32)
 
 
-def read_emit_tile_rgb(tif_path: Path) -> np.ndarray:
-    """Read an EMIT tile TIF — either 285-band or 32-band — as float32 RGB."""
+def read_emit_tile_rgb(tif_path):
     with rasterio.open(tif_path) as src:
         n = src.count
         if n == 32:
@@ -89,11 +86,10 @@ def read_emit_tile_rgb(tif_path: Path) -> np.ndarray:
     return reshape_as_image(data)
 
 
-def read_s2_tile_rgb(tif_path: Path) -> tuple[np.ndarray, tuple]:
-    """Read an S2 tile TIF as RGB + geographic bounds."""
+def read_s2_tile_rgb(tif_path):
     with rasterio.open(tif_path) as src:
         descs = [str(d or "") for d in (src.descriptions or [])]
-        def _b(code: str) -> int:
+        def _b(code):
             for i, d in enumerate(descs, 1):
                 if d.startswith(code):
                     return i
@@ -105,11 +101,10 @@ def read_s2_tile_rgb(tif_path: Path) -> tuple[np.ndarray, tuple]:
     return reshape_as_image(data), bounds
 
 
-def read_s2_from_scene(scene_tif: Path, bounds) -> np.ndarray:
-    """Crop RGB from a scene-level S2 post-AROSICS TIF at given bounds."""
+def read_s2_from_scene(scene_tif, bounds):
     with rasterio.open(scene_tif) as src:
         descs = [str(d or "") for d in (src.descriptions or [])]
-        def _b(code: str) -> int:
+        def _b(code):
             for i, d in enumerate(descs, 1):
                 if d.startswith(code):
                     return i
@@ -121,7 +116,7 @@ def read_s2_from_scene(scene_tif: Path, bounds) -> np.ndarray:
     return reshape_as_image(data)
 
 
-def clean_axes(ax) -> None:
+def clean_axes(ax):
     ax.set_xticks([])
     ax.set_yticks([])
     for sp in ax.spines.values():
@@ -130,7 +125,7 @@ def clean_axes(ax) -> None:
 
 # ── main ─────────────────────────────────────────────────────────────────────
 
-def main() -> None:
+def main():
     viz_pair = find_pair_dir_viz(INTERM_DIR)
     s2_scene = viz_pair / "s2_post_coreg.tif"
     drv_pair = find_pair_dir_drive(AOI_DIR)

@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 from dataset import PairedZipDataset, build_index, split_aois, worker_init_fn
 from model import build_model
 from losses import build_losses
-from viz import (compute_all_metrics, compute_per_band_correlation,
+from viz import (compute_per_band_correlation,
                  compute_psnr, compute_sam, compute_ergas,
                  make_main_figure, make_perband_figure, make_zoom_figure,
                  select_vis_indices)
@@ -197,7 +197,6 @@ def main():
     print(f'Experiment: {exp_name}')
     print(f'Output:     {out_dir}')
 
-    # --- data ---
     zip_dir = Path(cfg['zip_dir'])
     zip_dir_full = Path(cfg.get('zip_dir_full', cfg['zip_dir']))
 
@@ -239,16 +238,13 @@ def main():
         worker_init_fn=worker_init_fn,
     )
 
-    # --- model ---
     model = build_model(cfg, device)
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
     print(f'Model:      {cfg.get("model_type", "rrdbnet6x")}  ({n_params:.1f}M params)')
     ema = copy.deepcopy(model).eval()
 
-    # --- losses ---
     loss_fns = build_losses(cfg['loss'], device)
 
-    # --- optimizer ---
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg['lr'], betas=tuple(cfg['betas']))
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, cfg['milestones'], cfg['gamma'])
 
@@ -285,7 +281,6 @@ def main():
         resume='allow' if args.resume else None,
     )
 
-    # --- training loop ---
     use_amp = cfg.get('amp', True) and device.type == 'cuda'
     scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
     if args.resume and _scaler_state:

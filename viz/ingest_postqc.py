@@ -1,21 +1,3 @@
-"""
-Produce per-AOI post-QC tile counts from r2_tiles_qc.csv and tiles_clean.csv.
-
-Reads  {DRIVE_ROOT}/r2_tiles_qc.csv     — all tiles with QC flags
-       {DRIVE_ROOT}/tiles_clean.csv      — tiles that passed all QC filters
-       repo aois.csv                     — AOI metadata
-Writes {DRIVE_ROOT}/figures/aoi_postqc_counts.csv
-
-Output columns:
-    name, lat, lon, land_cover,
-    tiles_total, tiles_passed,
-    failed_emit_cloud, failed_r2_reverse, failed_r2_forward
-
-Usage (Colab):
-    !python viz/ingest_postqc.py
-"""
-
-from __future__ import annotations
 
 import os
 import re
@@ -37,12 +19,12 @@ SLUG_RE = re.compile(r"aoi_lat(?P<lat>-?\d+(?:\.\d+)?)_lon(?P<lon>-?\d+(?:\.\d+)
 QC_MIN_R2 = 0.75   # threshold used to produce tiles_clean
 
 
-def parse_slug(slug: str) -> tuple[float, float] | None:
+def parse_slug(slug):
     m = SLUG_RE.search(slug)
     return (float(m["lat"]), float(m["lon"])) if m else None
 
 
-def main() -> None:
+def main():
     FIG_DIR.mkdir(parents=True, exist_ok=True)
 
     all_tiles  = pd.read_csv(DRIVE_ROOT / "r2_tiles_qc.csv")

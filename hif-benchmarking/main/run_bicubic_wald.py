@@ -1,20 +1,4 @@
 #!/usr/bin/env python3
-"""
-run_bicubic_wald.py — Generate bicubic interpolation baseline for Wald's protocol.
-
-Upsamples the degraded HSI (16×16×32) back to GT size (96×96×32) using
-bicubic interpolation (scipy zoom, order=3). This is the simplest possible
-baseline — any fusion method should beat it.
-
-Usage
------
-    python main/run_bicubic_wald.py --dataset EMIT32_WALD --scale 6
-
-Output
-------
-    data/SR/Bicubic/EMIT32_WALD/6/{scene}.mat  (key: 'sri')
-"""
-
 import argparse
 import os
 import sys
@@ -30,7 +14,7 @@ except ImportError:
     sys.exit("ERROR: scipy is required.  pip install scipy")
 
 
-def bicubic_upsample(hsi_lr: np.ndarray, scale: int) -> np.ndarray:
+def bicubic_upsample(hsi_lr, scale):
     h, w, b = hsi_lr.shape
     out = np.empty((h * scale, w * scale, b), dtype=np.float64)
     for i in range(b):

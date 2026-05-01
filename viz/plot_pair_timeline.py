@@ -1,18 +1,3 @@
-"""
-Two-panel pair-timing figure.
-
-Panel A: histogram of pair acquisition dates (midpoint of EMIT and S2),
-         binned by month across the search window.
-Panel B: histogram of signed Δt = s2_dt − emit_dt in hours.
-
-Reads  {DRIVE_ROOT}/figures/pair_dates.csv
-Writes {DRIVE_ROOT}/figures/fig_pair_timeline.{pdf,png}
-
-Usage (Colab):
-    !python viz/plot_pair_timeline.py
-"""
-
-from __future__ import annotations
 
 import os
 from pathlib import Path
@@ -51,7 +36,7 @@ COLOR_BAR = "#4477AA"
 COLOR_EDGE = "white"
 
 
-def plot_date_histogram(ax, df: pd.DataFrame) -> None:
+def plot_date_histogram(ax, df):
     # midpoint of EMIT and S2 represents the pair
     emit = pd.to_datetime(df["emit_dt"], utc=True)
     s2 = pd.to_datetime(df["s2_dt"], utc=True)
@@ -84,7 +69,7 @@ def plot_date_histogram(ax, df: pd.DataFrame) -> None:
     )
 
 
-def plot_delta_histogram(ax, df: pd.DataFrame) -> None:
+def plot_delta_histogram(ax, df):
     delta = df["delta_hours"].to_numpy()
     rng = max(abs(delta.min()), abs(delta.max()))
     lim = np.ceil(rng / 6) * 6  # pad to nearest 6h
@@ -115,7 +100,7 @@ def plot_delta_histogram(ax, df: pd.DataFrame) -> None:
     )
 
 
-def main() -> None:
+def main():
     df = pd.read_csv(CSV_PATH)
 
     fig, axes = plt.subplots(

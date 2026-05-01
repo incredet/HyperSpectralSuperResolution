@@ -1,9 +1,8 @@
-from __future__ import annotations
 
 import hashlib
 import json
 from dataclasses import dataclass, fields
-from datetime import datetime, timezone
+from datetime import timezone
 from pathlib import Path
 from typing import Optional
 

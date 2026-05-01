@@ -1,37 +1,14 @@
-"""
-Spectral Diagnosis for EMIT Tiles (285-band & 32-band)
-=======================================================
-Drop-in notebook cell for diagnosing zero-band and other spectral anomalies
-in the EMIT–S2 super-resolution pipeline.
-
-Run after tiling is complete.  Needs:
-  - tile_dir : Path to directory containing *_emit.tif and *_emit_b32.tif files
-  - wl_nm    : (optional) full 285-band wavelength array; auto-read from tile tags if absent
-
-Usage in notebook:
-    from spectral_diagnosis import run_spectral_diagnosis
-    report = run_spectral_diagnosis("path/to/tiles", wl_nm=wl_nm)
-"""
-
-from __future__ import annotations
 
 import warnings
 from pathlib import Path
-from collections import defaultdict
 
 import numpy as np
 import rasterio
 import matplotlib.pyplot as plt
-from matplotlib.gridspec import GridSpec
-from matplotlib.colors import LogNorm
 
 
-# ╔══════════════════════════════════════════════════════════════════════════╗
-# ║ 1. Data ingestion helpers                                              ║
-# ╚══════════════════════════════════════════════════════════════════════════╝
-
-def _read_tile_meta(path: Path) -> dict:
-    """Read per-band metadata (wavelength, emit_band_index) from GeoTIFF tags."""
+# 1. Data ingestion helpers
+def _read_tile_meta(path):
     with rasterio.open(path) as ds:
         meta = {
             "path": path,
@@ -55,29 +32,18 @@ def _read_tile_meta(path: Path) -> dict:
     return meta
 
 
-def _read_tile_array(path: Path) -> np.ndarray:
-    """Read full tile as float32 (B, H, W)."""
+def _read_tile_array(path):
     with rasterio.open(path) as ds:
         return ds.read().astype(np.float32)
 
 
-def _collect_tiles(tile_dir: Path, suffix: str) -> list[Path]:
-    """Glob for tiles matching a suffix pattern, sorted."""
+def _collect_tiles(tile_dir, suffix):
     tiles = sorted(tile_dir.glob(f"*{suffix}"))
     return tiles
 
 
-# ╔══════════════════════════════════════════════════════════════════════════╗
-# ║ 2. Per-tile band statistics                                            ║
-# ╚══════════════════════════════════════════════════════════════════════════╝
-
-def compute_band_stats(tile_path: Path, nodata_val: float | None = None) -> dict:
-    """Compute per-band statistics for one tile.
-
-    Returns dict with arrays of shape (n_bands,):
-        mean, std, min_val, max_val, zero_frac, nodata_frac,
-        all_zero (bool), all_constant (bool), negative_frac
-    """
+# 2. Per-tile band statistics
+def compute_band_stats(tile_path, nodata_val=None):
     arr = _read_tile_array(tile_path)  # (B, H, W)
     n_bands, h, w = arr.shape
     n_px = h * w
@@ -133,20 +99,12 @@ def compute_band_stats(tile_path: Path, nodata_val: float | None = None) -> dict
     return stats
 
 
-# ╔══════════════════════════════════════════════════════════════════════════╗
-# ║ 3. Aggregate analysis across all tiles                                 ║
-# ╚══════════════════════════════════════════════════════════════════════════╝
-
+# 3. Aggregate analysis across all tiles
 def aggregate_tile_stats(
-    tile_paths: list[Path],
-    nodata_val: float | None = None,
-    max_tiles: int | None = None,
-) -> dict:
-    """Compute and aggregate band stats across many tiles.
-
-    Returns:
-        Dictionary with per-band aggregated metrics and per-tile records.
-    """
+    tile_paths,
+    nodata_val = None,
+    max_tiles = None,
+):
     if max_tiles is not None:
         tile_paths = tile_paths[:max_tiles]
 
@@ -212,23 +170,12 @@ def aggregate_tile_stats(
     }
 
 
-# ╔══════════════════════════════════════════════════════════════════════════╗
-# ║ 4. Cross-check: 285 ↔ 32 band correspondence                         ║
-# ╚══════════════════════════════════════════════════════════════════════════╝
-
+# 4. Cross-check: 285 ↔ 32 band correspondence
 def cross_check_285_vs_32(
-    emit285_path: Path,
-    emit32_path: Path,
-    nodata_u16: int = 65535,
-) -> dict:
-    """Compare a 285-band tile with its 32-band subset.
-
-    Checks:
-    - Do the 32-band indices from tags actually correspond to non-zero
-      bands in the 285-band source?
-    - Is the data identical after subsetting?
-    - Which bands in the 285 are all-zero (potential source contamination)?
-    """
+    emit285_path,
+    emit32_path,
+    nodata_u16 = 65535,
+):
     meta32 = _read_tile_meta(emit32_path)
     arr285 = _read_tile_array(emit285_path)
     arr32 = _read_tile_array(emit32_path)
@@ -300,23 +247,12 @@ def cross_check_285_vs_32(
     return results
 
 
-# ╔══════════════════════════════════════════════════════════════════════════╗
-# ║ 5. Source-level diagnosis: check the raw 285-band ENVI/GeoTIFF         ║
-# ╚══════════════════════════════════════════════════════════════════════════╝
-
+# 5. Source-level diagnosis: check the raw 285-band ENVI/GeoTIFF
 def diagnose_source_raster(
-    emit_full_path: Path | str,
-    nodata_val: float = -9999.0,
-    sample_rows: int = 100,
-) -> dict:
-    """Quick diagnosis of the full-scene EMIT raster (ENVI or GeoTIFF).
-
-    Reads a central strip of *sample_rows* rows to check per-band stats
-    without loading the entire file into memory.
-
-    Returns dict with per-band: mean, std, zero_frac, all_zero flags,
-    and the indices/wavelengths of problematic bands.
-    """
+    emit_full_path,
+    nodata_val = -9999.0,
+    sample_rows = 100,
+):
     with rasterio.open(str(emit_full_path)) as ds:
         n_bands = ds.count
         h, w = ds.height, ds.width
@@ -374,19 +310,14 @@ def diagnose_source_raster(
     return results
 
 
-# ╔══════════════════════════════════════════════════════════════════════════╗
-# ║ 6. Plotting                                                            ║
-# ╚══════════════════════════════════════════════════════════════════════════╝
-
-def _wavelength_axis(wl_list: list[float | None], n_bands: int) -> tuple[np.ndarray, str]:
-    """Build x-axis: wavelength if available, else band index."""
+# 6. Plotting
+def _wavelength_axis(wl_list, n_bands):
     if all(w is not None for w in wl_list):
         return np.array(wl_list), "Wavelength (nm)"
     return np.arange(n_bands), "Band index"
 
 
-def plot_spectral_profiles(agg: dict, title_prefix: str = "", save_path: str | None = None):
-    """Plot 1: Mean spectral profile ± std across all tiles, with zero-band flags."""
+def plot_spectral_profiles(agg, title_prefix="", save_path = None):
     n_bands = agg["n_bands"]
     x, xlabel = _wavelength_axis(agg["wavelengths_nm"], n_bands)
     mean = agg["mean_of_means"]
@@ -439,8 +370,7 @@ def plot_spectral_profiles(agg: dict, title_prefix: str = "", save_path: str | N
     plt.show()
 
 
-def plot_band_heatmap(agg: dict, title_prefix: str = "", save_path: str | None = None):
-    """Plot 2: Heatmap of band means across tiles (tiles × bands)."""
+def plot_band_heatmap(agg, title_prefix="", save_path = None):
     all_means = agg["all_means"]  # (n_tiles, n_bands)
     n_tiles, n_bands = all_means.shape
     wl = agg["wavelengths_nm"]
@@ -493,13 +423,12 @@ def plot_band_heatmap(agg: dict, title_prefix: str = "", save_path: str | None =
 
 
 def plot_zero_band_deep_dive(
-    agg: dict,
-    tile_paths: list[Path],
-    nodata_val: float | None = 65535.0,
-    title_prefix: str = "",
-    save_path: str | None = None,
+    agg,
+    tile_paths,
+    nodata_val = 65535.0,
+    title_prefix = "",
+    save_path = None,
 ):
-    """Plot 3: Deep-dive into the zero bands — spatial patterns & neighboring bands."""
     zero_band_indices = np.where(agg["frac_tiles_all_zero"] > 0)[0]
 
     if len(zero_band_indices) == 0:
@@ -569,8 +498,7 @@ def plot_zero_band_deep_dive(
     plt.show()
 
 
-def plot_cross_check_summary(cc: dict, title_prefix: str = "", save_path: str | None = None):
-    """Plot 4: Cross-check summary — 285 vs 32 band correspondence."""
+def plot_cross_check_summary(cc, title_prefix="", save_path = None):
     z285 = cc["bands_285_all_zero"]
     z32 = cc["bands_32_all_zero"]
     idx_0b = cc["band_indices_0b"]
@@ -634,13 +562,12 @@ def plot_cross_check_summary(cc: dict, title_prefix: str = "", save_path: str | 
 
 
 def plot_atmospheric_context(
-    wl_full_285: np.ndarray | None = None,
-    selected_indices: np.ndarray | None = None,
-    agg_32: dict | None = None,
-    title_prefix: str = "",
-    save_path: str | None = None,
+    wl_full_285 = None,
+    selected_indices = None,
+    agg_32 = None,
+    title_prefix = "",
+    save_path = None,
 ):
-    """Plot 5: Band selection in wavelength context, showing atmospheric windows."""
     if wl_full_285 is None and agg_32 is None:
         print("Need either wl_full_285 or agg_32 to plot atmospheric context.")
         return
@@ -703,17 +630,13 @@ def plot_atmospheric_context(
     plt.show()
 
 
-# ╔══════════════════════════════════════════════════════════════════════════╗
-# ║ 7. Text report                                                        ║
-# ╚══════════════════════════════════════════════════════════════════════════╝
-
+# 7. Text report
 def print_diagnosis_report(
-    agg_285: dict | None,
-    agg_32: dict | None,
-    cc: dict | None = None,
-    source_diag: dict | None = None,
+    agg_285,
+    agg_32,
+    cc = None,
+    source_diag = None,
 ):
-    """Print a structured text report summarizing all findings."""
     sep = "=" * 72
 
     print(f"\n{sep}")
@@ -783,11 +706,11 @@ def print_diagnosis_report(
             b285 = entry["b285_index"]
             wl_val = entry.get("wavelength_nm", "?")
             if cause == "SOURCE_ZERO":
-                print(f"  ✓ b32[{b32}] ← b285[{b285}] ({wl_val} nm): "
-                      f"zero because SOURCE band is zero (DATA issue)")
+                print(f"  [data] b32[{b32}] <- b285[{b285}] ({wl_val} nm): "
+                      f"zero because SOURCE band is zero")
             else:
-                print(f"  ✗ b32[{b32}] ← b285[{b285}] ({wl_val} nm): "
-                      f"PIPELINE BUG — source is NOT zero but tile IS!")
+                print(f"  [bug] b32[{b32}] <- b285[{b285}] ({wl_val} nm): "
+                      f"PIPELINE BUG -- source is NOT zero but tile IS")
 
         if cc["mismatch_bands"]:
             print("\n  Value mismatches:")
@@ -830,40 +753,16 @@ def print_diagnosis_report(
     print(f"{sep}\n")
 
 
-# ╔══════════════════════════════════════════════════════════════════════════╗
-# ║ 8. Main entry point                                                    ║
-# ╚══════════════════════════════════════════════════════════════════════════╝
-
+# 8. Main entry point
 def run_spectral_diagnosis(
-    tile_dir: str | Path,
+    tile_dir,
     *,
-    wl_nm: np.ndarray | None = None,
-    emit_source_path: str | Path | None = None,
-    max_tiles: int | None = None,
-    nodata_u16: float = 65535.0,
-    save_dir: str | Path | None = None,
-) -> dict:
-    """Run the full spectral diagnosis pipeline.
-
-    Parameters
-    ----------
-    tile_dir : path
-        Directory containing *_emit.tif and *_emit_b32.tif tiles.
-    wl_nm : ndarray, optional
-        Full 285-band wavelength array. If None, reads from tile tags.
-    emit_source_path : path, optional
-        Path to the full-scene EMIT ENVI/GeoTIFF for source-level checks.
-    max_tiles : int, optional
-        Limit number of tiles to analyze (for speed).
-    nodata_u16 : float
-        Nodata value for uint16 tiles (default 65535).
-    save_dir : path, optional
-        Directory to save plot PNGs. If None, plots are only shown.
-
-    Returns
-    -------
-    dict with keys: agg_285, agg_32, cross_check, source_diag, verdict
-    """
+    wl_nm = None,
+    emit_source_path = None,
+    max_tiles = None,
+    nodata_u16 = 65535.0,
+    save_dir = None,
+):
     tile_dir = Path(tile_dir)
     if save_dir:
         save_dir = Path(save_dir)

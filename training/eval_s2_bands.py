@@ -1,17 +1,7 @@
 #!/usr/bin/env python3
-"""Compare SR outputs to real Sentinel-2 via SRF convolution.
-
-For each test tile, simulates what S2 would see from the 32-band SR output
-(s2_sim = R @ sr), then compares to the real S2 tile.  Produces a per-tile
-CSV and optional figures.
-
-Usage
------
-    python eval_s2_bands.py \
-        --sr-dir experiments/mamba-cnmf/sr_outputs \
-        --s2-root /path/to/EMIT_S-2_Matches/2026-04-02 \
-        --srf-mat ../hif-benchmarking/data/srf_R.mat
-"""
+# Compare SR outputs to real Sentinel-2 via SRF convolution.
+# For each test tile, simulate what S2 would see from the 32-band SR output
+# (s2_sim = R @ sr), then compare to the real S2 tile.
 
 import argparse
 import csv
@@ -36,7 +26,7 @@ def load_s2(path):
 
 
 def simulate_s2(sr, R):
-    """sr: (32, H, W), R: (10, 32) → (10, H, W)"""
+    # sr: (32, H, W), R: (10, 32) → (10, H, W)
     C, H, W = sr.shape
     return (R @ sr.reshape(C, -1)).reshape(R.shape[0], H, W)
 
@@ -201,8 +191,10 @@ def main():
 
     print(f'\nS2-band eval ({len(rows)} tiles):')
     print(f'  SAM={avg("sam"):.2f}°  RMSE={avg("rmse_mean"):.4f}  corr={avg("corr_mean"):.4f}')
-    print(f'  Per-band RMSE: {" ".join(f"{b}={avg(f"rmse_{b}"):.4f}" for b in S2_BANDS)}')
-    print(f'  Per-band corr: {" ".join(f"{b}={avg(f"corr_{b}"):.4f}" for b in S2_BANDS)}')
+    rmse_str = ' '.join(f'{b}={avg("rmse_" + b):.4f}' for b in S2_BANDS)
+    corr_str = ' '.join(f'{b}={avg("corr_" + b):.4f}' for b in S2_BANDS)
+    print(f'  Per-band RMSE: {rmse_str}')
+    print(f'  Per-band corr: {corr_str}')
     print(f'\nSaved: {csv_path}')
     if not args.no_vis:
         print(f'Figures: {out_dir / "figures"}/')

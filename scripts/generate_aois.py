@@ -1,28 +1,3 @@
-"""
-Generate ~500 diverse AOIs for EMIT/S2 super-resolution training.
-
-Strategy:
-- Define biome regions as (lat_range, lon_range) bounding boxes
-- Sample N points per biome, jittered to avoid clustering
-- Keep existing 160 AOIs, add new ones to fill gaps
-- EMIT orbital constraint: ±51.6° latitude
-- Bias toward drier/clearer climate zones where possible
-
-Land cover targets (500 total):
-  Cropland:             100  (largest terrestrial land use)
-  Forest - Tropical:     60  (oversample — cloud-prone, expect losses)
-  Forest - Temperate:    40
-  Forest - Boreal:       15  (limited by EMIT orbit)
-  Shrubland:             45
-  Grassland/Savanna:     50
-  Bare/Sparse/Desert:    55
-  Urban:                 40
-  Wetland:               30
-  Coastal/Delta:         15
-  Special:               20  (fire scar, mining, deforestation, volcanic)
-  Alpine/Mountain:       30
-"""
-
 import csv
 import random
 from pathlib import Path
@@ -57,9 +32,7 @@ def add(name, lat, lon, desc, lc):
         "land_cover": lc,
     })
 
-# ============================================================================
 # CROPLAND — 100 total (existing ~35, need ~65 more)
-# ============================================================================
 
 # Rainfed grain belts
 add("nebraska_corn", 41.0, -100.5, "Nebraska corn-soybean belt — USA", "cropland")
@@ -121,9 +94,7 @@ add("ivory_coast_cocoa", 6.5, -5.5, "Ivory Coast cocoa zone", "cropland/plantati
 add("ethiopia_coffee", 7.0, 36.0, "Kaffa coffee forest — Ethiopia", "cropland/plantation")
 add("rubber_thailand", 8.0, 99.0, "Southern Thailand rubber — Surat Thani", "cropland/plantation")
 
-# ============================================================================
 # FOREST — TROPICAL (60 total, existing ~8, need ~52)
-# ============================================================================
 
 # Dense tropical lowland
 add("amazon_para", -3.5, -52.0, "Pará terra firme forest — Brazil", "tropical_forest")
@@ -175,9 +146,7 @@ add("india_pichavaram_mang", 11.4, 79.8, "Pichavaram mangrove — Tamil Nadu Ind
 add("madagascar_west_mang", -15.8, 46.3, "Western Madagascar mangrove", "mangrove")
 add("panama_mangrove", 8.0, -78.5, "Gulf of San Miguel mangrove — Panama", "mangrove")
 
-# ============================================================================
 # FOREST — TEMPERATE (40 total, existing ~11, need ~29)
-# ============================================================================
 
 add("ozark_missouri", 37.0, -91.5, "Ozark Plateau oak-hickory — Missouri USA", "temperate_forest")
 add("great_smoky", 35.6, -83.5, "Great Smoky Mountains — Tennessee USA", "temperate_forest")
@@ -204,9 +173,7 @@ add("portugal_cork_oak", 38.5, -8.0, "Cork oak montado — Alentejo Portugal", "
 add("california_redwood", 41.0, -124.0, "Redwood coastal forest — California USA", "temperate_forest")
 add("oregon_cascades", 44.0, -122.0, "Cascade Range conifer — Oregon USA", "temperate_forest")
 
-# ============================================================================
 # FOREST — BOREAL (15 total, existing 2, need 13)
-# ============================================================================
 # EMIT only reaches ~51.6°, so boreal is limited to southern taiga
 
 add("finland_lakeland", 61.5, 28.0, "Finnish Lakeland boreal — but EMIT limit!", "boreal_forest")
@@ -224,9 +191,7 @@ add("sweden_dalarna", 61.0, 14.5, "Dalarna conifer — but EMIT limit!", "boreal
 add("mongolia_khentii", 48.5, 109.5, "Khentii Mountains larch — Mongolia", "boreal_forest")
 add("russia_ural_south", 51.0, 59.5, "Southern Urals boreal-steppe — Russia", "boreal_forest")
 
-# ============================================================================
 # SHRUBLAND (45 total, existing ~6, need ~39)
-# ============================================================================
 
 # Mediterranean shrubland
 add("sardinia_maquis", 39.5, 9.5, "Sardinia maquis interior — Italy", "shrubland/mediterranean")
@@ -261,9 +226,7 @@ add("falkland_shrub", -51.5, -59.0, "Falkland Islands dwarf shrub", "shrubland/s
 add("scotland_heath", 57.0, -5.0, "Scottish Highlands heather — but EMIT?", "shrubland/heathland")
 add("south_africa_renosterveld", -33.5, 19.5, "Renosterveld shrubland — South Africa", "shrubland/heathland")
 
-# ============================================================================
 # GRASSLAND / SAVANNA (50 total, existing ~11, need ~39)
-# ============================================================================
 
 # Tropical savanna
 add("tanzania_selous", -9.0, 37.5, "Selous savanna — Tanzania", "savanna")
@@ -302,9 +265,7 @@ add("peru_puna", -15.0, -70.5, "Puna highland grassland — Peru", "alpine/grass
 add("ethiopia_afroalpine", 9.0, 39.5, "Bale Mountains afroalpine — Ethiopia", "alpine/grassland")
 add("colorado_alpine", 39.0, -106.0, "Colorado alpine tundra — USA", "alpine/grassland")
 
-# ============================================================================
 # BARE / SPARSE / DESERT (55 total, existing ~15, need ~40)
-# ============================================================================
 
 # Sand desert
 add("sahara_mauritania", 22.0, -8.0, "Mauritanian sand sea — Sahara", "desert")
@@ -349,9 +310,7 @@ add("brazil_carajas", -6.0, -50.0, "Carajás iron ore — Pará Brazil", "mining
 add("mongolia_oyu_tolgoi", 43.0, 107.0, "Oyu Tolgoi copper-gold mine — Mongolia", "mining/barren")
 add("south_africa_bushveld", -25.0, 29.5, "Bushveld platinum mines — SA", "mining/barren")
 
-# ============================================================================
 # URBAN (40 total, existing ~17, need ~23)
-# ============================================================================
 
 add("new_york", 40.7, -74.0, "New York City metro — USA", "urban")
 add("london", 51.5, -0.1, "Greater London — UK", "urban/temperate")
@@ -377,9 +336,7 @@ add("johannesburg_east", -26.0, 28.5, "Johannesburg East Rand — SA", "urban/gr
 add("atlanta", 33.7, -84.4, "Atlanta sprawl — Georgia USA", "urban/temperate")
 add("kuala_lumpur", 3.1, 101.7, "Kuala Lumpur metro — Malaysia", "urban/tropical")
 
-# ============================================================================
 # WETLAND (30 total, existing ~8, need ~22)
-# ============================================================================
 
 # Freshwater marsh / swamp
 add("sudd_south", 6.5, 31.0, "Sudd southern marshes — South Sudan", "wetland")
@@ -411,9 +368,7 @@ add("doñana_marsh", 37.0, -6.3, "Doñana marshes — Spain", "wetland/coastal")
 add("banc_darguin", 19.5, -16.5, "Banc d'Arguin tidal flats — Mauritania", "wetland/coastal")
 add("indus_delta", 24.0, 67.5, "Indus Delta tidal wetland — Pakistan", "wetland/coastal")
 
-# ============================================================================
 # COASTAL / DELTA (15 total, existing ~3, need ~12)
-# ============================================================================
 
 add("irrawaddy_delta", 16.0, 95.0, "Irrawaddy Delta — Myanmar", "coastal/delta")
 add("lena_delta", 72.0, 127.0, "Lena Delta — but EMIT limit!", "coastal/delta")
@@ -428,9 +383,7 @@ add("baja_coast", 24.5, -110.0, "Baja California Sur coast — Mexico", "coastal
 add("brazil_northeast_coast", -8.0, -34.8, "Pernambuco coast — Brazil", "coastal")
 add("zanzibar_coast", -6.0, 39.5, "Zanzibar Island coast — Tanzania", "coastal/tropical")
 
-# ============================================================================
 # ALPINE / MOUNTAIN (30 total, existing ~8, need ~22)
-# ============================================================================
 
 add("andes_ecuador", -1.0, -78.5, "Ecuadorian Andes páramo", "alpine/grassland")
 add("andes_peru_south", -14.0, -71.0, "Southern Peru Andes — Cusco", "alpine/mountain")
@@ -455,9 +408,7 @@ add("scandinavian_mountain", 62.0, 14.0, "Scandinavian Mountains — but EMIT li
 add("taiwan_central", 24.0, 121.2, "Taiwan Central Mountain Range", "mountain/tropical")
 add("cameron_highlands", 4.5, 101.4, "Cameron Highlands — Malaysia", "mountain/tropical")
 
-# ============================================================================
 # SPECIAL (20 total)
-# ============================================================================
 
 # Fire scar / burned areas
 add("california_fire_scar", 37.5, -120.0, "Sierra Nevada fire scar — California USA", "fire_scar")
@@ -480,9 +431,7 @@ add("mono_lake", 38.0, -119.0, "Mono Lake tufa — California USA", "barren/alka
 add("dead_sea_south", 31.0, 35.4, "Dead Sea southern evaporation ponds — Israel", "barren/evaporite")
 add("yellowstone_thermal", 44.5, -110.5, "Yellowstone thermal basins — Wyoming USA", "barren/hydrothermal")
 
-# ============================================================================
 # MERGE WITH EXISTING AND WRITE
-# ============================================================================
 
 # Filter out AOIs beyond EMIT coverage (|lat| > 51.6)
 EMIT_LAT_MAX = 51.6

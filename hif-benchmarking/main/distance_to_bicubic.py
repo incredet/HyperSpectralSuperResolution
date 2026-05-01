@@ -1,26 +1,4 @@
 #!/usr/bin/env python3
-"""
-distance_to_bicubic.py — Measure how far each fusion method deviates from
-simple bicubic interpolation of the degraded HSI.
-
-For each scene and method, computes:
-  - RMSE(method, bicubic)   — spatial distance from bicubic
-  - SAM(method, bicubic)    — spectral distance from bicubic
-  - RMSE(method, GT)        — error vs ground truth (for context)
-
-A method that scores well on Wald but has low distance to bicubic is
-essentially "playing it safe" — staying close to the interpolated input
-rather than injecting new spectral-spatial information from the MSI.
-
-Usage
------
-    python main/distance_to_bicubic.py --dataset EMIT32_WALD --scale 6
-
-Output
-------
-    data/eval/{dataset}_{scale}_bicubic_distance.csv
-"""
-
 import argparse
 import os
 import sys

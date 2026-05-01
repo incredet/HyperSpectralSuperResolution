@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import csv
 import json
@@ -19,7 +18,7 @@ OUT_CSV = FIG_DIR / "aoi_pair_counts.csv"
 FOLDER_RE = re.compile(r"^aoi_lat(?P<lat>-?\d+(?:\.\d+)?)_lon(?P<lon>-?\d+(?:\.\d+)?)$")
 
 
-def index_drive_aois(root: Path) -> dict[tuple[float, float], Path]:
+def index_drive_aois(root):
     out: dict[tuple[float, float], Path] = {}
     if not root.exists():
         print(f"!! drive root not found: {root}")
@@ -34,7 +33,7 @@ def index_drive_aois(root: Path) -> dict[tuple[float, float], Path]:
     return out
 
 
-def count_aoi(aoi_dir: Path) -> tuple[int, int]:
+def count_aoi(aoi_dir):
     pairs_completed = 0
     tiles_produced = 0
 
@@ -66,7 +65,7 @@ def count_aoi(aoi_dir: Path) -> tuple[int, int]:
     return pairs_completed, tiles_produced
 
 
-def main() -> None:
+def main():
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     drive_index = index_drive_aois(DRIVE_ROOT)
     print(f"drive root: {DRIVE_ROOT}")

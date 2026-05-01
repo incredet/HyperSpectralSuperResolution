@@ -1,34 +1,4 @@
 #!/usr/bin/env python3
-"""
-produce_sfim.py — End-to-end production pipeline: GeoTIFF → SFIM fusion → GeoTIFF.
-
-Discovers EMIT + S2 tile pairs under the folder structure:
-    {drive-root}/{AOI_dir}/{pair_dir}/tiles/{scene}_emit.tif
-    {drive-root}/{AOI_dir}/{pair_dir}/tiles/{scene}_s2.tif
-
-Output for each pair goes to:
-    {pair_dir}/SFIM/{scene}_SFIM_fused.tif
-    {pair_dir}/SFIM/summary.json          (timing, stats, metadata)
-    {pair_dir}/SFIM/tile_stats.csv         (per-tile stats for reporting)
-
-Usage
------
-    # 32-band EMIT:
-    python main/produce_sfim.py \
-        --drive-root /path/to/data \
-        --bench-root . \
-        --dataset EMIT32 \
-        --scale 6 \
-        --hs-suffix _emit_b32.tif \
-        --ms-suffix _s2.tif
-
-    # Dry run (convert to .mat only, don't run MATLAB):
-    python main/produce_sfim.py ... --dry-run
-
-    # Export only (convert existing .mat results to GeoTIFF):
-    python main/produce_sfim.py ... --export-only
-"""
-
 import argparse
 import csv
 import json
@@ -91,12 +61,9 @@ except ImportError:
     sys.exit("ERROR: scipy is required.  pip install scipy")
 
 
-# ---------------------------------------------------------------------------
 # GeoTIFF I/O
-# ---------------------------------------------------------------------------
 
-def read_tif(path: str) -> tuple:
-    """Return (array_HWB, profile_dict) from a GeoTIFF."""
+def read_tif(path):
     with rasterio.open(path) as src:
         arr = src.read()                      # (B, H, W)
         arr = np.transpose(arr, (1, 2, 0))    # (H, W, B)
@@ -106,9 +73,8 @@ def read_tif(path: str) -> tuple:
     return arr, profile
 
 
-def write_tif(path: str, arr_hwb: np.ndarray, crs_str: str,
-              transform_list: list, dtype: str = "uint16") -> None:
-    """Write a (H,W,Bands) array as a GeoTIFF."""
+def write_tif(path, arr_hwb, crs_str,
+              transform_list, dtype = "uint16"):
     h, w, b = arr_hwb.shape
     transform = Affine(*transform_list)
     profile = {
@@ -129,7 +95,7 @@ def write_tif(path: str, arr_hwb: np.ndarray, crs_str: str,
         dst.write(np.transpose(arr_hwb, (2, 0, 1)))
 
 
-def scene_name_from_tile(filename: str, hs_suffix: str, ms_suffix: str):
+def scene_name_from_tile(filename, hs_suffix, ms_suffix):
     stem = Path(filename).stem
     for suffix in (hs_suffix, ms_suffix):
         tag = Path(suffix).stem
@@ -138,24 +104,17 @@ def scene_name_from_tile(filename: str, hs_suffix: str, ms_suffix: str):
     return None
 
 
-# ---------------------------------------------------------------------------
 # Tile discovery — supports root/AOI/pair/tiles/ structure
-# ---------------------------------------------------------------------------
 
 class TileInfo:
-    """Metadata about a discovered tile pair."""
-    def __init__(self, scene: str, hs_path: Path, ms_path: Path, pair_dir: Path):
+    def __init__(self, scene, hs_path, ms_path, pair_dir):
         self.scene = scene
         self.hs_path = hs_path
         self.ms_path = ms_path
         self.pair_dir = pair_dir
 
 
-def load_r2_allowlist(r2_csv: str, min_r2: float) -> set[tuple[str, str, int]]:
-    """
-    Load r2_all_tiles.csv and return a set of (aoi_slug, pair_id, tile_idx)
-    tuples that pass the R² threshold.
-    """
+def load_r2_allowlist(r2_csv, min_r2):
     import csv
     allowed = set()
     with open(r2_csv) as f:
@@ -166,17 +125,9 @@ def load_r2_allowlist(r2_csv: str, min_r2: float) -> set[tuple[str, str, int]]:
     return allowed
 
 
-def tiles_from_r2_csv(r2_csv: str, drive_root: Path, hs_suffix: str,
-                      ms_suffix: str, min_r2: float = 0.0,
-                      verify_exists: bool = True) -> list[TileInfo]:
-    """
-    Build tile list directly from r2_all_tiles.csv, avoiding glob on Drive.
-
-    Constructs paths using the naming convention:
-        {drive_root}/{aoi_slug}/{pair_id}/tiles/{pair_id}_tile{idx:03d}{suffix}
-
-    Returns only tiles with R² >= min_r2 (and optionally verified to exist).
-    """
+def tiles_from_r2_csv(r2_csv, drive_root, hs_suffix,
+                      ms_suffix, min_r2 = 0.0,
+                      verify_exists = True):
     import csv
 
     tiles = []
@@ -219,20 +170,15 @@ def tiles_from_r2_csv(r2_csv: str, drive_root: Path, hs_suffix: str,
     return tiles
 
 
-def _parse_tile_idx(scene: str) -> int | None:
-    """Extract tile index from a scene name like '20240630T074436_T37MCS_20240701_tile026'."""
+def _parse_tile_idx(scene):
     import re
     m = re.search(r'tile(\d+)$', scene)
     return int(m.group(1)) if m else None
 
 
-def discover_tiles(drive_root: Path, hs_suffix: str, ms_suffix: str,
-                   aoi_filter: list = None, pair_filter: list = None,
-                   r2_allowlist: set = None) -> list[TileInfo]:
-    """
-    Find HS/MS tile pairs using the fixed structure:
-        root / AOI_dir / pair_dir / tiles / {scene}{hs_suffix|ms_suffix}
-    """
+def discover_tiles(drive_root, hs_suffix, ms_suffix,
+                   aoi_filter = None, pair_filter = None,
+                   r2_allowlist = None):
     hs_tag = Path(hs_suffix).stem
     ms_tag = Path(ms_suffix).stem
 
@@ -294,12 +240,9 @@ def discover_tiles(drive_root: Path, hs_suffix: str, ms_suffix: str,
     return [TileInfo(s, hs_tiles[s], ms_tiles[s], scene_pair[s]) for s in matched]
 
 
-# ---------------------------------------------------------------------------
 # Step 1: tif → mat  (reuses same .mat files as GLP — no duplication)
-# ---------------------------------------------------------------------------
 
-def tif_to_mat(tiles: list[TileInfo], dataset: str, scale: int, bench_root: Path):
-    """Convert GeoTIFF pairs to .mat files for the benchmark."""
+def tif_to_mat(tiles, dataset, scale, bench_root):
     hs_dir   = bench_root / "data" / "HS" / dataset / str(scale)
     ms_dir   = bench_root / "data" / "MS" / dataset
     meta_dir = bench_root / "data" / "meta" / dataset
@@ -393,13 +336,10 @@ def tif_to_mat(tiles: list[TileInfo], dataset: str, scale: int, bench_root: Path
     print(f"  Converted: {converted}, Already existed: {skipped}")
 
 
-# ---------------------------------------------------------------------------
 # Step 2: run SFIM via MATLAB batch
-# ---------------------------------------------------------------------------
 
-def run_sfim_batch(dataset: str, scale: int, bench_root: Path, workers: int = 1,
-                   output_folder: str = "SFIM", min_r2: float = None):
-    """Generate and run MATLAB batch script(s) for SFIM."""
+def run_sfim_batch(dataset, scale, bench_root, workers=1,
+                   output_folder = "SFIM", min_r2 = None):
     abs_root = str(bench_root.resolve())
     hs_dir = bench_root / "data" / "HS" / dataset / str(scale)
     sr_dir = bench_root / "data" / "SR" / output_folder / dataset / str(scale)
@@ -478,7 +418,6 @@ def run_sfim_batch(dataset: str, scale: int, bench_root: Path, workers: int = 1,
         raise RuntimeError("Set MATLAB path for your platform")
 
     def _monitor_progress(sr_dir, pending, desc="SFIM fusion"):
-        """Poll output directory for completed .mat files and update a progress bar."""
         done_before = {s for s in pending if (sr_dir / f"{s}.mat").exists()}
         with tqdm(total=len(pending), initial=len(done_before), desc=desc,
                   unit="tile",
@@ -518,16 +457,10 @@ def run_sfim_batch(dataset: str, scale: int, bench_root: Path, workers: int = 1,
     print(f"\n  SFIM complete: {len(pending)} scenes in {elapsed:.0f}s ({elapsed/len(pending):.1f}s avg)")
 
 
-# ---------------------------------------------------------------------------
 # Step 3: mat → tif, routed to pair_dir/SFIM/ with reporting
-# ---------------------------------------------------------------------------
 
-def mat_to_tif_with_reports(dataset: str, scale: int, bench_root: Path,
-                            output_folder: str = "SFIM"):
-    """
-    Convert fused .mat outputs to GeoTIFFs in each pair_dir/{output_folder}/,
-    and generate per-pair reporting files.
-    """
+def mat_to_tif_with_reports(dataset, scale, bench_root,
+                            output_folder = "SFIM"):
     meta_dir = bench_root / "data" / "meta" / dataset
     sr_dir = bench_root / "data" / "SR" / output_folder / dataset / str(scale)
     times_csv = sr_dir / "times.csv"
@@ -730,25 +663,18 @@ def mat_to_tif_with_reports(dataset: str, scale: int, bench_root: Path,
     print(f"\n  Total exported: {total_exported} GeoTIFFs")
 
 
-# ---------------------------------------------------------------------------
 # Batch helpers
-# ---------------------------------------------------------------------------
 
-def is_tile_exported(tile: TileInfo, output_folder: str) -> bool:
-    """Check if SFIM GeoTIFF already exists on Drive for this tile."""
+def is_tile_exported(tile, output_folder):
     sfim_dir = tile.pair_dir / output_folder
     out_path = sfim_dir / f"{tile.scene}_SFIM_fused.tif"
     return out_path.exists()
 
 
-def cleanup_mat_files(scenes: list[str], dataset: str, scale: int,
-                      bench_root: Path, output_folder: str,
-                      keep_meta: bool = True):
-    """
-    Delete local .mat files for processed scenes to free disk space.
-    Keeps meta JSONs by default (they're tiny and useful for reporting).
-    """
-    hs_dir   = bench_root / "data" / "HS" / dataset / str(scale)
+def cleanup_mat_files(scenes, dataset, scale,
+                      bench_root, output_folder,
+                      keep_meta = True):
+    hs_dir=bench_root / "data" / "HS" / dataset / str(scale)
     ms_dir   = bench_root / "data" / "MS" / dataset
     sr_dir   = bench_root / "data" / "SR" / output_folder / dataset / str(scale)
 
@@ -766,12 +692,8 @@ def cleanup_mat_files(scenes: list[str], dataset: str, scale: int,
     print(f"  Cleanup: removed {removed} .mat files, freed {freed_mb:.0f} MB")
 
 
-def export_batch_scenes(scenes: list[str], dataset: str, scale: int,
-                        bench_root: Path, output_folder: str) -> list[str]:
-    """
-    Export a specific set of scenes from .mat → GeoTIFF.
-    Returns list of successfully exported scene names.
-    """
+def export_batch_scenes(scenes, dataset, scale,
+                        bench_root, output_folder):
     meta_dir = bench_root / "data" / "meta" / dataset
     sr_dir = bench_root / "data" / "SR" / output_folder / dataset / str(scale)
     times_csv = sr_dir / "times.csv"
@@ -842,9 +764,7 @@ def export_batch_scenes(scenes: list[str], dataset: str, scale: int,
     return exported
 
 
-# ---------------------------------------------------------------------------
 # Main
-# ---------------------------------------------------------------------------
 
 def main():
     ap = argparse.ArgumentParser(
@@ -909,7 +829,7 @@ def main():
     print(f"Batch size: {args.batch_size if args.batch_size > 0 else 'disabled (all at once)'}")
     print()
 
-    # --- Export-only mode: use the old non-batched export ---
+    # Export-only mode: use the old non-batched export
     if args.export_only:
         print(f"Export-only: converting existing .mat → GeoTIFF...")
         os.chdir(str(bench_root))
@@ -918,7 +838,7 @@ def main():
         print("\nDone.")
         return
 
-    # --- Step 1: Discover tiles ---
+    # Step 1: Discover tiles
     tic_disc = time.time()
     if args.r2_csv:
         print(f"Step 1: Building tile list from R² CSV...")
@@ -936,7 +856,7 @@ def main():
     print(f"  → {len(all_tiles)} tile pair(s) across {n_pairs} pair(s) "
           f"in {time.time() - tic_disc:.1f}s")
 
-    # --- Step 2: Filter out already-exported tiles (resume support) ---
+    # Step 2: Filter out already-exported tiles (resume support)
     pending = [t for t in all_tiles
                if not is_tile_exported(t, args.output_folder)]
     already_done = len(all_tiles) - len(pending)
@@ -954,7 +874,7 @@ def main():
               f"in {math.ceil(len(pending) / max(args.batch_size, len(pending)))} batch(es).")
         return
 
-    # --- Step 3: Process in batches ---
+    # Step 3: Process in batches
     batch_size = args.batch_size if args.batch_size > 0 else len(pending)
     n_batches = math.ceil(len(pending) / batch_size)
 

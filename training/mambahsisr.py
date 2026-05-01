@@ -1,21 +1,9 @@
-# MambaHSISR — Mamba Hyperspectral Image Super-Resolution (TGRS 2025)
-# Ported from https://gitee.com/xu_yinghao/MambaHSISR
-# Adapted for 6× scale, device-agnostic, standalone (no BasicSR).
-#
-# Requires: mamba-ssm, einops, timm
-#   pip install mamba-ssm causal-conv1d einops timm
-#
-# SS2D spectral block assumes spatial_dim = img_size² (default 16²=256 for
-# our 16×16 LR tiles). Change img_size if your LR spatial size differs.
-
 import math
 from functools import partial
-from typing import Callable
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.nn.init as init
 import torch.utils.checkpoint as checkpoint
 
 try:
@@ -23,13 +11,11 @@ try:
 except ImportError:
     selective_scan_fn = None
 
-from einops import rearrange, repeat
+from einops import repeat
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 
 NEG_INF = -1000000
 
-
-# ---------- helper modules ----------
 
 class _AGCA(nn.Module):
 
@@ -122,8 +108,6 @@ class _MultiScaleFeatureExtraction(nn.Module):
                 + self.bn5(self.relu(self.conv5(x))))
 
 
-# ---------- Upsample (with 6× support) ----------
-
 class _Upsample(nn.Sequential):
 
     def __init__(self, scale, num_feat):
@@ -144,8 +128,6 @@ class _Upsample(nn.Sequential):
             raise ValueError(f'scale {scale} not supported (use 2^n, 3, or 6)')
         super().__init__(*m)
 
-
-# ---------- Patch embed / unembed ----------
 
 class _PatchEmbed(nn.Module):
 
@@ -177,8 +159,6 @@ class _PatchUnEmbed(nn.Module):
     def forward(self, x, x_size):
         return x.transpose(1, 2).view(x.shape[0], self.embed_dim, *x_size)
 
-
-# ---------- Selective scan (Mamba) blocks ----------
 
 def _ss2d_init_dt(dt_rank, d_inner, dt_scale=1.0, dt_init="random",
                   dt_min=0.001, dt_max=0.1, dt_init_floor=1e-4, **kw):
@@ -223,7 +203,6 @@ def _ss2d_d_init(d_inner, copies=1, merge=True):
 
 
 class _SS2D_spatial(nn.Module):
-    """Spatial selective scan — scans over H×W tokens, d_inner channels."""
 
     def __init__(self, d_model, d_state=16, d_conv=3, expand=2.,
                  dt_rank="auto", dt_min=0.001, dt_max=0.1, dt_init="random",
@@ -309,11 +288,6 @@ class _SS2D_spatial(nn.Module):
 
 
 class _SS2D_spectral(nn.Module):
-    """Spectral selective scan — scans over channels, spatial positions as features.
-
-    spatial_dim must equal the number of spatial positions (H*W) of the LR input.
-    For 16×16 LR tiles, spatial_dim=256.
-    """
 
     def __init__(self, d_model, spatial_dim=256, d_state=16, d_conv=3, expand=2.,
                  dt_rank="auto", dt_min=0.001, dt_max=0.1, dt_init="random",
@@ -399,8 +373,6 @@ class _SS2D_spectral(nn.Module):
         return self.dropout(out) if self.dropout else out
 
 
-# ---------- VSS blocks ----------
-
 class _VSSBlock_spa(nn.Module):
 
     def __init__(self, hidden_dim, drop_path=0.,
@@ -455,8 +427,6 @@ class _VSSBlock_spe(nn.Module):
         return x.view(B, -1, C)
 
 
-# ---------- Composite layers ----------
-
 class _BasicLayer(nn.Module):
 
     def __init__(self, dim, input_resolution, depth, d_state=16, mlp_ratio=2.,
@@ -504,8 +474,6 @@ class _ResidualGroup(nn.Module):
         return self.patch_embed(self.conv(
             self.patch_unembed(self.residual_group(x, x_size), x_size))) + x
 
-
-# ---------- Main model ----------
 
 class MambaHSISR(nn.Module):
 

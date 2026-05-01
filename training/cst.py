@@ -2,11 +2,9 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 
-from timm.models.layers import DropPath, trunc_normal_
+from timm.models.layers import DropPath
 from einops import rearrange
-from einops.layers.torch import Rearrange
 
 
 def default_conv(in_channels, out_channels, kernel_size, stride=1,
@@ -91,10 +89,6 @@ class ResAttentionBlock(nn.Module):
         return self.body(x).mul(self.res_scale) + x
 
 
-# ---------------------------------------------------------------------------
-# window utilities (from csa.py)
-# ---------------------------------------------------------------------------
-
 def img2windows(img, H_sp, W_sp):
     B, C, H, W = img.shape
     img_reshape = img.view(B, C, H // H_sp, H_sp, W // W_sp, W_sp)
@@ -107,10 +101,6 @@ def windows2img(img_splits_hw, H_sp, W_sp, H, W):
     img = img_splits_hw.view(B, H // H_sp, W // W_sp, H_sp, W_sp, -1)
     return img.permute(0, 1, 3, 2, 4, 5).contiguous().view(B, H, W, -1)
 
-
-# ---------------------------------------------------------------------------
-# DynamicPosBias (from csa.py)
-# ---------------------------------------------------------------------------
 
 class DynamicPosBias(nn.Module):
     def __init__(self, dim, num_heads, residual=False):
@@ -137,10 +127,6 @@ class DynamicPosBias(nn.Module):
             return self.pos3(pos)
         return self.pos3(self.pos2(self.pos1(self.pos_proj(biases))))
 
-
-# ---------------------------------------------------------------------------
-# Attention_regular — rectangle window self-attention (from csa.py)
-# ---------------------------------------------------------------------------
 
 class Attention_regular(nn.Module):
     def __init__(self, dim, resolution, idx, split_size=[2, 4],
@@ -241,10 +227,6 @@ class Attention_regular(nn.Module):
         x = (attn @ v).transpose(1, 2).reshape(-1, self.H_sp * self.W_sp, C)
         return windows2img(x, self.H_sp, self.W_sp, H, W)
 
-
-# ---------------------------------------------------------------------------
-# CSA — Cross-Scope spatial Attention (from csa.py)
-# ---------------------------------------------------------------------------
 
 class CSA(nn.Module):
     def __init__(self, dim, input_resolution, num_heads,
@@ -378,10 +360,6 @@ class CSA(nn.Module):
         return x + attened_x
 
 
-# ---------------------------------------------------------------------------
-# BSConvU — blueprint separable convolution
-# ---------------------------------------------------------------------------
-
 class BSConvU(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1,
                  padding=1, dilation=1, bias=True, padding_mode='zeros'):
@@ -393,10 +371,6 @@ class BSConvU(nn.Module):
     def forward(self, x):
         return self.dw(self.pw(x))
 
-
-# ---------------------------------------------------------------------------
-# CSE — global spectral attention
-# ---------------------------------------------------------------------------
 
 class CSE(nn.Module):
     def __init__(self, dim, num_heads, bias, k=0.5, sr_ratio=2):
@@ -431,10 +405,6 @@ class CSE(nn.Module):
         return self.project_out(out)
 
 
-# ---------------------------------------------------------------------------
-# FeedForward
-# ---------------------------------------------------------------------------
-
 class FeedForward(nn.Module):
     def __init__(self, dim, ffn_expansion_factor=2.66, bias=False):
         super().__init__()
@@ -446,10 +416,6 @@ class FeedForward(nn.Module):
         x1, x2 = self.bsconv(x).chunk(2, dim=1)
         return self.project_out(F.gelu(x1) * x2)
 
-
-# ---------------------------------------------------------------------------
-# CSMA — Cross-Scope Modulated Attention block
-# ---------------------------------------------------------------------------
 
 class CSMA(nn.Module):
     def __init__(self, dim, input_resolution=[32, 32], num_heads=6,
@@ -490,10 +456,6 @@ class CSMA(nn.Module):
         return x.transpose(1, 2).view(B, C, H, W)
 
 
-# ---------------------------------------------------------------------------
-# Cstage — one transformer stage
-# ---------------------------------------------------------------------------
-
 class Cstage(nn.Module):
     def __init__(self, dim=90, split_size=(2, 16), depth=6, num_head=6,
                  mlp_ratio=2, qkv_bias=True, qk_scale=None,
@@ -519,8 +481,6 @@ class Cstage(nn.Module):
         return x + self.conv(x1) + self.layers2(x)
 
 class CST(nn.Module):
-    """Cross-Scope Spatial-Spectral Transformer for Hyperspectral Image SR.
-    """
 
     def __init__(self, inp_channels=32, out_channels=32, dim=90,
                  depths=(6, 6, 6, 6, 6, 6), num_heads=(6, 6, 6, 6, 6, 6),
@@ -557,10 +517,6 @@ class CST(nn.Module):
         x = x + self.skip_conv(lms)
         return self.tail(x)
 
-
-# ---------------------------------------------------------------------------
-# quick sanity check
-# ---------------------------------------------------------------------------
 if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     model = CST(inp_channels=32, out_channels=32, dim=90, scale=6).to(device)

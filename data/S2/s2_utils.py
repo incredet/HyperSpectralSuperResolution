@@ -1,6 +1,6 @@
 import rasterio
 
-def s2_bandmap_from_template(s2_template_tif: str) -> dict[str, int]:
+def s2_bandmap_from_template(s2_template_tif):
     with rasterio.open(s2_template_tif) as src:
         descs = src.descriptions or ()
     if not descs or all(d is None for d in descs):

@@ -1,15 +1,9 @@
-"""DEM utilities for terrain parallax correction of EMIT orthorectification."""
-
 import math
-import os
-import shlex
 import subprocess
 from pathlib import Path
 
 import numpy as np
 import rasterio
-from rasterio.transform import Affine
-
 
 
 _COP30_BASE = (
@@ -17,23 +11,18 @@ _COP30_BASE = (
 )
 
 
-
-
-
-def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
-    """Run subprocess and return completed process."""
+def _run(cmd, check=True):
     return subprocess.run(
         cmd, text=True, capture_output=True, check=check,
     )
 
 
 def download_copernicus_dem(
-    bounds_wgs84: tuple[float, float, float, float],
-    cache_dir: str | Path = "/tmp/dem_cache",
+    bounds_wgs84,
+    cache_dir = "/tmp/dem_cache",
     *,
-    verbose: bool = True,
-) -> dict:
-    """Download Copernicus GLO-30 DEM tiles; return merged VRT or GeoTIFF path."""
+    verbose = True,
+):
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -106,17 +95,15 @@ def download_copernicus_dem(
     }
 
 
-
 def resample_dem_to_emit_grid(
-    dem_path: str,
-    reference_envi_path: str,
-    out_path: str | Path,
+    dem_path,
+    reference_envi_path,
+    out_path,
     *,
-    resampling: str = "bilinear",
-    overwrite: bool = True,
-    verbose: bool = True,
-) -> str:
-    """Resample DEM to match EMIT ortho grid bounds, size, and CRS."""
+    resampling = "bilinear",
+    overwrite = True,
+    verbose = True,
+):
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -148,9 +135,7 @@ def resample_dem_to_emit_grid(
     return str(out_path)
 
 
-
-def _ensure_proj_geoid_grid(verbose: bool = True) -> None:
-    """Download EGM2008 geoid grid if not available (works in Colab)."""
+def _ensure_proj_geoid_grid(verbose=True):
     import pyproj
 
     try:
@@ -194,13 +179,12 @@ def _ensure_proj_geoid_grid(verbose: bool = True) -> None:
 
 
 def geoid_undulation_grid(
-    transform: Affine,
-    height: int,
-    width: int,
+    transform,
+    height,
+    width,
     *,
-    verbose: bool = True,
-) -> np.ndarray:
-    """EGM2008 geoid undulation N for each pixel (orthometric→ellipsoidal)."""
+    verbose = True,
+):
     from pyproj import Transformer
 
     _ensure_proj_geoid_grid(verbose=verbose)
@@ -232,16 +216,14 @@ def geoid_undulation_grid(
     return N.astype(np.float32)
 
 
-
 def sample_dem_at_points(
-    dem_path: str,
-    lons: np.ndarray,
-    lats: np.ndarray,
+    dem_path,
+    lons,
+    lats,
     *,
-    apply_geoid: bool = False,
-    verbose: bool = True,
-) -> np.ndarray:
-    """Sample DEM elevation at (lon, lat) points using bilinear interpolation."""
+    apply_geoid = False,
+    verbose = True,
+):
     from scipy.ndimage import map_coordinates
 
     shape = lons.shape
@@ -295,14 +277,12 @@ def sample_dem_at_points(
     return out
 
 
-
 def load_dem_array(
-    dem_path: str,
+    dem_path,
     *,
-    apply_geoid: bool = False,
-    verbose: bool = True,
-) -> tuple[np.ndarray, dict]:
-    """Load DEM as float32 array (nodata→NaN); optionally apply geoid undulation."""
+    apply_geoid = False,
+    verbose = True,
+):
     with rasterio.open(dem_path) as ds:
         arr = ds.read(1).astype(np.float32)
         nd = ds.nodata

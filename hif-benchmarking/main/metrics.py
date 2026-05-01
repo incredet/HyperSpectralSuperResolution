@@ -17,7 +17,6 @@ SR_PATH = f'data/paper_SR'
 
 
 def ergas(GT,P,r=4,ws=8):
-    ''' sewar.full_ref.ergas but survives NaNs '''
     GT,P = _initial_check(GT,P)
 
     rmse_map = None
@@ -40,7 +39,6 @@ def ergas(GT,P,r=4,ws=8):
 
 
 def rase(GT,P,ws=8):
-    ''' sewar.full_ref.rase but survives NaNs '''
 
     GT,P = _initial_check(GT,P)
 

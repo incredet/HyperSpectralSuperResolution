@@ -1,43 +1,4 @@
 #!/usr/bin/env python3
-"""
-produce_glp.py — End-to-end production pipeline: GeoTIFF → GLP fusion → GeoTIFF.
-
-Discovers EMIT + S2 tile pairs under the folder structure:
-    {drive-root}/{AOI_dir}/{pair_dir}/tiles/{scene}_emit.tif
-    {drive-root}/{AOI_dir}/{pair_dir}/tiles/{scene}_s2.tif
-
-Output for each pair goes to:
-    {pair_dir}/GLP/{scene}_GLP_fused.tif
-    {pair_dir}/GLP/summary.json          (timing, stats, metadata)
-    {pair_dir}/GLP/tile_stats.csv         (per-tile stats for reporting)
-
-Usage
------
-    # 285-band EMIT:
-    python main/produce_glp.py \
-        --drive-root /path/to/data \
-        --bench-root . \
-        --dataset EMIT285 \
-        --scale 6 \
-        --hs-suffix _emit.tif \
-        --ms-suffix _s2.tif
-
-    # 32-band EMIT:
-    python main/produce_glp.py \
-        --drive-root /path/to/data \
-        --bench-root . \
-        --dataset EMIT32 \
-        --scale 6 \
-        --hs-suffix _emit_b32.tif \
-        --ms-suffix _s2.tif
-
-    # Dry run (convert to .mat only, don't run MATLAB):
-    python main/produce_glp.py ... --dry-run
-
-    # Export only (convert existing .mat results to GeoTIFF):
-    python main/produce_glp.py ... --export-only
-"""
-
 import argparse
 import csv
 import json
@@ -100,12 +61,9 @@ except ImportError:
     sys.exit("ERROR: scipy is required.  pip install scipy")
 
 
-# ---------------------------------------------------------------------------
 # GeoTIFF I/O
-# ---------------------------------------------------------------------------
 
-def read_tif(path: str) -> tuple:
-    """Return (array_HWB, profile_dict) from a GeoTIFF."""
+def read_tif(path):
     with rasterio.open(path) as src:
         arr = src.read()                      # (B, H, W)
         arr = np.transpose(arr, (1, 2, 0))    # (H, W, B)
@@ -115,9 +73,8 @@ def read_tif(path: str) -> tuple:
     return arr, profile
 
 
-def write_tif(path: str, arr_hwb: np.ndarray, crs_str: str,
-              transform_list: list, dtype: str = "uint16") -> None:
-    """Write a (H,W,Bands) array as a GeoTIFF."""
+def write_tif(path, arr_hwb, crs_str,
+              transform_list, dtype = "uint16"):
     h, w, b = arr_hwb.shape
     transform = Affine(*transform_list)
     profile = {
@@ -138,7 +95,7 @@ def write_tif(path: str, arr_hwb: np.ndarray, crs_str: str,
         dst.write(np.transpose(arr_hwb, (2, 0, 1)))
 
 
-def scene_name_from_tile(filename: str, hs_suffix: str, ms_suffix: str):
+def scene_name_from_tile(filename, hs_suffix, ms_suffix):
     stem = Path(filename).stem
     for suffix in (hs_suffix, ms_suffix):
         tag = Path(suffix).stem
@@ -147,28 +104,18 @@ def scene_name_from_tile(filename: str, hs_suffix: str, ms_suffix: str):
     return None
 
 
-# ---------------------------------------------------------------------------
 # Tile discovery — supports root/AOI/pair/tiles/ structure
-# ---------------------------------------------------------------------------
 
 class TileInfo:
-    """Metadata about a discovered tile pair."""
-    def __init__(self, scene: str, hs_path: Path, ms_path: Path, pair_dir: Path):
+    def __init__(self, scene, hs_path, ms_path, pair_dir):
         self.scene = scene
         self.hs_path = hs_path
         self.ms_path = ms_path
         self.pair_dir = pair_dir   # the pair_dir this tile belongs to
 
 
-def discover_tiles(drive_root: Path, hs_suffix: str, ms_suffix: str,
-                   aoi_filter: list = None, pair_filter: list = None) -> list[TileInfo]:
-    """
-    Find HS/MS tile pairs using the fixed structure:
-        root / AOI_dir / pair_dir / tiles / {scene}{hs_suffix|ms_suffix}
-
-    Uses glob for fast matching instead of walking every file.
-    Prints each AOI/pair being scanned so the user sees what's happening.
-    """
+def discover_tiles(drive_root, hs_suffix, ms_suffix,
+                   aoi_filter = None, pair_filter = None):
     hs_tag = Path(hs_suffix).stem   # e.g. "_emit" from "_emit.tif"
     ms_tag = Path(ms_suffix).stem   # e.g. "_s2"   from "_s2.tif"
 
@@ -220,12 +167,9 @@ def discover_tiles(drive_root: Path, hs_suffix: str, ms_suffix: str,
     return [TileInfo(s, hs_tiles[s], ms_tiles[s], scene_pair[s]) for s in matched]
 
 
-# ---------------------------------------------------------------------------
 # Step 1: tif → mat
-# ---------------------------------------------------------------------------
 
-def tif_to_mat(tiles: list[TileInfo], dataset: str, scale: int, bench_root: Path):
-    """Convert GeoTIFF pairs to .mat files for the benchmark."""
+def tif_to_mat(tiles, dataset, scale, bench_root):
     hs_dir   = bench_root / "data" / "HS" / dataset / str(scale)
     ms_dir   = bench_root / "data" / "MS" / dataset
     meta_dir = bench_root / "data" / "meta" / dataset
@@ -295,13 +239,10 @@ def tif_to_mat(tiles: list[TileInfo], dataset: str, scale: int, bench_root: Path
     print(f"  Converted: {converted}, Already existed: {skipped}")
 
 
-# ---------------------------------------------------------------------------
 # Step 2: run GLP via MATLAB batch
-# ---------------------------------------------------------------------------
 
-def run_glp_batch(dataset: str, scale: int, bench_root: Path, workers: int = 1,
-                  output_folder: str = "GLP"):
-    """Generate and run MATLAB batch script(s) for GLP."""
+def run_glp_batch(dataset, scale, bench_root, workers=1,
+                  output_folder = "GLP"):
     abs_root = str(bench_root.resolve())
     hs_dir = bench_root / "data" / "HS" / dataset / str(scale)
     sr_dir = bench_root / "data" / "SR" / output_folder / dataset / str(scale)
@@ -376,7 +317,6 @@ def run_glp_batch(dataset: str, scale: int, bench_root: Path, workers: int = 1,
         raise RuntimeError("Set MATLAB path for your platform")
 
     def _monitor_progress(sr_dir, pending, desc="GLP fusion"):
-        """Poll output directory for completed .mat files and update a progress bar."""
         done_before = {s for s in pending if (sr_dir / f"{s}.mat").exists()}
         with tqdm(total=len(pending), initial=len(done_before), desc=desc,
                   unit="tile",
@@ -416,16 +356,10 @@ def run_glp_batch(dataset: str, scale: int, bench_root: Path, workers: int = 1,
     print(f"\n  GLP complete: {len(pending)} scenes in {elapsed:.0f}s ({elapsed/len(pending):.1f}s avg)")
 
 
-# ---------------------------------------------------------------------------
 # Step 3: mat → tif, routed to pair_dir/GLP/ with reporting
-# ---------------------------------------------------------------------------
 
-def mat_to_tif_with_reports(dataset: str, scale: int, bench_root: Path,
-                            output_folder: str = "GLP"):
-    """
-    Convert fused .mat outputs to GeoTIFFs in each pair_dir/{output_folder}/,
-    and generate per-pair reporting files.
-    """
+def mat_to_tif_with_reports(dataset, scale, bench_root,
+                            output_folder = "GLP"):
     meta_dir = bench_root / "data" / "meta" / dataset
     sr_dir = bench_root / "data" / "SR" / output_folder / dataset / str(scale)
     times_csv = sr_dir / "times.csv"
@@ -546,7 +480,7 @@ def mat_to_tif_with_reports(dataset: str, scale: int, bench_root: Path,
                 "crs": meta["ms_crs"],
             })
 
-        # ----- Write per-pair tile_stats.csv -----
+        # Write per-pair tile_stats.csv
         if tile_stats:
             csv_path = glp_dir / "tile_stats.csv"
             fieldnames = ["scene", "status", "output_file", "shape",
@@ -556,7 +490,7 @@ def mat_to_tif_with_reports(dataset: str, scale: int, bench_root: Path,
                 writer.writeheader()
                 writer.writerows(tile_stats)
 
-        # ----- Write per-pair summary.json -----
+        # Write per-pair summary.json
         ok_tiles = [t for t in tile_stats if t["status"] == "OK"]
         failed_tiles = [t for t in tile_stats if t["status"] != "OK"]
         times_ok = [t["time_s"] for t in ok_tiles if t["time_s"] is not None]
@@ -597,9 +531,7 @@ def mat_to_tif_with_reports(dataset: str, scale: int, bench_root: Path,
     print(f"\n  Total exported: {total_exported} GeoTIFFs")
 
 
-# ---------------------------------------------------------------------------
 # Main
-# ---------------------------------------------------------------------------
 
 def main():
     ap = argparse.ArgumentParser(
@@ -644,7 +576,7 @@ def main():
     print(f"Workers:    {args.workers}")
     print()
 
-    # --- Step 1: Discover & convert ---
+    # Step 1: Discover & convert
     if not args.export_only:
         print(f"Step 1: Discovering tiles in {drive_root}/")
         tic_disc = time.time()
@@ -667,7 +599,7 @@ def main():
         print("Dry run complete. Run without --dry-run to execute GLP.")
         return
 
-    # --- Step 2: Run GLP ---
+    # Step 2: Run GLP
     if not args.export_only:
         print(f"Step 3: Running GLP fusion → data/SR/{args.output_folder}/...")
         os.chdir(str(bench_root))
@@ -675,7 +607,7 @@ def main():
                       output_folder=args.output_folder)
         print()
 
-    # --- Step 3: Export to pair_dir/GLP/ with reports ---
+    # Step 3: Export to pair_dir/GLP/ with reports
     print(f"Step 4: Exporting to GeoTIFF → pair_dir/{args.output_folder}/...")
     os.chdir(str(bench_root))
     mat_to_tif_with_reports(args.dataset, args.scale, bench_root,

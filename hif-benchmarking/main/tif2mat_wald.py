@@ -1,51 +1,6 @@
 #!/usr/bin/env python3
-"""
-tif2mat_wald.py — Prepare data for Wald's protocol evaluation.
-
-Takes EMIT tiles (120×120×32 at 60m) and Sentinel-2 tiles (720×720×10 at
-10m), degrades both by the scale factor (6), and saves everything in the
-HIF benchmark .mat format.
-
-After running this, the benchmark data tree looks like:
-
-    data/GT/EMIT32_WALD/{scene}.mat       — 120×120×B  (GT, key 'hsi')
-    data/HS/EMIT32_WALD/6/{scene}.mat     — 20×20×B    (degraded HSI, key 'hsi')
-    data/MS/EMIT32_WALD/{scene}.mat       — 120×120×Bm (degraded MSI, key 'msi')
-    data/meta/EMIT32_WALD/{scene}.json    — sidecar metadata
-
-Then:
-    python main/run_batch.py --dataset EMIT32_WALD --scale 6 --methods FUSE CNMF GLP HySure CSTF MAPSMM
-    python main/metrics_wald.py --dataset EMIT32_WALD --scale 6
-
-Usage
------
-    # From pre-selected tile list (recommended):
-    python main/tif2mat_wald.py \
-        --tile-list wald_tile_list.csv \
-        --bench-root /path/to/hif-benchmarking \
-        --dataset EMIT32_WALD --scale 6
-
-    # From Drive root (processes all tiles):
-    python main/tif2mat_wald.py \
-        --drive-root /path/to/drive/wald_data \
-        --bench-root /path/to/hif-benchmarking \
-        --dataset EMIT32_WALD \
-        --scale 6 \
-        --hs-suffix _emit_b32.tif \
-        --ms-suffix _s2.tif \
-        --ms-suffix _s2.tif
-
-Degradation model
------------------
-HSI: band-wise Gaussian blur (sigma = scale / 2.35482, i.e. FWHM = scale
-pixels) + decimation.  This matches the GLP and FUSE fusion method
-conventions so Wald evaluation is internally consistent.
-MSI: block-averaging (box filter) + decimation.
-"""
-
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -63,12 +18,9 @@ except ImportError:
     sys.exit("ERROR: scipy is required.  pip install scipy")
 
 
-# ---------------------------------------------------------------------------
 # helpers
-# ---------------------------------------------------------------------------
 
-def read_tif(path: str) -> tuple:
-    """Return (array_HWB, profile_dict) from a GeoTIFF."""
+def read_tif(path):
     with rasterio.open(path) as src:
         arr = src.read()                      # (B, H, W)
         arr = np.transpose(arr, (1, 2, 0))    # (H, W, B)
@@ -78,8 +30,7 @@ def read_tif(path: str) -> tuple:
     return arr, profile
 
 
-def scene_name_from_tile(filename: str, hs_suffix: str, ms_suffix: str):
-    """Extract common scene name from tile filename."""
+def scene_name_from_tile(filename, hs_suffix, ms_suffix):
     stem = Path(filename).stem
     for suffix in (hs_suffix, ms_suffix):
         tag = Path(suffix).stem
@@ -88,28 +39,7 @@ def scene_name_from_tile(filename: str, hs_suffix: str, ms_suffix: str):
     return None
 
 
-def degrade_hsi(hsi: np.ndarray, scale: int, sigma: float) -> np.ndarray:
-    """
-    Degrade a hyperspectral image by Gaussian blur + decimation.
-
-    This is the standard spatial degradation model used in Wald's protocol:
-        H_LR = D · B · H_HR
-    where B is band-wise Gaussian blur and D is spatial decimation.
-
-    Parameters
-    ----------
-    hsi : (H, W, B) array, float64
-        High-resolution HSI (the ground truth).
-    scale : int
-        Decimation factor.
-    sigma : float
-        Standard deviation of Gaussian blur kernel (in HR pixels).
-
-    Returns
-    -------
-    hsi_lr : (H//scale, W//scale, B) array, float64
-        Degraded low-resolution HSI.
-    """
+def degrade_hsi(hsi, scale, sigma):
     h, w, bands = hsi.shape
     assert h % scale == 0 and w % scale == 0, \
         f"HSI dimensions ({h}×{w}) must be divisible by scale ({scale})"
@@ -126,25 +56,7 @@ def degrade_hsi(hsi: np.ndarray, scale: int, sigma: float) -> np.ndarray:
     return hsi_lr
 
 
-def degrade_msi(msi: np.ndarray, scale: int) -> np.ndarray:
-    """
-    Degrade a multispectral image by spatial averaging (box filter + decimation).
-
-    For the MSI, we use block-averaging (simulating a lower-resolution sensor)
-    rather than Gaussian blur, since S2 bands are already well-sampled.
-
-    Parameters
-    ----------
-    msi : (H, W, B) array, float64
-        High-resolution MSI.
-    scale : int
-        Decimation factor.
-
-    Returns
-    -------
-    msi_lr : (H//scale, W//scale, B) array, float64
-        Degraded low-resolution MSI.
-    """
+def degrade_msi(msi, scale):
     h, w, bands = msi.shape
     assert h % scale == 0 and w % scale == 0, \
         f"MSI dimensions ({h}×{w}) must be divisible by scale ({scale})"
@@ -156,9 +68,7 @@ def degrade_msi(msi: np.ndarray, scale: int) -> np.ndarray:
     return msi_lr
 
 
-# ---------------------------------------------------------------------------
 # main
-# ---------------------------------------------------------------------------
 
 def main():
     ap = argparse.ArgumentParser(

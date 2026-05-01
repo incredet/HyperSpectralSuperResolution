@@ -1,11 +1,9 @@
-from __future__ import annotations
 
 import argparse
 import os
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 
 import sys
@@ -50,8 +48,7 @@ METHOD_COLOR = {
 }
 
 
-def compute_stats(summary_df: pd.DataFrame):
-    """Mean, std, n for each method × metric; mean runtime."""
+def compute_stats(summary_df):
     out = {}
     for m in METHOD_ORDER:
         d = summary_df[summary_df["method"] == m]
@@ -107,8 +104,7 @@ def print_latex_table(stats, best):
     print(r"\end{table}")
 
 
-def compute_gain_stats(dist_df: pd.DataFrame):
-    """Per-method gains over the per-tile bicubic baseline."""
+def compute_gain_stats(dist_df):
     out = {}
     for m in METHOD_ORDER:
         if m == "Bicubic":
@@ -133,7 +129,6 @@ def compute_gain_stats(dist_df: pd.DataFrame):
 
 
 def print_gain_table(gain_stats):
-    """Table of improvements over the bicubic baseline, per tile."""
     methods = [m for m in METHOD_ORDER if m in gain_stats]
 
     # best per column
@@ -190,8 +185,7 @@ def print_gain_table(gain_stats):
     print(r"\end{table}")
 
 
-def plot_distance_scatter(summary_df, dist_df, out_path: Path):
-    """Two-panel scatter: method fidelity vs. distance from bicubic."""
+def plot_distance_scatter(summary_df, dist_df, out_path):
     # per-method means on each axis
     fid = summary_df.groupby("method")[["PSNR", "SAM"]].mean()
     div = dist_df.groupby("method")[["dist_bic_RMSE", "dist_bic_SAM"]].mean()

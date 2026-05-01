@@ -156,7 +156,6 @@ def estimate_esf(
     n_x0_grid=51,
     return_sigmas=False,
 ):
-    """Estimate effective spatial resolution from a 2D or (B, H, W) image."""
     scalar = _to_scalar(img, nodata=nodata)
     ys, xs, ny, nx = _select_edges(scalar, top_fraction, border)
     n_tried = int(ys.size)
@@ -218,7 +217,6 @@ def estimate_esf(
 
 
 def analyze_file(path, pixel_size_m, nodata=None, **kw):
-    """Run ESF on a single .npy or .tif file."""
     return estimate_esf(_load_image(path), pixel_size_m, nodata, **kw)
 
 
@@ -236,7 +234,6 @@ def _analyze_one(path, pixel_size_m, nodata, kw):
 
 def analyze_folder(folder, pixel_size_m, pattern='*.npy', nodata=None,
                    n_jobs=1, **kw):
-    """Run ESF on every file in a folder; return per-file DataFrame."""
     folder = Path(folder)
     files = sorted(folder.glob(pattern))
     n = len(files)

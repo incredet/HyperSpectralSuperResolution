@@ -1,33 +1,6 @@
-"""
-Save alignment intermediate TIFs for a single AOI pair for thesis visualization.
-
-Produces in {DRIVE_ROOT}/viz_intermediates/{aoi_slug}/{pair_id}/:
-  emit_raw_rgb.npy          raw swath true-colour (bands ~665/560/490 nm), float32
-  emit_raw_full.npy         raw swath all selected 32 bands, float32
-  emit_pre_dem_utm.tif      post-orthorectification, DEM correction OFF
-  emit_post_dem_utm.tif     post-orthorectification, DEM correction ON  (symlink)
-  s2_pre_coreg.tif          S2 before AROSICS                           (symlink)
-  s2_post_coreg.tif         S2 after AROSICS                            (symlink)
-
-The last three files already exist in the pair's alignment/ folder;
-we symlink them so the viz script has a single clean directory to work from.
-
-Usage (Colab — run after mounting Drive and cloning repo):
-    import sys; sys.path.insert(0, '/content/HyperSpectralSuperResolution')
-    !python viz/save_alignment_intermediates.py
-
-To process a different AOI, set AOI_SLUG below.
-
-NOTE: Ukraine steppe (49.0, 34.0) is flat — DEM correction
-      effect will be minimal. Use a mountainous AOI (e.g. grand_canyon,
-      sierra_nevada_spain) for a visually dramatic DEM comparison.
-"""
-
-from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import sys
 from pathlib import Path
@@ -53,31 +26,20 @@ RGB_WL_NM = (665.0, 560.0, 490.0)
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-def find_pair(aoi_dir: Path) -> Path:
+def find_pair(aoi_dir):
     for sub in aoi_dir.iterdir():
         if sub.is_dir() and (sub / "metadata").is_dir():
             return sub
     raise FileNotFoundError(f"no completed pair found in {aoi_dir}")
 
 
-def load_pair_meta(pair_dir: Path) -> tuple[dict, dict]:
+def load_pair_meta(pair_dir):
     emit = json.loads((pair_dir / "metadata" / "emit_summary.json").read_text())
     s2   = json.loads((pair_dir / "metadata" / "s2_summary.json").read_text())
     return emit, s2
 
 
-def download_emit_nc(granule_ur: str, local_dir: Path) -> tuple[Path, Path | None]:
-    """Download EMIT L2A RFL + L1B OBS .nc files, return (rfl_path, obs_path).
-
-    Authentication (non-interactive) — set before running:
-        import os
-        from google.colab import userdata
-        os.environ["EARTHDATA_USERNAME"] = userdata.get("EARTHDATA_USERNAME")
-        os.environ["EARTHDATA_PASSWORD"] = userdata.get("EARTHDATA_PASSWORD")
-    Or export them in the shell:
-        export EARTHDATA_USERNAME=...
-        export EARTHDATA_PASSWORD=...
-    """
+def download_emit_nc(granule_ur, local_dir):
     local_dir.mkdir(parents=True, exist_ok=True)
     # try netrc first (persisted from a previous login), then env vars
     try:
@@ -116,8 +78,7 @@ def download_emit_nc(granule_ur: str, local_dir: Path) -> tuple[Path, Path | Non
     return rfl_nc, obs_nc
 
 
-def read_raw_swath(rfl_nc: Path, target_wl: tuple[float, ...]) -> dict:
-    """Read selected bands from EMIT .nc raw swath. Returns dict with arrays."""
+def read_raw_swath(rfl_nc, target_wl):
     with nc4.Dataset(rfl_nc, "r") as ds:
         wl = np.array(ds["sensor_band_parameters/wavelengths"][:])
         # reflectance shape: (downtrack, crosstrack, bands)
@@ -137,8 +98,7 @@ def read_raw_swath(rfl_nc: Path, target_wl: tuple[float, ...]) -> dict:
             "lon": lon, "lat": lat, "wl_all": wl, "good_wl": good_wl}
 
 
-def find_alignment_files(pair_dir: Path) -> dict[str, Path | None]:
-    """Locate existing alignment outputs for this pair."""
+def find_alignment_files(pair_dir):
     aln = pair_dir / "alignment"
     if not aln.exists():
         # some pipelines archive into a subdirectory named differently
@@ -159,12 +119,7 @@ def find_alignment_files(pair_dir: Path) -> dict[str, Path | None]:
     return out
 
 
-def save_wgs84_rgb(src_utm_tif: Path, dst_tif: Path) -> Path | None:
-    """Extract RGB bands from 285-band EMIT UTM TIF and warp to WGS84.
-
-    Produces a small 3-band uint16 GeoTIFF in EPSG:4326 — the 'orthorectified
-    in geographic coordinates' stage for the thesis pipeline figure.
-    """
+def save_wgs84_rgb(src_utm_tif, dst_tif):
     try:
         from rasterio.crs import CRS
         from rasterio.warp import calculate_default_transform, reproject, Resampling
@@ -201,12 +156,11 @@ def save_wgs84_rgb(src_utm_tif: Path, dst_tif: Path) -> Path | None:
 
 
 def run_pre_dem_ortho(
-    rfl_nc: Path,
-    obs_nc: Path | None,
-    s2_ref: Path,
-    out_dir: Path,
-) -> Path | None:
-    """Run EMIT orthorectification with DEM correction disabled."""
+    rfl_nc,
+    obs_nc,
+    s2_ref,
+    out_dir,
+):
     try:
         from geometry.EMIT_proj import convert_emit_nc_to_envi
     except ImportError as e:
@@ -241,7 +195,7 @@ def run_pre_dem_ortho(
 
 # ── main ─────────────────────────────────────────────────────────────────────
 
-def main() -> None:
+def main():
     aoi_dir  = DRIVE_ROOT / AOI_SLUG
     if not aoi_dir.exists():
         raise FileNotFoundError(f"AOI folder not found: {aoi_dir}")

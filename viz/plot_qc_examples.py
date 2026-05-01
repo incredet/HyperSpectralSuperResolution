@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import os
 from pathlib import Path
@@ -46,10 +45,7 @@ plt.rcParams.update({
 })
 
 
-
 def pct_stretch(arr, plo=2.0, phi=98.0):
-    """Shared percentile stretch. NaN pixels → black (0) so nodata does not
-    show as transparent white."""
     valid = arr[np.isfinite(arr)]
     if not len(valid):
         return np.zeros_like(arr, dtype=np.float32)
@@ -214,8 +210,6 @@ def fig_main_text(cats):
 # ── appendix grid ───────────────────────────────────────────────────────
 
 def fig_appendix_row(cat_key, tiles, n_cols, out_path):
-    """One category = one figure. A row of n_cols horizontal S2|EMIT pairs
-    with R² labels underneath. No header — compose with LaTeX subfigure."""
     col_widths, pair_cols = [], []
     for p in range(n_cols):
         c0 = len(col_widths)

@@ -1,21 +1,4 @@
 #!/usr/bin/env python3
-"""
-run_batch.py — Optimised runner that eliminates per-tile MATLAB startup
-overhead by generating a single MATLAB batch script, with optional
-parallel chunking across multiple MATLAB workers.
-
-Usage
------
-    # Single MATLAB session (saves ~30 min of startup overhead for 140 tiles):
-    python main/run_batch.py --dataset EMIT285 --scale 6 --methods MAPSMM
-
-    # Parallel: split tiles across N MATLAB workers:
-    python main/run_batch.py --dataset EMIT285 --scale 6 --methods MAPSMM --workers 4
-
-    # Dry run — just generate the .m scripts without executing:
-    python main/run_batch.py --dataset EMIT285 --scale 6 --methods MAPSMM --dry-run
-"""
-
 import argparse
 import glob
 import math
@@ -26,13 +9,12 @@ import time
 from pathlib import Path
 
 
-def discover_scenes(dataset: str, scale: int) -> list[str]:
-    """Return sorted list of scene stems from the HS folder."""
+def discover_scenes(dataset, scale):
     mat_paths = glob.glob(f"data/HS/{dataset}/{scale}/*.mat")
     return sorted(Path(p).stem for p in mat_paths)
 
 
-def get_paths(dataset: str, method: str, scale: int, scene: str):
+def get_paths(dataset, method, scale, scene):
     hsi_path = f"data/HS/{dataset}/{scale}/{scene}.mat"
     msi_path = f"data/MS/{dataset}/{scene}.mat"
     sr_dir   = f"data/SR/{method}/{dataset}/{scale}"
@@ -40,10 +22,9 @@ def get_paths(dataset: str, method: str, scale: int, scene: str):
     return hsi_path, msi_path, sr_dir, sri_path
 
 
-def generate_batch_script(scenes: list[str], dataset: str, method: str,
-                          scale: int, script_path: str, bench_root: str,
-                          worker_id: int = 0, srf_path: str | None = None):
-    """Write a .m file that processes all scenes in one MATLAB session."""
+def generate_batch_script(scenes, dataset, method,
+                          scale, script_path, bench_root,
+                          worker_id = 0, srf_path = None):
     # All paths must be absolute so MATLAB finds everything regardless of cwd
     abs_root = os.path.abspath(bench_root)
     lines = [
@@ -100,9 +81,7 @@ def generate_batch_script(scenes: list[str], dataset: str, method: str,
     return script_path
 
 
-def matlab_cmd(script_path: str) -> str:
-    """Build the shell command to run a .m script in MATLAB.
-    Note: -nojvm is intentionally omitted because parfor needs Java for the parallel pool."""
+def matlab_cmd(script_path):
     if sys.platform == "darwin":
         matlab_bin = "/Applications/MATLAB_R20*.app/bin/matlab"
         return f'{matlab_bin} -nodesktop -nodisplay -nosplash -batch "run(\'{script_path}\')"'

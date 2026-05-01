@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import csv
 import json
@@ -20,7 +19,7 @@ OUT_CSV = FIG_DIR / "pair_dates.csv"
 AOI_RE = re.compile(r"^aoi_lat(?P<lat>-?\d+(?:\.\d+)?)_lon(?P<lon>-?\d+(?:\.\d+)?)$")
 
 
-def parse_iso(s: str) -> datetime | None:
+def parse_iso(s):
     if not s:
         return None
     s = s.replace("Z", "+00:00")
@@ -30,7 +29,7 @@ def parse_iso(s: str) -> datetime | None:
         return None
 
 
-def load_aoi_index() -> dict[tuple[float, float], dict]:
+def load_aoi_index():
     idx: dict[tuple[float, float], dict] = {}
     with AOIS_CSV.open() as f:
         for r in csv.DictReader(f):
@@ -40,7 +39,7 @@ def load_aoi_index() -> dict[tuple[float, float], dict]:
     return idx
 
 
-def iter_pair_dirs(aoi_dir: Path):
+def iter_pair_dirs(aoi_dir):
     for sub in aoi_dir.iterdir():
         if not sub.is_dir():
             continue
@@ -48,7 +47,7 @@ def iter_pair_dirs(aoi_dir: Path):
             yield sub
 
 
-def harvest_pair(pair_dir: Path) -> dict | None:
+def harvest_pair(pair_dir):
     meta = pair_dir / "metadata"
     emit_sum = meta / "emit_summary.json"
     s2_sum = meta / "s2_summary.json"
@@ -74,7 +73,7 @@ def harvest_pair(pair_dir: Path) -> dict | None:
     }
 
 
-def main() -> None:
+def main():
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     aoi_index = load_aoi_index()
     print(f"drive root: {DRIVE_ROOT}")

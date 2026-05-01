@@ -3,7 +3,6 @@ import datetime as dt
 import os
 import glob
 import xml.etree.ElementTree as ET
-from pathlib import PosixPath
 
 
 import netCDF4 as nc
@@ -12,7 +11,6 @@ import hytools as ht
 import numpy as np
 import rasterio
 from pathlib import Path
-from typing import Iterable, Optional, Union
 import math
 
 import json, shlex, subprocess
@@ -25,7 +23,6 @@ from rasterio.warp import transform_bounds
 import shutil
 from rasterio.enums import Resampling
 from pyproj import Transformer
-from scipy.ndimage import map_coordinates
 
 from rasterio.windows import from_bounds
 from rasterio.windows import Window
@@ -36,8 +33,6 @@ from rasterio.transform import Affine
 NO_DATA_VALUE = -9999.0
 
 def _read_obs_cube_and_names(obs_nc):
-    """Read observation cube array and band names from netCDF."""
-    # Preferred canonical band-name order
     canonical = [
         ("path_length", ["path_length", "pathlength", "path_len", "plength"]),
         ("to-sensor azimuth", ["to_sensor_azimuth", "view_azimuth", "sensor_azimuth"]),
@@ -111,24 +106,22 @@ def _read_obs_cube_and_names(obs_nc):
     return obs_arr.astype(np.float32), names
 
 
-
 def _write_xml_sidecar(
-    out_bin_path: str,
+    out_bin_path,
     *,
-    product: str,
-    epsg_str: str,
-    crs_wkt: str | None,
-    pixel_size: tuple[float, float] | None,
-    shape: tuple[int, int, int] | tuple[int, int],  # (lines, samples, bands?) or (lines, samples)
-    start_time: dt.datetime,
-    end_time: dt.datetime,
-    bbox_lonlat: list[list[float]],
-    wavelengths: list[float] | None = None,
-    fwhm: list[float] | None = None,
-    band_names: list[str] | None = None,
-    description: str | None = None,
+    product,
+    epsg_str,
+    crs_wkt,
+    pixel_size,
+    shape,  # (lines, samples, bands?) or (lines, samples)
+    start_time,
+    end_time,
+    bbox_lonlat,
+    wavelengths = None,
+    fwhm = None,
+    band_names = None,
+    description = None,
 ):
-    """Write XML metadata sidecar for ENVI product."""
     lines = shape[0]
     samples = shape[1]
     bands = shape[2] if len(shape) == 3 else (len(band_names) if band_names else 1)
@@ -216,8 +209,7 @@ def open_any_nc(path):
     
 
 
-def run_cmd(cmd: list[str], check=True) -> dict:
-    """Run subprocess and return JSON-friendly record."""
+def run_cmd(cmd, check=True):
     import time as _time
     _label = cmd[0] if cmd else "?"
     print(f"  [run_cmd] START  {shlex.join(cmd[:6])}{'…' if len(cmd) > 6 else ''}")
@@ -239,14 +231,14 @@ def run_cmd(cmd: list[str], check=True) -> dict:
 
 
 def export_uint16_deflate_geotiff(
-    src_path: str,
-    dst_tif: str,
+    src_path,
+    dst_tif,
     *,
-    assign_epsg: str | None = None,
-    scale_mode: str = "none",   # "none" | "emit_reflectance_0_1"
-    nodata_uint16: int = 65535,
-    zlevel: int = 1,
-) -> dict:
+    assign_epsg = None,
+    scale_mode = "none",   # "none" | "emit_reflectance_0_1"
+    nodata_uint16 = 65535,
+    zlevel = 1,
+):
     cmd = ["gdal_translate", "-of", "GTiff",
            "-ot", "UInt16",
            "-co", "COMPRESS=DEFLATE",
@@ -269,10 +261,7 @@ def export_uint16_deflate_geotiff(
     return run_cmd(cmd, check=True)
 
 
-
-
-def raster_meta(path: str) -> dict:
-    """Read CRS, bounds, shape, resolution from any GDAL raster."""
+def raster_meta(path):
     p = Path(path)
     if not p.exists():
         return {"path": str(path), "exists": False}
@@ -299,7 +288,6 @@ def raster_meta(path: str) -> dict:
         return out
 
 
-
 def _intersect(a, b):
     # a,b: (l,b,r,t)
     l = max(a[0], b[0]); bb = max(a[1], b[1])
@@ -309,7 +297,7 @@ def _intersect(a, b):
     return (l, bb, r, t)
 
 
-def _which_gdal_edit() -> str | None:
+def _which_gdal_edit():
     for c in ("gdal_edit", "gdal_edit.py"):
         if shutil.which(c):
             return c
@@ -317,15 +305,14 @@ def _which_gdal_edit() -> str | None:
 
 
 def export_loc_uint16_deflate_geotiff(
-    src_path: str,
-    dst_tif: str,
+    src_path,
+    dst_tif,
     *,
     lon_range=(-180.0, 180.0),
     lat_range=(-90.0, 90.0),
     elev_range=(-1000.0, 12000.0),
-    nodata_uint16: int = 0,
-) -> dict:
-    """Export EMIT LOC (lon,lat,elev) to scaled UInt16 GeoTIFF."""
+    nodata_uint16 = 0,
+):
     cmd = [
         "gdal_translate",
         "-of", "GTiff",
@@ -372,17 +359,14 @@ def export_loc_uint16_deflate_geotiff(
 
 
 def _sample_band_minmax(
-    src_path: str,
-    band_index_1based: int,
-    nodata: float,
+    src_path,
+    band_index_1based,
+    nodata,
     *,
-    stride: int = 64,
-    p_low: float = 1.0,
-    p_high: float = 99.0,
-) -> tuple[float, float]:
-    """
-    Fast-ish robust min/max from a decimated read (percentiles).
-    """
+    stride = 64,
+    p_low = 1.0,
+    p_high = 99.0,
+):
     with rasterio.open(src_path) as ds:
         out_h = max(1, ds.height // stride)
         out_w = max(1, ds.width // stride)
@@ -408,19 +392,15 @@ def _sample_band_minmax(
 
 
 def export_obs_uint16_deflate_geotiff(
-    src_path: str,
-    dst_tif: str,
+    src_path,
+    dst_tif,
     *,
-    nodata_float: float,
-    nodata_uint16: int = 0,
-    stride: int = 64,
-    p_low: float = 1.0,
-    p_high: float = 99.0,
-) -> dict:
-    """
-    Export EMIT OBS cube to UInt16 GeoTIFF with per-band robust scaling.
-    Writes per-band scale/offset metadata when gdal_edit is available.
-    """
+    nodata_float,
+    nodata_uint16 = 0,
+    stride = 64,
+    p_low = 1.0,
+    p_high = 99.0,
+):
     with rasterio.open(src_path) as ds:
         nb = ds.count
 
@@ -448,7 +428,6 @@ def export_obs_uint16_deflate_geotiff(
     cmd += [src_path, dst_tif]
     rec = run_cmd(cmd, check=True)
 
-    # Store decode metadata per band: true = raw*scale + offset :contentReference[oaicite:6]{index=6}
     scales = [(mx - mn) / 65535.0 for mn, mx in zip(src_mins, src_maxs)]
     offsets = list(src_mins)
 
@@ -474,36 +453,19 @@ def export_obs_uint16_deflate_geotiff(
     return rec
 
 
-
 _USE_GEOLOC_VRT = True   # module flag; set False to fall back to scatter loop
 
 
 def _build_geoloc_vrt(
-    raw_bin_path: str,
-    lon_tif_path: str,
-    lat_tif_path: str,
-    n_bands: int,
-    height: int,
-    width: int,
-    nodata: float,
-    out_vrt_path: str,
-) -> str:
-    """Build a VRT with GEOLOCATION metadata for gdalwarp direct georeferencing.
-
-    Parameters
-    ----------
-    raw_bin_path : ENVI flat binary holding raw reflectance in BSQ layout.
-    lon_tif_path : Single-band GeoTIFF with per-pixel longitudes.
-    lat_tif_path : Single-band GeoTIFF with per-pixel latitudes.
-    n_bands      : Number of spectral bands (e.g. 285).
-    height, width: Raw sensor grid dimensions (downtrack, crosstrack).
-    nodata       : Fill value (e.g. -9999.0).
-    out_vrt_path : Where to write the VRT XML.
-
-    Returns
-    -------
-    str – *out_vrt_path*.
-    """
+    raw_bin_path,
+    lon_tif_path,
+    lat_tif_path,
+    n_bands,
+    height,
+    width,
+    nodata,
+    out_vrt_path,
+):
     lines = [
         f'<VRTDataset rasterXSize="{width}" rasterYSize="{height}">',
         f'  <Metadata domain="GEOLOCATION">',
@@ -544,37 +506,27 @@ def _build_geoloc_vrt(
 
 def _compute_dem_correction_raw_domain(
     img_nc,
-    obs_file: str,
-    dem_src: str,
-    transpose_raw_yx: bool,
-    raw_lon: np.ndarray,
-    raw_lat: np.ndarray,
+    obs_file,
+    dem_src,
+    transpose_raw_yx,
+    raw_lon,
+    raw_lat,
     *,
-    dem_cache_dir: str | Path = "/tmp/dem_cache",
-    verbose: bool = True,
-) -> tuple[np.ndarray, np.ndarray, dict]:
-    """Compute DEM parallax correction in the raw sensor domain.
-
-    Instead of correcting GLT scatter indices on the ortho grid, this
-    shifts the raw pixel lon/lat directly.  The corrected arrays can be
-    used as GEOLOCATION inputs for gdalwarp.
-
-    Returns
-    -------
-    (lon_corrected, lat_corrected, stats_dict)
-    """
+    dem_cache_dir = "/tmp/dem_cache",
+    verbose = True,
+):
     _geom_dir = str(Path(__file__).resolve().parent)
     if _geom_dir not in sys.path:
         sys.path.insert(0, _geom_dir)
     import dem_utils
 
-    # --- a) Raw elevation from LOC ---
+    # a) Raw elevation from LOC
     loc_vars = img_nc.groups["location"].variables
     raw_elev = np.asarray(loc_vars["elev"][:], dtype=np.float32)
     if transpose_raw_yx:
         raw_elev = raw_elev.T
 
-    # --- b) Viewing angles from OBS ---
+    # b) Viewing angles from OBS
     obs_nc_h, _ = open_any_nc(obs_file)
     try:
         obs_cube_raw, obs_bnames = _read_obs_cube_and_names(obs_nc_h)
@@ -596,7 +548,7 @@ def _compute_dem_correction_raw_domain(
         raw_azimuth = raw_azimuth.T
         raw_zenith  = raw_zenith.T
 
-    # --- c) Sample DEM at raw pixel locations ---
+    # c) Sample DEM at raw pixel locations
     if verbose:
         print("  [DEM-CORR-RAW] Sampling DEM at raw pixel locations ...")
     dem_elev = dem_utils.sample_dem_at_points(
@@ -604,7 +556,7 @@ def _compute_dem_correction_raw_domain(
         apply_geoid=True, verbose=verbose,
     )
 
-    # --- d) Parallax shift ---
+    # d) Parallax shift
     valid = (
         np.isfinite(dem_elev)
         & np.isfinite(raw_elev)
@@ -634,7 +586,7 @@ def _compute_dem_correction_raw_domain(
     lon_corrected = (raw_lon + dlon).astype(np.float32)
     lat_corrected = (raw_lat + dlat).astype(np.float32)
 
-    # --- e) Stats ---
+    # e) Stats
     stats = {}
     if np.any(valid):
         stats = {
@@ -661,35 +613,26 @@ def _compute_dem_correction_raw_domain(
 
 
 def nc_to_envi(
-    img_file: str,
-    out_dir: str,
-    temp_dir: str,
-    obs_file: str | None = None,
-    export_loc: bool = False,
-    s2_tif_path: str | None = None,
-    match_res: bool = False,
-    write_xml: bool = True,
+    img_file,
+    out_dir,
+    temp_dir,
+    obs_file = None,
+    export_loc = False,
+    s2_tif_path = None,
+    match_res = False,
+    write_xml = True,
     *,
-    overwrite: bool = False,
-    tag: str | None = None,
-    return_info: bool = False,
-    save_info_path: str | Path | None = None,
-    save_geotiffs: bool = True,
-    apply_dem_correction: bool = False,
-    dem_path: str | None = None,
-    dem_cache_dir: str | Path = "/tmp/dem_cache",
-    correction_diagnostics: bool = False,
-) -> Path | tuple[Path, dict]:
-    """
-    Export EMIT L1B_RDN or L2A_RFL to ENVI and write XML sidecars.
-
-    NEW:
-      - overwrite: if False, skips any output that already exists (.bin + .hdr)
-      - tag: optional string appended to filenames to avoid collisions across tiles
-    Returns:
-      Path to the main projected ENVI cube (.bin)
-    """
-    def _finalize_and_return(out_path: Path):
+    overwrite = False,
+    tag = None,
+    return_info = False,
+    save_info_path = None,
+    save_geotiffs = True,
+    apply_dem_correction = False,
+    dem_path = None,
+    dem_cache_dir = "/tmp/dem_cache",
+    correction_diagnostics = False,
+):
+    def _finalize_and_return(out_path):
         if save_info_path is not None:
             p = Path(save_info_path)
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -725,7 +668,6 @@ def nc_to_envi(
         tag = stem.replace("EMIT_", "")
 
     try:
-        # Disable auto mask/scale where possible
         for vname in ("radiance", "reflectance"):
             if vname in getattr(img_nc, "variables", {}):
                 var = img_nc.variables[vname]
@@ -769,7 +711,6 @@ def nc_to_envi(
         fwhm  = np.asarray(sbp.variables["fwhm"][:])
         waves = np.asarray(sbp.variables["wavelengths"][:])
 
-        # Geotransform/GLT
         gt = np.array(get_attr(img_nc, "geotransform"))
 
         gt = np.asarray(gt, dtype=float)
@@ -789,7 +730,6 @@ def nc_to_envi(
         glt = np.zeros(list(glt_x.shape) + [2], dtype=np.int32)
         glt[..., 0] = np.nan_to_num(glt_x, nan=0).astype(np.int32)
         glt[..., 1] = np.nan_to_num(glt_y, nan=0).astype(np.int32)
-
 
 
         valid_glt = np.all(glt != 0, axis=-1)
@@ -831,7 +771,7 @@ def nc_to_envi(
 
         x_ul, x_res, x_rot, y_ul, y_rot, y_res = map(float, gt)
 
-        def _xy(col: float, row: float) -> tuple[float, float]:
+        def _xy(col, row):
             X = x_ul + col * x_res + row * x_rot
             Y = y_ul + col * y_rot + row * y_res
             return (X, Y)
@@ -977,24 +917,14 @@ def nc_to_envi(
         
 
         def _run_gdalwarp(
-            src_path: str,
-            dst_path: str,
+            src_path,
+            dst_path,
             *,
-            xres: float = 60.0,
-            yres: float = 60.0,
-            src_srs: str | None = None,
-            src_bounds_wgs84: tuple | None = None,
-        ) -> dict:
-            """Reproject *src_path* to UTM, aligned to S2 grid.
-
-            Parameters
-            ----------
-            src_bounds_wgs84 : Optional (left, bottom, right, top) in WGS-84.
-                When provided, these are used to compute the target extent
-                instead of reading bounds from the source file.  Required
-                for VRT GEOLOCATION sources whose identity transform doesn't
-                encode real geographic bounds.
-            """
+            xres = 60.0,
+            yres = 60.0,
+            src_srs = None,
+            src_bounds_wgs84 = None,
+        ):
             if s2_bounds is None:
                 raise ValueError("s2_bounds is None. Need s2_tif_path to align output grid.")
 
@@ -1056,7 +986,7 @@ def nc_to_envi(
             if cols <= 0 or rows <= 0:
                 raise ValueError(f"Bad target shape cols={cols}, rows={rows} from snapped extent.")
 
-            # --- Diagnostics: source file info ---
+            # Diagnostics: source file info
             import time as _time
             _src_size_mb = os.path.getsize(src_path) / (1024 * 1024) if os.path.exists(src_path) else -1
             try:
@@ -1109,7 +1039,6 @@ def nc_to_envi(
             return rec
 
 
-
         # Precompute gather indices once (used by all exports)
         gy = glt0[..., 1][valid_glt2]
         gx = glt0[..., 0][valid_glt2]
@@ -1118,7 +1047,7 @@ def nc_to_envi(
         glt_y_full = glt0[..., 1]   # (H, W) int32, 0-based row in raw
         glt_x_full = glt0[..., 0]   # (H, W) int32, 0-based col in raw
 
-        # ===== DATA export (only if needed) =====
+        # DATA export (only if needed)
         if need_data:
             print(f"Exporting EMIT {product} dataset")
 
@@ -1135,9 +1064,7 @@ def nc_to_envi(
             utm_tif = geotiff_dir / f"{tag}_DATA_warp_utm.tif"
 
             if _USE_GEOLOC_VRT:
-                # ============================================================
                 # VRT GEOLOCATION approach: raw sensor → UTM in one gdalwarp
-                # ============================================================
                 import time as _time
                 _t_vrt_start = _time.time()
 
@@ -1305,9 +1232,7 @@ def nc_to_envi(
                     info["outputs"]["data_diag_utm_tif"] = str(diag_utm_tif)
 
             else:
-                # ============================================================
                 # FALLBACK: original scatter loop + gdalwarp (two-pass)
-                # ============================================================
                 data_header = ht.io.envi_header_dict()
                 data_header["lines"] = glt.shape[0]
                 data_header["samples"] = glt.shape[1]
@@ -1321,7 +1246,7 @@ def nc_to_envi(
                 data_gcs = str(temp_dir_p / f"data_gcs_{tag}")
                 writer = ht.io.WriteENVI(data_gcs, data_header)
 
-                # --- Scatter loop (nearest-neighbour, no DEM corr in fallback) ---
+                # Scatter loop (nearest-neighbour, no DEM corr in fallback)
                 for b0 in range(0, B, chunk):
                     b1 = min(b0 + chunk, B)
                     raw_blk = np.asarray(data[:, :, b0:b1], dtype=np.float32)
@@ -1435,7 +1360,7 @@ def nc_to_envi(
         else:
             print(f"DATA exists; skipping regeneration: {data_utm}")
 
-        # ===== LOC export (only if needed) =====
+        # LOC export (only if needed)
         if need_loc:
             print("Exporting EMIT location dataset")
 
@@ -1519,7 +1444,7 @@ def nc_to_envi(
         elif export_loc:
             print(f"LOC exists; skipping regeneration: {loc_utm}")
 
-        # ===== OBS export (only if needed) =====
+        # OBS export (only if needed)
         if need_obs:
             print("Exporting EMIT observation dataset")
             obs_nc, obs_backend = open_any_nc(obs_file)
@@ -1633,22 +1558,21 @@ def nc_to_envi(
 
 
 def convert_emit_nc_to_envi(
-    emit_nc_paths: Iterable[Union[str, Path]],
-    s2_visual_path: Union[str, Path],
-    out_dir: Union[str, Path],
-    emit_obs_nc: Optional[Union[str, Path]] = None,
+    emit_nc_paths,
+    s2_visual_path,
+    out_dir,
+    emit_obs_nc = None,
     *,
-    export_loc: bool = True,
-    overwrite: bool = False,
-    return_info: bool = False,
-    save_info_path: str | Path | None = None,
-    save_geotiffs: bool = True,
-    apply_dem_correction: bool = False,
-    dem_path: str | None = None,
-    dem_cache_dir: str | Path = "/tmp/dem_cache",
-    correction_diagnostics: bool = False,
-) -> Path | tuple[Path, dict]:
-    """Convert EMIT netCDF to ENVI; optionally apply DEM terrain parallax correction."""
+    export_loc = True,
+    overwrite = False,
+    return_info = False,
+    save_info_path = None,
+    save_geotiffs = True,
+    apply_dem_correction = False,
+    dem_path = None,
+    dem_cache_dir = "/tmp/dem_cache",
+    correction_diagnostics = False,
+):
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     tmp_dir = out_dir / "tmp"
@@ -1730,11 +1654,11 @@ def crop_s2_stack_to_te(
             dx = abs(float(src.transform.a))     # pixel width
             dy = abs(float(src.transform.e))     # pixel height (e is negative usually)
 
-            def snap_x(x: float) -> float:
+            def snap_x(x):
                 k = math.floor(((x - x0) / dx) + 0.5)
                 return x0 + k * dx
 
-            def snap_y(y: float) -> float:
+            def snap_y(y):
                 k = math.floor(((y0 - y) / dy) + 0.5)
                 return y0 - k * dy
 
@@ -1748,7 +1672,6 @@ def crop_s2_stack_to_te(
 
             snapped_te = {"left": left_s, "bottom": bottom_s, "right": right_s, "top": top_s}
             left, bottom, right, top = left_s, bottom_s, right_s, top_s
-        # ---------------------------------------------------------------------------
 
         w = from_bounds(left, bottom, right, top, transform=src.transform)
 

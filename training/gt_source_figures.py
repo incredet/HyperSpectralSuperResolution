@@ -1,5 +1,3 @@
-"""Figures for Experiment 2: GT source comparison (CNMF vs SFIM vs synthetic)."""
-
 import zipfile
 from pathlib import Path
 
@@ -64,7 +62,6 @@ def load_model(cfg_path, ckpt_path, device):
 
 
 def _classify_landcover(lc, prefixes):
-    """Map a land_cover string to a class using prefix matching."""
     for cls, plist in prefixes.items():
         for pfx in plist:
             if lc == pfx or lc.startswith(pfx + '/') or lc.startswith(pfx + '_'):
@@ -74,8 +71,8 @@ def _classify_landcover(lc, prefixes):
 
 def select_tiles_by_landcover(aois_csv, zip_dir, split_json, split='test',
                               groups=None, skip=None):
-    """Pick one representative tile per landcover class from test set.
-    skip: dict {class_name: n} — skip first n matching zips for that class."""
+    # one representative tile per landcover class; skip = {class: n} drops
+    # the first n matching zips per class for variety.
     groups = groups or LANDCOVER_PREFIXES
     skip = skip or {}
 
@@ -139,11 +136,9 @@ def run_tile(models, zip_path, member, device, scale=6):
     return {'lr': lr, 'bic': bic, 'preds': preds}
 
 
-# ── comparison grid ──
-
 def make_comparison_grid(data, rgb_bands, out_path,
                          models=None, crop_frac=0.30):
-    """data: OrderedDict {class_name: {'bic': ..., 'preds': ...}}"""
+    # data: OrderedDict {class_name: {'bic': ..., 'preds': ...}}
     models = models or ORDER
     cols = ['Bicubic'] + [_label(m) for m in models]
     n_rows, n_cols = len(data), len(cols)
@@ -180,7 +175,6 @@ def make_comparison_grid(data, rgb_bands, out_path,
     plt.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches='tight')
     plt.close(fig)
-
 
 
 def _sobel_gradient_mag(cube):
@@ -269,7 +263,6 @@ def make_gsde_histogram(esf_dir, out_path, models=None):
     plt.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches='tight')
     plt.close(fig)
-
 
 
 def _s2_perband(s2b_dir, metric, ylabel, out_path, models=None):

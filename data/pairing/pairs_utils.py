@@ -1,14 +1,12 @@
-from datetime import datetime, timezone
+from datetime import timezone
 from dateutil.parser import isoparse
 from shapely.ops import transform as shp_transform
-from typing import Tuple
 from pyproj import Transformer
 import pyproj
 from shapely.geometry import Point, box, Polygon
 
 
-
-def point_buffer_bbox(lon: float, lat: float, meters: float):
+def point_buffer_bbox(lon, lat, meters):
     wgs84 = pyproj.CRS.from_epsg(4326)
     aeqd = pyproj.CRS.from_proj4(
         f"+proj=aeqd +lat_0={lat} +lon_0={lon} +datum=WGS84 +units=m +no_defs"
@@ -27,20 +25,20 @@ def point_buffer_bbox(lon: float, lat: float, meters: float):
 
     return Polygon(zip(lons, lats))
 
-def _to_utc(dt: datetime) -> datetime:
+def _to_utc(dt):
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
 
-def _parse_iso_utc(x) -> datetime:
+def _parse_iso_utc(x):
     s = str(x).strip().replace("Z", "+00:00")
     dt = isoparse(s)
     return _to_utc(dt)
 
-def _dt_hours(a: datetime, b: datetime) -> float:
+def _dt_hours(a, b):
     return abs((a - b).total_seconds()) / 3600.0
 
-def _sun_vec_from_az_el(az_deg: float, el_deg: float) -> Tuple[float, float, float]:
+def _sun_vec_from_az_el(az_deg, el_deg):
     import math
     az = math.radians(az_deg % 360.0)
     el = math.radians(el_deg)
@@ -52,24 +50,24 @@ def _sun_vec_from_az_el(az_deg: float, el_deg: float) -> Tuple[float, float, flo
     n = math.sqrt(x*x + y*y + z*z) + 1e-12
     return (x/n, y/n, z/n)
 
-def _angle_between_unit_vecs(u: Tuple[float, float, float], v: Tuple[float, float, float]) -> float:
+def _angle_between_unit_vecs(u, v):
     import math
     dot = max(-1.0, min(1.0, u[0]*v[0] + u[1]*v[1] + u[2]*v[2]))
     return math.degrees(math.acos(dot))
 
 
-def local_solar_time_hours(dt_utc: datetime, lon_deg: float) -> float:
+def local_solar_time_hours(dt_utc, lon_deg):
     dt_utc = _to_utc(dt_utc)
     h = dt_utc.hour + dt_utc.minute/60.0 + dt_utc.second/3600.0
     lst = (h + (lon_deg / 15.0)) % 24.0
     return lst
 
-def circ_hours_diff(a: float, b: float) -> float:
+def circ_hours_diff(a, b):
     d = abs(a - b) % 24.0
     return min(d, 24.0 - d)
 
 
-def overlap_metrics_and_geom_wgs84(emit_geom_wgs84, s2_geom_wgs84, *, tile_m: float = 6000.0):
+def overlap_metrics_and_geom_wgs84(emit_geom_wgs84, s2_geom_wgs84, *, tile_m=6000.0):
     c = emit_geom_wgs84.centroid
     lon, lat = float(c.x), float(c.y)
     zone = int((lon + 180.0) // 6.0) + 1

@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import os
 import re
@@ -53,12 +52,12 @@ S2_BANDS = [
     ("B12", 2202.4, 175.0, "#7E3606"),   # SWIR2 saddle
 ]
 
-# --- EMIT context -----------------------------------------------------------
+# EMIT context
 EMIT_RANGE = (381.0, 2493.0)
 EMIT_N_BANDS = 285
 EMIT_FWHM = 7.4
 
-# --- atmospheric absorbers (schematic) --------------------------------------
+# atmospheric absorbers (schematic)
 # (centre_nm, sigma_nm, depth)
 ATMO_FEATURES = [
     (760,  3,  0.88),
@@ -93,8 +92,8 @@ def atmo_transmittance(wl):
 _ROW_RE = re.compile(r"-\s*(?P<wl>\d+(?:\.\d+)?)\s*#")
 
 
-def parse_selected_bands(config: Path) -> list[float]:
-    wls: list[float] = []
+def parse_selected_bands(config):
+    wls = []
     inside = False
     for line in config.read_text().splitlines():
         if "emit_target_wavelengths_nm:" in line:
@@ -116,7 +115,7 @@ def emit_band_centres():
     return np.linspace(EMIT_RANGE[0], EMIT_RANGE[1], EMIT_N_BANDS)
 
 
-def plot(selected: list[float], out_path: Path) -> None:
+def plot(selected, out_path):
     fig = plt.figure(figsize=(FIG_W_CM * CM, FIG_H_CM * CM))
     gs = fig.add_gridspec(
         nrows=3, ncols=1,
@@ -133,7 +132,7 @@ def plot(selected: list[float], out_path: Path) -> None:
         for lo, hi in guide_spans:
             a.axvspan(lo, hi, color=COLOR_GUIDE, alpha=1.0, zorder=0)
 
-    # --- top: S2 SRFs, each a distinct colour ------------------------------
+    # top: S2 SRFs, each a distinct colour
     wl = np.linspace(WL_MIN, WL_MAX, 4000)
     for code, mu, fwhm, col in S2_BANDS:
         y = gaussian(wl, mu, fwhm)
@@ -159,7 +158,7 @@ def plot(selected: list[float], out_path: Path) -> None:
     for spine in ("top", "right"):
         ax_s2.spines[spine].set_visible(False)
 
-    # --- middle: EMIT 285 with 32 highlighted ------------------------------
+    # middle: EMIT 285 with 32 highlighted
     emit_all = emit_band_centres()
     ax_emit.vlines(
         emit_all, 0.05, 0.95,
@@ -176,7 +175,7 @@ def plot(selected: list[float], out_path: Path) -> None:
     for spine in ("top", "right", "left", "bottom"):
         ax_emit.spines[spine].set_visible(False)
 
-    # --- bottom: atmospheric transmittance ---------------------------------
+    # bottom: atmospheric transmittance
     t = atmo_transmittance(wl)
     ax_atm.fill_between(wl, 0, t, color=COLOR_ATMO_FILL, alpha=0.45, zorder=1)
     ax_atm.plot(wl, t, color=COLOR_ATMO_LINE, linewidth=1.2, zorder=2)
@@ -217,7 +216,7 @@ def plot(selected: list[float], out_path: Path) -> None:
     print(f"saved {out_path.with_suffix('.pdf').name}")
 
 
-def main() -> None:
+def main():
     selected = parse_selected_bands(CONFIG_PATH)
     print(f"parsed {len(selected)} selected bands from {CONFIG_PATH.name}")
     if len(selected) != 32:

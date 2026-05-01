@@ -1,24 +1,4 @@
 #!/usr/bin/env python3
-"""
-compute_srf.py — Compute the analytical spectral response matrix R
-for CNMF fusion from S2A SRF curves and EMIT band parameters.
-
-R[i, j] gives the contribution of EMIT band j to S2 band i.
-Each row is normalised to sum to 1, so R is a proper mixing matrix:
-    S2_pixel ≈ R @ EMIT_pixel
-
-The matrix is saved as a .mat file with key 'R' (shape: n_s2 × n_emit)
-and can be passed to CNMF_fusion.m to replace the data-estimated R.
-
-Usage
------
-    python main/compute_srf.py \
-        --srf-csv data/s2a_srf.csv \
-        --emit-wavelengths 440 490 530 ... \
-        --emit-fwhm 7.5 \
-        --output data/srf_R.mat
-"""
-
 import argparse
 import sys
 from pathlib import Path
@@ -42,7 +22,6 @@ S2_BANDS = ["B02", "B03", "B04", "B05", "B06", "B07", "B08", "B8A", "B11", "B12"
 
 
 def load_s2_srf(csv_path):
-    """Load S2A SRF curves from CSV. Returns (wavelengths, dict of band→response)."""
     import csv
     with open(csv_path) as f:
         reader = csv.DictReader(f)
@@ -55,26 +34,6 @@ def load_s2_srf(csv_path):
 
 
 def compute_R(srf_wl, srf_dict, emit_centers, emit_fwhm):
-    """
-    Compute the spectral response matrix R.
-
-    For each S2 band i and EMIT band j:
-        R[i,j] = integral( S2_SRF_i(λ) × EMIT_j(λ) dλ )
-
-    where EMIT_j(λ) is a Gaussian centered at emit_centers[j] with the
-    given FWHM.  Each row is then normalised to sum to 1.
-
-    Parameters
-    ----------
-    srf_wl : (N,) array — S2 SRF wavelength grid (nm)
-    srf_dict : dict — band name → (N,) SRF values
-    emit_centers : list — EMIT band centre wavelengths (nm)
-    emit_fwhm : float — EMIT spectral FWHM (nm), same for all bands
-
-    Returns
-    -------
-    R : (n_s2, n_emit) array
-    """
     sigma = emit_fwhm / 2.35482  # FWHM → Gaussian sigma
     n_s2 = len(S2_BANDS)
     n_emit = len(emit_centers)

@@ -1,39 +1,4 @@
 #!/usr/bin/env python3
-"""
-run_regression_wald.py — Run polynomial Ridge regression fusion for Wald's protocol.
-
-This is the Python-only counterpart of the MATLAB fusion methods (GLP, SFIM,
-CNMF, HySure, MAPSMM). It reads the same degraded .mat inputs as the MATLAB
-methods and produces output in the same format (key='sri').
-
-The regression works in the degraded Wald space:
-  - HS input:  (H/s, W/s, B_hs)  e.g. 20×20×32  — degraded EMIT
-  - MS input:  (H, W, B_ms)      e.g. 120×120×10 — degraded S2
-  - Output:    (H, W, B_hs)      e.g. 120×120×32 — fused super-resolved
-
-Approach:
-  1. Downsample MS to HS resolution via block-averaging
-  2. At each LR pixel: pair downsampled MS (10 bands) with HS values (32 bands)
-  3. Fit 32 independent Ridge regressions with degree-2 polynomial features
-  4. Apply to full-resolution MS to produce fused HSI
-
-This mirrors the production pipeline (spectral/s2_to_emit.py, mode='downsample')
-but operates in the normalized [0,1] Wald space instead of raw DN values.
-
-Usage
------
-    python main/run_regression_wald.py --dataset EMIT32_WALD --scale 6
-
-    # With custom parameters:
-    python main/run_regression_wald.py --dataset EMIT32_WALD --scale 6 \
-        --degree 2 --alpha 1.0
-
-Output
-------
-    data/SR/Regression/EMIT32_WALD/6/{scene}.mat  (key: 'sri')
-    data/SR/Regression/EMIT32_WALD/6/times.csv
-"""
-
 import argparse
 import os
 import sys
@@ -54,37 +19,10 @@ except ImportError:
     sys.exit("ERROR: scikit-learn is required.  pip install scikit-learn")
 
 
-# ---------------------------------------------------------------------------
 # Regression fusion
-# ---------------------------------------------------------------------------
 
-def regression_fuse(hsi_lr: np.ndarray, msi_hr: np.ndarray, scale: int,
-                    degree: int = 2, alpha: float = 1.0) -> np.ndarray:
-    """
-    Fuse degraded HSI and MSI via polynomial Ridge regression.
-
-    Mirrors the production pipeline (spectral/s2_to_emit.py mode='downsample'):
-    downsample MSI to HSI resolution via block-averaging, fit regression at
-    the low-resolution grid, then apply to the full-resolution MSI.
-
-    Parameters
-    ----------
-    hsi_lr : (h, w, B_hs) float64
-        Degraded low-resolution HSI (e.g. 20×20×32), normalized [0,1].
-    msi_hr : (H, W, B_ms) float64
-        Degraded high-resolution MSI (e.g. 120×120×10), normalized [0,1].
-    scale : int
-        Spatial scale factor (H/h = W/w = scale).
-    degree : int
-        Polynomial feature expansion degree (default: 2).
-    alpha : float
-        Ridge regularization strength (default: 1.0).
-
-    Returns
-    -------
-    fused : (H, W, B_hs) float64
-        Fused HSI at MSI resolution.
-    """
+def regression_fuse(hsi_lr, msi_hr, scale,
+                    degree = 2, alpha = 1.0):
     h_lr, w_lr, b_hs = hsi_lr.shape
     h_hr, w_hr, b_ms = msi_hr.shape
 
@@ -125,9 +63,7 @@ def regression_fuse(hsi_lr: np.ndarray, msi_hr: np.ndarray, scale: int,
     return fused
 
 
-# ---------------------------------------------------------------------------
 # Main
-# ---------------------------------------------------------------------------
 
 def main():
     ap = argparse.ArgumentParser(

@@ -1,29 +1,7 @@
-"""
-LaTeX tables for QC and post-QC pair statistics.
-
-Tables produced:
-  tab_qc_filters.tex           per-filter tile attrition
-  tab_pairs_summary_postqc.tex post-QC overall pair statistics
-  tab_pairs_by_landcover_postqc.tex
-  tab_pairs_by_year_postqc.tex
-
-Reads  {DRIVE_ROOT}/r2_tiles_qc.csv
-       {DRIVE_ROOT}/tiles_clean.csv
-       {DRIVE_ROOT}/figures/pair_dates.csv
-       {DRIVE_ROOT}/figures/aoi_postqc_counts.csv
-Writes {DRIVE_ROOT}/figures/tables/tab_qc_*.tex
-                                   tab_pairs_*_postqc.tex
-
-Usage (Colab):
-    !python viz/make_qc_tables.py
-"""
-
-from __future__ import annotations
 
 import os
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -36,7 +14,7 @@ FIG_DIR  = DRIVE_ROOT / "figures"
 OUT_DIR  = FIG_DIR / "tables"
 QC_MIN_R2 = 0.75
 
-# --- land-cover grouping (kept in sync with plot_aoi_map.py) ----------------
+# land-cover grouping (kept in sync with plot_aoi_map.py)
 GROUP_RULES = [
     ("forest", {
         "tropical_forest", "temperate_forest", "boreal_forest",
@@ -57,7 +35,7 @@ GROUP_RULES = [
 GROUP_ORDER = [g for g, _ in GROUP_RULES] + ["other"]
 
 
-def assign_group(lc: str) -> str:
+def assign_group(lc):
     head = (lc or "").split("/")[0].strip()
     for name, members in GROUP_RULES:
         if head in members:
@@ -69,9 +47,9 @@ def assign_group(lc: str) -> str:
     return "other"
 
 
-# --- QC filter table --------------------------------------------------------
+# QC filter table
 
-def make_qc_filters(all_tiles: pd.DataFrame, clean: pd.DataFrame) -> str:
+def make_qc_filters(all_tiles, clean):
     n = len(all_tiles)
     rows = [
         ("EMIT cloud contamination",
@@ -113,15 +91,15 @@ def make_qc_filters(all_tiles: pd.DataFrame, clean: pd.DataFrame) -> str:
     )
 
 
-# --- post-QC pair tables ----------------------------------------------------
+# post-QC pair tables
 # Restrict pair_dates to pairs that appear in tiles_clean
 
-def postqc_pair_dates(pair_dates: pd.DataFrame, clean: pd.DataFrame) -> pd.DataFrame:
+def postqc_pair_dates(pair_dates, clean):
     kept_pairs = set(clean["pair_id"].unique())
     return pair_dates[pair_dates["pair_id"].isin(kept_pairs)].copy()
 
 
-def make_summary(df: pd.DataFrame) -> str:
+def make_summary(df):
     emit  = pd.to_datetime(df["emit_dt"], utc=True)
     span  = f"{emit.min().strftime('%Y-%m')} -- {emit.max().strftime('%Y-%m')}"
     abs_dt = df["delta_hours"].abs()
@@ -149,7 +127,7 @@ def make_summary(df: pd.DataFrame) -> str:
     )
 
 
-def make_by_landcover(df: pd.DataFrame) -> str:
+def make_by_landcover(df):
     df = df.copy()
     df["group"]  = df["land_cover"].map(assign_group)
     df["abs_dt"] = df["delta_hours"].abs()
@@ -183,7 +161,7 @@ def make_by_landcover(df: pd.DataFrame) -> str:
     )
 
 
-def make_by_year(df: pd.DataFrame) -> str:
+def make_by_year(df):
     df = df.copy()
     df["year"]   = pd.to_datetime(df["emit_dt"], utc=True).dt.year
     df["abs_dt"] = df["delta_hours"].abs()
@@ -212,7 +190,7 @@ def make_by_year(df: pd.DataFrame) -> str:
     )
 
 
-def main() -> None:
+def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     all_tiles  = pd.read_csv(DRIVE_ROOT / "r2_tiles_qc.csv")

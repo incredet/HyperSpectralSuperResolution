@@ -1,20 +1,5 @@
 #!/usr/bin/env python3
-"""
-diagnose_cnmf.py — Trace the full CNMF pipeline and find where NaN appears.
-
-Usage:
-    cd /path/to/hif-benchmarking
-    python main/diagnose_cnmf.py --dataset EMIT32 --scale 6
-
-Checks:
-  1. Input HS .mat (hsi variable)
-  2. Input MS .mat (msi variable)
-  3. CNMF output .mat (sri variable)
-  4. im2double / im2uint16 round-trip behaviour
-"""
-
 import argparse
-import glob
 import sys
 from pathlib import Path
 
@@ -23,7 +8,6 @@ import scipy.io
 
 
 def inspect_array(name, arr):
-    """Print detailed diagnostics for a numpy array."""
     print(f"  {name}:")
     print(f"    shape={arr.shape}, dtype={arr.dtype}")
     arr_f = arr.astype(np.float64)
@@ -57,7 +41,6 @@ def inspect_array(name, arr):
 
 
 def inspect_mat(path, var_name):
-    """Load a .mat file and inspect the named variable."""
     try:
         mat = scipy.io.loadmat(path)
     except Exception as e:
@@ -73,7 +56,6 @@ def inspect_mat(path, var_name):
 
 
 def simulate_im2double(arr):
-    """Simulate MATLAB's im2double on a uint16 array."""
     if arr.dtype == np.uint16:
         return arr.astype(np.float64) / 65535.0
     elif arr.dtype == np.float64 or arr.dtype == np.float32:
@@ -83,7 +65,6 @@ def simulate_im2double(arr):
 
 
 def simulate_im2uint16(arr):
-    """Simulate MATLAB's im2uint16 on a double array."""
     arr = np.clip(arr, 0.0, 1.0)
     return (arr * 65535).astype(np.uint16)
 
@@ -111,17 +92,17 @@ def main():
         print(f"TILE: {tile}")
         print(f"{'='*70}")
 
-        # --- 1. Input HS ---
+        # 1. Input HS
         hs_path = hs_dir / f"{tile}.mat"
         print(f"\n[1] HS Input: {hs_path}")
         hs_nan = inspect_mat(str(hs_path), "hsi")
 
-        # --- 2. Input MS ---
+        # 2. Input MS
         ms_path = ms_dir / f"{tile}.mat"
         print(f"\n[2] MS Input: {ms_path}")
         ms_nan = inspect_mat(str(ms_path), "msi")
 
-        # --- 3. Simulate im2double ---
+        # 3. Simulate im2double
         print(f"\n[3] Simulated im2double conversion:")
         hs_mat = scipy.io.loadmat(str(hs_path))
         ms_mat = scipy.io.loadmat(str(ms_path))
@@ -145,7 +126,7 @@ def main():
             print(f"    ⚠ WARNING: MSI values very small after im2double — "
                   f"MATLAB will treat as near-zero!")
 
-        # --- 4. CNMF Output ---
+        # 4. CNMF Output
         sr_path = sr_dir / f"{tile}.mat"
         if sr_path.exists():
             print(f"\n[4] CNMF Output: {sr_path}")
@@ -165,7 +146,7 @@ def main():
                 # If saved as float, NaN is possible
                 print(f"    float range: [{np.nanmin(sri):.6g}, {np.nanmax(sri):.6g}]")
 
-            # --- 5. Simulate mat2tif conversion ---
+            # 5. Simulate mat2tif conversion
             print(f"\n[5] Simulated mat2tif.py conversion:")
             if np.issubdtype(sri.dtype, np.floating):
                 sri_clipped = np.clip(sri, 0.0, 1.0)

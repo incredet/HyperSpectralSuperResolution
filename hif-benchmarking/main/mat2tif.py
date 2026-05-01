@@ -1,30 +1,6 @@
 #!/usr/bin/env python3
-"""
-mat2tif.py — Convert fused super-resolution .mat outputs from the HIF
-benchmark back into cleanly georeferenced GeoTIFF files.
-
-Usage
------
-    python mat2tif.py --bench-root /path/to/hif-benchmarking \
-                      --dataset EMIT285 \
-                      --scale 6 \
-                      --output-dir /path/to/output/tifs
-
-If --output-dir is omitted, GeoTIFFs are written next to each .mat inside
-data/SR/<method>/<dataset>/<scale>/.
-
-The script:
-  1. Reads the JSON sidecar written by tif2mat.py to recover the CRS and
-     affine transform of the original Sentinel-2 tile (same spatial grid
-     as the fused output).
-  2. Loads each fused .mat file (variable 'sri'), transposes
-     (H,W,Bands) → (Bands,H,W) for rasterio, and writes a uint16 GeoTIFF
-     with the correct georeferencing.
-"""
-
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -43,9 +19,8 @@ except ImportError:
     sys.exit("ERROR: scipy is required.  pip install scipy")
 
 
-def write_tif(path: str, arr_hwb: np.ndarray, crs_str: str,
-              transform_list: list, dtype: str = "uint16") -> None:
-    """Write a (H,W,Bands) array as a GeoTIFF."""
+def write_tif(path, arr_hwb, crs_str,
+              transform_list, dtype = "uint16"):
     h, w, b = arr_hwb.shape
     transform = Affine(*transform_list)
     profile = {
@@ -95,7 +70,7 @@ def main():
                  f"Did you run tif2mat.py first with --dataset {dataset}?")
 
     # load all sidecar metadata
-    sidecars: dict[str, dict] = {}
+    sidecars = {}
     for jf in sorted(meta_dir.glob("*.json")):
         with open(jf) as f:
             meta = json.load(f)
@@ -136,7 +111,7 @@ def main():
 
             sri = mat["sri"]  # (H, W, Bands)
 
-            # --- Reverse the [0,1] normalization applied by tif2mat.py ---
+            # Reverse the [0,1] normalization applied by tif2mat.py
             # CNMF_run.m does: sri = im2uint16(fusion_result)
             #   im2uint16 maps [0,1] float → [0,65535] uint16.
             # Our input was normalized so that 1.0 = global_max in the
@@ -177,7 +152,7 @@ def main():
                 dtype="uint16",
             )
             converted += 1
-            print(f"  ✓ {method_name} / {scene}  →  {out_path.name}  "
+            print(f"  {method_name} / {scene} -> {out_path.name}  "
                   f"shape={sri_out.shape}  "
                   f"range=[{sri_out.min()}, {sri_out.max()}]")
 

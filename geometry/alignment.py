@@ -1,8 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
-
 from geometry.EMIT_proj import convert_emit_nc_to_envi, crop_s2_stack_to_te
 from geometry.crop_utils import (
     valid_bbox_in_map_coords,

@@ -2,7 +2,6 @@ import io
 import numpy as np
 import random
 import zipfile
-import rasterio
 from rasterio.io import MemoryFile
 from pathlib import Path
 from torch.utils.data import Dataset
@@ -43,8 +42,6 @@ def split_aois(all_aois, seed=42, max_aois=None):
     return train_aois, val_aois, test_aois
 
 
-# ── index building ──────────────────────────────────────────────
-
 def build_index(zip_dir, gt_source, aoi_filter=None):
     gt_stem = GT_SUFFIXES[gt_source]
     index = []
@@ -82,8 +79,6 @@ def build_index(zip_dir, gt_source, aoi_filter=None):
     return index
 
 
-# ── reading helpers ─────────────────────────────────────────────
-
 def read_tif_from_zip(zip_path, filename):
     with zipfile.ZipFile(zip_path, 'r') as zf:
         raw = zf.read(filename)
@@ -102,8 +97,6 @@ def _read_from_handle(zf, filename):
         with mf.open() as ds:
             return ds.read().astype(np.float32)
 
-
-# ── dataset ─────────────────────────────────────────────────────
 
 class PairedZipDataset(Dataset):
 

@@ -1,38 +1,6 @@
 #!/usr/bin/env python3
-"""
-tif2mat.py — Convert co-registered EMIT / Sentinel-2 GeoTIFF tile pairs
-into the .mat format expected by the HIF benchmark.
-
-Usage
------
-    python tif2mat.py --drive-root /path/to/drive/data \
-                      --bench-root /path/to/hif-benchmarking \
-                      --dataset EMIT285 \
-                      --scale 6 \
-                      --hs-suffix _emit.tif \
-                      --ms-suffix _s2.tif
-
-For the 32-band EMIT variant:
-    python tif2mat.py --drive-root /path/to/drive/data \
-                      --bench-root /path/to/hif-benchmarking \
-                      --dataset EMIT32 \
-                      --scale 6 \
-                      --hs-suffix _emit_b32.tif \
-                      --ms-suffix _s2.tif
-
-The script:
-  1. Scans every pair_id/tiles/ folder under DRIVE_ROOT for matching HS/MS pairs.
-  2. Reads each GeoTIFF with rasterio, transposes (Bands,H,W) → (H,W,Bands).
-  3. Saves .mat files into:
-       {BENCH_ROOT}/data/HS/{DATASET}/{SCALE}/{scene_name}.mat   → key 'hsi'
-       {BENCH_ROOT}/data/MS/{DATASET}/{scene_name}.mat           → key 'msi'
-  4. Writes a JSON sidecar per scene with CRS, transform, band count, and
-     original filenames — needed later by mat2tif.py to georeference outputs.
-"""
-
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -49,12 +17,9 @@ except ImportError:
     sys.exit("ERROR: scipy is required.  pip install scipy")
 
 
-# ---------------------------------------------------------------------------
 # helpers
-# ---------------------------------------------------------------------------
 
-def read_tif(path: str) -> tuple:
-    """Return (array_HWB_uint16, profile_dict) from a GeoTIFF."""
+def read_tif(path):
     with rasterio.open(path) as src:
         # rasterio reads as (Bands, H, W) — transpose to (H, W, Bands)
         arr = src.read()                      # shape: (B, H, W)
@@ -67,14 +32,7 @@ def read_tif(path: str) -> tuple:
     return arr, profile
 
 
-def scene_name_from_tile(filename: str, hs_suffix: str, ms_suffix: str) -> str | None:
-    """
-    Extract a common scene name from a tile filename.
-
-    Examples (with defaults):
-        20230615T123456_T11SQA_20230615_tile000_emit.tif  → 20230615T123456_T11SQA_20230615_tile000
-        20230615T123456_T11SQA_20230615_tile000_s2.tif    → 20230615T123456_T11SQA_20230615_tile000
-    """
+def scene_name_from_tile(filename, hs_suffix, ms_suffix):
     stem = Path(filename).stem                 # drop .tif
     for suffix in (hs_suffix, ms_suffix):
         tag = Path(suffix).stem                # e.g. _emit, _s2
@@ -83,9 +41,7 @@ def scene_name_from_tile(filename: str, hs_suffix: str, ms_suffix: str) -> str |
     return None
 
 
-# ---------------------------------------------------------------------------
 # main
-# ---------------------------------------------------------------------------
 
 def main():
     ap = argparse.ArgumentParser(
@@ -134,8 +90,8 @@ def main():
         sys.exit(f"No pair_id folders with a tiles/ subdirectory found under {drive_root}")
 
     # collect HS and MS tile paths by scene_name
-    hs_tiles: dict[str, Path] = {}
-    ms_tiles: dict[str, Path] = {}
+    hs_tiles = {}
+    ms_tiles = {}
 
     for pair_dir in pair_dirs:
         tiles_dir = pair_dir / "tiles"
@@ -169,11 +125,11 @@ def main():
         print(f"    HS: {hs_path.name}")
         print(f"    MS: {ms_path.name}")
 
-        # --- read GeoTIFFs ---
+        # read GeoTIFFs
         hsi, hs_profile = read_tif(str(hs_path))
         msi, ms_profile = read_tif(str(ms_path))
 
-        # --- validate dimensions ---
+        # validate dimensions
         hs_h, hs_w, hs_b = hsi.shape
         ms_h, ms_w, ms_b = msi.shape
 
@@ -186,7 +142,7 @@ def main():
 
         print(f"    HSI shape: {hsi.shape} ({hsi.dtype}), MSI shape: {msi.shape} ({msi.dtype})")
 
-        # --- Normalize to [0, 1] float64 and save .mat files ---
+        # Normalize to [0, 1] float64 and save .mat files
         # The benchmark's MATLAB code calls im2double() on load.
         #   - On uint16: im2double divides by 65535 → [0, 1] only if data
         #     uses the full uint16 range.  EMIT/S2 reflectance typically
@@ -218,7 +174,7 @@ def main():
         scipy.io.savemat(str(hs_dir / f"{scene}.mat"), {"hsi": hsi_norm}, do_compression=True)
         scipy.io.savemat(str(ms_dir / f"{scene}.mat"),  {"msi": msi_norm}, do_compression=True)
 
-        # --- sidecar metadata (for mat2tif.py) ---
+        # sidecar metadata (for mat2tif.py)
         sidecar = {
             "scene": scene,
             "hs_file": hs_path.name,
@@ -236,7 +192,7 @@ def main():
         with open(meta_dir / f"{scene}.json", "w") as f:
             json.dump(sidecar, f, indent=2)
 
-        print(f"    ✓ saved")
+        print(f"    saved {scene}")
 
     print(f"\nDone. {len(matched)} scenes written to benchmark data/ tree.")
     print(f"\nNext steps:")

@@ -1,20 +1,3 @@
-"""
-Aggregate per-tile realignment shifts across every AOI's manifest.
-
-Walks DRIVE_ROOT/aoi_lat*_lon*/<pair>/manifest.csv, joins with
-tiles_clean.csv to keep only QC-passed tiles, writes:
-    {DRIVE_ROOT}/figures/realign_shifts.csv
-
-Output columns:
-    aoi_slug, pair_id, tile_idx,
-    shift_emit_dy, shift_emit_dx, shift_emit_mag_px,
-    shift_s2_dy,   shift_s2_dx,   shift_s2_mag_px
-
-Usage (Colab):
-    !python viz/ingest_realign_shifts.py
-"""
-
-from __future__ import annotations
 
 import os
 import re
@@ -33,7 +16,7 @@ OUT_CSV = FIG_DIR / "realign_shifts.csv"
 AOI_RE = re.compile(r"^aoi_lat-?\d+(?:\.\d+)?_lon-?\d+(?:\.\d+)?$")
 
 
-def main() -> None:
+def main():
     FIG_DIR.mkdir(parents=True, exist_ok=True)
 
     rows = []

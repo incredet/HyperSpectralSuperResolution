@@ -438,7 +438,7 @@ if __name__ == '__main__':
     tile_refs = select_tiles_by_landcover(
         args.master_csv, args.aois_csv, args.zip_dir, args.gt_source, split='test')
 
-    # --- main text ---
+    # main text
     print('\n=== main text figures ===')
 
     # 1. visual grid — best per family, with zoom
@@ -458,7 +458,7 @@ if __name__ == '__main__':
                       out_path=fig_dir / 'perband_rmse_main.png')
     print(f'  perband_rmse_main.png')
 
-    # --- appendix ---
+    # appendix
     print('\n=== appendix figures ===')
 
     # 4. full 6-model grid (no zoom)

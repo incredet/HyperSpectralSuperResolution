@@ -1,32 +1,16 @@
 #!/usr/bin/env python3
-"""
-diagnose_cnmf_v2.py — Trace CNMF failure root cause in pure Python.
-
-Loads the same .mat files CNMF uses, replicates the key steps
-(estR dimensionality, VCA rank analysis, NMF stability) to pinpoint
-where NaN originates.
-
-Usage:
-    cd /path/to/hif-benchmarking
-    python main/diagnose_cnmf_v2.py --bench-root . --dataset EMIT32 --scale 6 \
-        --scene 20250422T182135_T11SPS_20250419_tile041
-"""
-
 import argparse
-import sys
 from pathlib import Path
 import numpy as np
 import scipy.io as sio
 
 
 def load_mat_var(path, var):
-    """Load a single variable from a .mat file."""
     d = sio.loadmat(str(path))
     return d[var]
 
 
 def im2double(x):
-    """Replicate MATLAB's im2double."""
     if np.issubdtype(x.dtype, np.floating):
         return x.astype(np.float64)
     elif x.dtype == np.uint16:
@@ -37,7 +21,6 @@ def im2double(x):
 
 
 def gaussian_down_sample_simple(img, factor):
-    """Simplified Gaussian downsampling (average pooling)."""
     from scipy.ndimage import uniform_filter
     if img.ndim == 2:
         smoothed = uniform_filter(img.astype(np.float64), size=factor)
@@ -51,10 +34,6 @@ def gaussian_down_sample_simple(img, factor):
 
 
 def virtual_dimensionality(data, alpha=0.05):
-    """
-    Replicate MATLAB vd.m — estimate number of spectrally distinct sources.
-    data: (bands, pixels)
-    """
     from scipy.stats import norm
     L, N = data.shape
     R = (data @ data.T) / N
@@ -89,7 +68,7 @@ def main():
     print("CNMF STEP-BY-STEP DIAGNOSTIC (Python)")
     print("=" * 70)
 
-    # ---- Load data ----
+    # Load data
     hsi = im2double(load_mat_var(hs_path, "hsi"))
     msi = im2double(load_mat_var(ms_path, "msi"))
 
@@ -111,7 +90,7 @@ def main():
     print(f"    All-zero HS bands: {len(zero_bands)}  {zero_bands}")
     print(f"    Effective spectral dimensions: {eff_rank}")
 
-    # ---- Step 1: Check HSI matrix rank ----
+    # Step 1: Check HSI matrix rank
     print(f"\n[1] HSI matrix analysis:")
     HSI_2d = hsi.reshape(-1, bands2).T  # (bands, pixels)
     HSI_2d = np.clip(HSI_2d, 0, None)
@@ -124,7 +103,7 @@ def main():
     print(f"    Singular values near zero (<1e-10): {int(np.sum(s_vals < 1e-10))}")
     print(f"    Numerical rank: {numerical_rank}")
 
-    # ---- Step 2: Virtual Dimensionality & M ----
+    # Step 2: Virtual Dimensionality & M
     print(f"\n[2] Virtual Dimensionality (vd):")
     vd_result = virtual_dimensionality(HSI_2d, alpha=0.05)
     M = max(min(30, bands2), vd_result)
@@ -141,7 +120,7 @@ def main():
     else:
         print(f"    OK: M <= effective rank")
 
-    # ---- Step 3: estR offset analysis ----
+    # Step 3: estR offset analysis
     print(f"\n[3] estR offset analysis (simplified):")
     # Downsample MS to HS resolution
     lr_ms = gaussian_down_sample_simple(msi, w)
@@ -176,7 +155,7 @@ def main():
     print(f"    MSI after offset subtraction: range=[{msi_adj.min():.6f}, {msi_adj.max():.6f}]  mean={msi_adj.mean():.6f}")
     print(f"    MSI zeros after subtraction: {zeros_after} / {msi_adj.size} ({100*zeros_after/msi_adj.size:.1f}%)")
 
-    # ---- Step 4: Simulate VCA + NMF stability ----
+    # Step 4: Simulate VCA + NMF stability
     print(f"\n[4] NMF stability test:")
 
     # Use SVD-based endmember extraction (simplified VCA)
@@ -236,7 +215,7 @@ def main():
             print(f"    *** NaN at iteration {q}!")
             break
 
-    # ---- Step 5: Test with reduced M ----
+    # Step 5: Test with reduced M
     M_fix = min(15, eff_rank - 1, numerical_rank - 1)
     print(f"\n[5] Test with reduced M = {M_fix}:")
 
@@ -266,7 +245,7 @@ def main():
     if not nan_found:
         print(f"    SUCCESS: No NaN after 50 iterations with M={M_fix}")
 
-    # ---- Step 6: Check existing output ----
+    # Step 6: Check existing output
     print(f"\n[6] Existing CNMF output:")
     if sr_path.exists():
         sri = load_mat_var(sr_path, "sri")
@@ -276,7 +255,7 @@ def main():
     else:
         print(f"    No output file at {sr_path}")
 
-    # ---- Summary ----
+    # Summary
     print(f"\n{'='*70}")
     print("DIAGNOSIS SUMMARY")
     print(f"{'='*70}")

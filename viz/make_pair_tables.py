@@ -1,24 +1,7 @@
-"""
-Emit LaTeX tables summarising the EMIT–S2 pair set.
-
-Three tables:
-  tab_pairs_summary.tex        overall statistics
-  tab_pairs_by_landcover.tex   per-land-cover-group breakdown
-  tab_pairs_by_year.tex        per-calendar-year breakdown
-
-All tables use booktabs. Wrap in \\begin{table}...\\caption{...}\\end{table}
-in the thesis; this script emits the tabular env only.
-
-Reads  {DRIVE_ROOT}/figures/pair_dates.csv
-Writes {DRIVE_ROOT}/figures/tables/tab_pairs_*.tex
-"""
-
-from __future__ import annotations
 
 import os
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 DRIVE_ROOT = Path(os.environ.get(
@@ -29,7 +12,7 @@ FIG_DIR = DRIVE_ROOT / "figures"
 CSV_PATH = FIG_DIR / "pair_dates.csv"
 OUT_DIR = FIG_DIR / "tables"
 
-# --- land-cover grouping (kept in sync with plot_aoi_map.py) ----------------
+# land-cover grouping (kept in sync with plot_aoi_map.py)
 GROUP_RULES = [
     ("forest", {
         "tropical_forest", "temperate_forest", "boreal_forest",
@@ -50,7 +33,7 @@ GROUP_RULES = [
 GROUP_ORDER = [g for g, _ in GROUP_RULES] + ["other"]
 
 
-def assign_group(lc: str) -> str:
+def assign_group(lc):
     head = (lc or "").split("/")[0].strip()
     for name, members in GROUP_RULES:
         if head in members:
@@ -62,12 +45,12 @@ def assign_group(lc: str) -> str:
     return "other"
 
 
-def escape(s: str) -> str:
+def escape(s):
     return s.replace("&", r"\&").replace("_", r"\_")
 
 
-# --- summary table ----------------------------------------------------------
-def make_summary(df: pd.DataFrame) -> str:
+# summary table
+def make_summary(df):
     emit = pd.to_datetime(df["emit_dt"], utc=True)
     span = f"{emit.min().strftime('%Y-%m')} -- {emit.max().strftime('%Y-%m')}"
     abs_dt = df["delta_hours"].abs()
@@ -98,8 +81,8 @@ def make_summary(df: pd.DataFrame) -> str:
     )
 
 
-# --- per-land-cover table ---------------------------------------------------
-def make_by_landcover(df: pd.DataFrame) -> str:
+# per-land-cover table
+def make_by_landcover(df):
     df = df.copy()
     df["group"] = df["land_cover"].map(assign_group)
     df["abs_dt"] = df["delta_hours"].abs()
@@ -135,8 +118,8 @@ def make_by_landcover(df: pd.DataFrame) -> str:
     )
 
 
-# --- per-year table ---------------------------------------------------------
-def make_by_year(df: pd.DataFrame) -> str:
+# per-year table
+def make_by_year(df):
     df = df.copy()
     df["year"] = pd.to_datetime(df["emit_dt"], utc=True).dt.year
     df["abs_dt"] = df["delta_hours"].abs()
@@ -167,7 +150,7 @@ def make_by_year(df: pd.DataFrame) -> str:
     )
 
 
-def main() -> None:
+def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     df = pd.read_csv(CSV_PATH)
 

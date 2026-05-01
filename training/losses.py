@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 
 class SAMLoss(nn.Module):
-    """Stabilized SAM loss: sqrt(2(1-cos)) has bounded gradients at small angles."""
+    # Stabilized SAM: sqrt(2(1-cos)) has bounded gradients at small angles.
 
     def __init__(self):
         super().__init__()
@@ -59,7 +59,7 @@ class SSIMLoss(nn.Module):
 
 
 class MultiTripletPerceptualLoss(nn.Module):
-    """Perceptual loss with random band sampling for full spectral coverage."""
+    # Perceptual loss with random band sampling for full spectral coverage.
 
     def __init__(self, num_bands=32, triplets_per_step=3):
         super().__init__()

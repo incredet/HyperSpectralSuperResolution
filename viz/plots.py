@@ -2,7 +2,7 @@ import rasterio
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import re, os, glob, ast
+import os, glob
 from pathlib import Path
 
 import sys

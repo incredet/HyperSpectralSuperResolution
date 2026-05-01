@@ -1,30 +1,3 @@
-"""
-Alignment diagnostic figures for thesis.
-
-Each EMIT pipeline stage is its own single-panel file (no titles) so you can
-freely arrange and caption them in Overleaf:
-
-  fig_emit_stage1_raw.{pdf,png}         raw sensor swath
-  fig_emit_stage2_wgs84.{pdf,png}       orthorectified to WGS84 geographic
-  fig_emit_stage3_utm_no_dem.{pdf,png}  UTM 60 m, no DEM correction
-  fig_emit_stage4_utm_dem.{pdf,png}     UTM 60 m, with DEM correction
-
-Difference / comparison figures (minimal chrome):
-  fig_emit_diff_dem.{pdf,png}           |post-DEM − pre-DEM| (UTM domain)
-  fig_arosics_fullscene.{pdf,png}       S2 pre | EMIT | S2 post (full extent)
-  fig_arosics_zoom.{pdf,png}            same, centre crop (or ZOOM_EXTENT_UTM)
-  fig_arosics_diff_fullscene.{pdf,png}  |S2 post − S2 pre| (full)
-  fig_arosics_diff_zoom.{pdf,png}       |S2 post − S2 pre| (zoom)
-  fig_final_pair.{pdf,png}              final EMIT 60 m | final S2 10 m
-
-Reads  {DRIVE_ROOT}/viz_intermediates/{AOI_SLUG}/{pair_id}/
-Writes {DRIVE_ROOT}/figures/
-
-Usage (Colab):
-    !python viz/plot_alignment.py
-"""
-
-from __future__ import annotations
 
 import os
 import warnings
@@ -77,14 +50,14 @@ plt.rcParams.update({
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-def find_pair_dir(interm_dir: Path) -> Path:
+def find_pair_dir(interm_dir):
     for p in sorted(interm_dir.iterdir()):
         if p.is_dir() and not p.name.startswith("_"):
             return p
     raise FileNotFoundError(f"no pair dir under {interm_dir}")
 
 
-def pct_stretch(arr: np.ndarray, plo: float = 2.0, phi: float = 98.0) -> np.ndarray:
+def pct_stretch(arr, plo=2.0, phi = 98.0):
     out = np.zeros_like(arr, dtype=np.float32)
     if arr.ndim == 3:
         for c in range(arr.shape[2]):
@@ -104,8 +77,7 @@ def pct_stretch(arr: np.ndarray, plo: float = 2.0, phi: float = 98.0) -> np.ndar
     return out
 
 
-def read_emit_rgb(tif_path: Path) -> tuple[np.ndarray, rasterio.transform.Affine, object]:
-    """Handles both 285-band UTM TIF and 3-band WGS84 RGB TIF."""
+def read_emit_rgb(tif_path):
     with rasterio.open(tif_path) as src:
         if src.count == 3:
             bands_1b = [1, 2, 3]
@@ -119,10 +91,10 @@ def read_emit_rgb(tif_path: Path) -> tuple[np.ndarray, rasterio.transform.Affine
     return reshape_as_image(data), t, bounds
 
 
-def read_s2_rgb(tif_path: Path) -> tuple[np.ndarray, rasterio.transform.Affine, object]:
+def read_s2_rgb(tif_path):
     with rasterio.open(tif_path) as src:
         descs = [str(d or "") for d in (src.descriptions or [])]
-        def _b(code: str) -> int:
+        def _b(code):
             for i, d in enumerate(descs, 1):
                 if d.startswith(code):
                     return i
@@ -134,8 +106,8 @@ def read_s2_rgb(tif_path: Path) -> tuple[np.ndarray, rasterio.transform.Affine, 
     return reshape_as_image(data), t, bounds
 
 
-def crop_arr(arr: np.ndarray, t: rasterio.transform.Affine,
-             ext: tuple[float, float, float, float]) -> np.ndarray:
+def crop_arr(arr, t,
+             ext):
     left, bottom, right, top = ext
     c0 = max(0, int((left   - t.c) / t.a))
     c1 = min(arr.shape[1], int((right  - t.c) / t.a))
@@ -144,7 +116,7 @@ def crop_arr(arr: np.ndarray, t: rasterio.transform.Affine,
     return arr[r0:r1, c0:c1]
 
 
-def default_zoom(bounds) -> tuple[float, float, float, float]:
+def default_zoom(bounds):
     cx = (bounds.left  + bounds.right)  / 2
     cy = (bounds.bottom + bounds.top)   / 2
     hw = (bounds.right  - bounds.left)  * 0.15
@@ -152,7 +124,7 @@ def default_zoom(bounds) -> tuple[float, float, float, float]:
     return (cx - hw, cy - hh, cx + hw, cy + hh)
 
 
-def clean_axes(axes) -> None:
+def clean_axes(axes):
     for ax in np.ravel(axes):
         ax.set_xticks([])
         ax.set_yticks([])
@@ -160,7 +132,7 @@ def clean_axes(axes) -> None:
             sp.set_visible(False)
 
 
-def _save(fig, out_path: Path) -> None:
+def _save(fig, out_path):
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path.with_suffix(".pdf"), dpi=DPI, bbox_inches="tight")
     fig.savefig(out_path.with_suffix(".png"), dpi=DPI, bbox_inches="tight")
@@ -170,7 +142,7 @@ def _save(fig, out_path: Path) -> None:
 
 # ── single-panel figures (no titles) ─────────────────────────────────────────
 
-def single_panel(img: np.ndarray, out_path: Path) -> None:
+def single_panel(img, out_path):
     fig, ax = plt.subplots(figsize=(PANEL_CM * CM, PANEL_CM * CM))
     ax.imshow(img, interpolation="bilinear")
     clean_axes([ax])
@@ -180,7 +152,7 @@ def single_panel(img: np.ndarray, out_path: Path) -> None:
 
 # ── EMIT pipeline stages ─────────────────────────────────────────────────────
 
-def fig_emit_stages(pair_dir: Path) -> None:
+def fig_emit_stages(pair_dir):
     # stage 1: raw sensor swath (from saved .npy)
     raw_rgb = np.load(pair_dir / "emit_raw_rgb.npy").astype(np.float32)
     single_panel(pct_stretch(raw_rgb), FIG_DIR / "fig_emit_stage1_raw")
@@ -201,7 +173,7 @@ def fig_emit_stages(pair_dir: Path) -> None:
 
 # ── EMIT DEM difference (minimal colorbar) ───────────────────────────────────
 
-def fig_emit_diff_dem(pair_dir: Path, out_path: Path) -> None:
+def fig_emit_diff_dem(pair_dir, out_path):
     # DEM effect in the real UTM pipeline output — both files exist on disk
     pre  = pair_dir / "emit_pre_dem_utm.tif"
     post = pair_dir / "emit_post_dem_utm.tif"
@@ -229,8 +201,8 @@ def fig_emit_diff_dem(pair_dir: Path, out_path: Path) -> None:
 
 # ── AROSICS comparison (minimal subplot labels) ──────────────────────────────
 
-def fig_arosics_compare(pair_dir: Path, out_path: Path,
-                        zoom_ext: tuple[float, float, float, float] | None) -> None:
+def fig_arosics_compare(pair_dir, out_path,
+                        zoom_ext):
     emit, emit_t, _    = read_emit_rgb(pair_dir / "emit_post_dem_utm.tif")
     s2_pre,  t_pre,  _ = read_s2_rgb(pair_dir / "s2_pre_coreg.tif")
     s2_post, t_post, _ = read_s2_rgb(pair_dir / "s2_post_coreg.tif")
@@ -249,8 +221,8 @@ def fig_arosics_compare(pair_dir: Path, out_path: Path,
     _save(fig, out_path)
 
 
-def fig_arosics_diff(pair_dir: Path, out_path: Path,
-                     zoom_ext: tuple[float, float, float, float] | None) -> None:
+def fig_arosics_diff(pair_dir, out_path,
+                     zoom_ext):
     s2_pre,  t_pre,  _ = read_s2_rgb(pair_dir / "s2_pre_coreg.tif")
     s2_post, t_post, _ = read_s2_rgb(pair_dir / "s2_post_coreg.tif")
     if zoom_ext is not None:
@@ -275,7 +247,7 @@ def fig_arosics_diff(pair_dir: Path, out_path: Path,
 
 # ── final EMIT + S2 pair ─────────────────────────────────────────────────────
 
-def fig_final_pair(pair_dir: Path, out_path: Path) -> None:
+def fig_final_pair(pair_dir, out_path):
     emit,    _, _ = read_emit_rgb(pair_dir / "emit_post_dem_utm.tif")
     s2_post, _, _ = read_s2_rgb(pair_dir / "s2_post_coreg.tif")
 
@@ -290,7 +262,7 @@ def fig_final_pair(pair_dir: Path, out_path: Path) -> None:
 
 # ── main ─────────────────────────────────────────────────────────────────────
 
-def main() -> None:
+def main():
     pair_dir = find_pair_dir(INTERM_DIR)
     print(f"pair: {pair_dir.name}")
 

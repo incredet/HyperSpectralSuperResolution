@@ -1,6 +1,4 @@
 from pathlib import Path
-import re
-import json
 import warnings
 import numpy as np
 import rasterio
@@ -11,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from data.EMIT.emit_utils import closest_bands
 
-def s2_bandmap_from_template(s2_template_tif: str) -> dict[str, int]:
+def s2_bandmap_from_template(s2_template_tif):
     with rasterio.open(s2_template_tif) as src:
         descs = src.descriptions or ()
     if not descs or all(d is None for d in descs):
@@ -26,15 +24,15 @@ def s2_bandmap_from_template(s2_template_tif: str) -> dict[str, int]:
     return bandmap
 
 
-def closest_band_1based(wavelengths_nm: np.ndarray, target_nm: float) -> int:
+def closest_band_1based(wavelengths_nm, target_nm):
     return int(np.argmin(np.abs(np.asarray(wavelengths_nm, float) - float(target_nm)))) + 1
 
 
 def coregister_s2_granule_to_emit_granule(
     *,
-    emit_ref_tif: str,
-    s2_tgt_tif: str,
-    out_s2_tif: str,
+    emit_ref_tif,
+    s2_tgt_tif,
+    out_s2_tif,
     s2_map,
     emit_wl_nm,
     prefer=("B03", "B08", "B04"),

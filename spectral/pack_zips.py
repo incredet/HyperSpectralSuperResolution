@@ -4,10 +4,6 @@ import time
 import zipfile
 from pathlib import Path
 
-_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
-
 import pandas as pd
 
 
@@ -31,8 +27,6 @@ R2_COL_NAMES = {
 def parse_args():
     ap = argparse.ArgumentParser(
         description="Package GeoTIFF tiles into zip archives for SR training.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
     )
     ap.add_argument("--drive-root", required=True,
                     help="Path to EMIT_S-2_Matches on Drive")
@@ -60,13 +54,11 @@ def main():
 
     gt_source = args.gt_source
     gt_suffix_on_disk = GT_SUFFIXES[gt_source]
-    # Inside zip: keep the suffix but with the short tile name
-    # e.g., tile129_cnmf.tif (not the full pair_id prefix)
+    # Inside zip: keep the suffix but strip the pair_id prefix → tile129_cnmf.tif
     gt_suffix_in_zip = GT_SUFFIXES[gt_source]
 
     out_dir = Path(args.output_dir) if args.output_dir else drive_base / f"zips_{gt_source}"
 
-    # ── Load tiles_clean.csv ──
     clean_csv = drive_base / "tiles_clean.csv"
     if not clean_csv.exists():
         sys.exit(f"tiles_clean.csv not found: {clean_csv}")
@@ -74,7 +66,6 @@ def main():
     df = pd.read_csv(clean_csv)
     print(f"tiles_clean.csv: {len(df)} QC-passed tiles")
 
-    # ── Load GT-specific R² CSV and filter ──
     r2_thresh = args.r2_thresh
     if gt_source in R2_CSV_NAMES:
         r2_csv = drive_base / R2_CSV_NAMES[gt_source]
@@ -82,11 +73,9 @@ def main():
 
         if r2_csv.exists():
             r2_df = pd.read_csv(r2_csv)
-            # Keep only OK tiles
             r2_df = r2_df[r2_df["status"] == "OK"]
             print(f"{r2_csv.name}: {len(r2_df)} OK tiles")
 
-            # Merge on (aoi_slug, pair_id, tile_idx)
             if "tile_idx" not in r2_df.columns and "tile_name" in r2_df.columns:
                 import re
                 r2_df["tile_idx"] = r2_df["tile_name"].apply(
@@ -119,14 +108,12 @@ def main():
     if len(df) == 0:
         sys.exit("No tiles left after filtering!")
 
-    # ── Group by (aoi_slug, pair_id) ──
     grouped = df.groupby(["aoi_slug", "pair_id"])
     print(f"\n{len(df)} tiles across {len(grouped)} pairs, {df['aoi_slug'].nunique()} AOIs")
 
     if not args.dry_run:
         out_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── Create zips ──
     tic = time.time()
     total_tiles = 0
     total_zips = 0
@@ -153,9 +140,8 @@ def main():
 
             lr_path = tiles_dir / f"{tile_name}_emit_b32.tif"
 
-            # GT path: use out_path from R² CSV if available (methods
-            # save to different subdirs like CNMF/, SFIM/), else look
-            # in tiles/ with the standard suffix.
+            # GT path: use out_path from R² CSV if available (methods save to
+            # different subdirs like CNMF/, SFIM/), else the standard suffix.
             if has_out_path and pd.notna(row.get("out_path")):
                 gt_path = Path(row["out_path"])
             else:
@@ -195,13 +181,11 @@ def main():
 
     elapsed = time.time() - tic
 
-    # ── Write manifest ──
     if not args.dry_run and manifest_rows:
         manifest_df = pd.DataFrame(manifest_rows)
         manifest_path = out_dir / "manifest.csv"
         manifest_df.to_csv(manifest_path, index=False)
 
-    # ── Summary ──
     print(f"\n{'=' * 60}")
     print(f"GT source:      {gt_source}")
     if r2_thresh is not None:

@@ -1,15 +1,3 @@
-"""
-Per-tile realignment shift distribution figures.
-
-Reads  {DRIVE_ROOT}/figures/realign_shifts.csv  (from ingest_realign_shifts.py)
-Writes {DRIVE_ROOT}/figures/fig_realign_shift_histogram.{pdf,png}
-       {DRIVE_ROOT}/figures/fig_realign_shift_scatter.{pdf,png}
-
-Usage (Colab):
-    !python viz/plot_realign_shifts.py
-"""
-
-from __future__ import annotations
 
 import os
 from pathlib import Path
@@ -44,7 +32,7 @@ COLOR_BAR = "#4477AA"
 COLOR_REF = "#AA4455"
 
 
-def fig_histogram(df: pd.DataFrame, out_path: Path) -> None:
+def fig_histogram(df, out_path):
     mag = df["shift_s2_mag_px"].dropna().to_numpy()
     fig, ax = plt.subplots(figsize=(PANEL_CM * CM, PANEL_CM * CM * 0.7))
 
@@ -71,7 +59,7 @@ def fig_histogram(df: pd.DataFrame, out_path: Path) -> None:
     print(f"  saved {out_path.with_suffix('.pdf').name}")
 
 
-def fig_scatter(df: pd.DataFrame, out_path: Path) -> None:
+def fig_scatter(df, out_path):
     dy = df["shift_s2_dy"].to_numpy()
     dx = df["shift_s2_dx"].to_numpy()
     lim = float(np.nanmax(np.abs(np.concatenate([dy, dx])))) * 1.1
@@ -111,7 +99,7 @@ def fig_scatter(df: pd.DataFrame, out_path: Path) -> None:
     print(f"  saved {out_path.with_suffix('.pdf').name}")
 
 
-def main() -> None:
+def main():
     df = pd.read_csv(CSV_PATH)
     print(f"loaded {len(df):,} tiles from {CSV_PATH.name}")
 

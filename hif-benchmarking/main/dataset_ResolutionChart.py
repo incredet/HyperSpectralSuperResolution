@@ -1,10 +1,8 @@
 import glob
-import math
 import os
 import sys
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import scipy.io
 from PIL import Image

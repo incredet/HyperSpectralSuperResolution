@@ -181,7 +181,7 @@ def main():
     parser.add_argument('--source', choices=['emit', 'cnmf', 'sfim'], default='emit',
                         help='tile source: emit (96x96, old default) or cnmf/sfim (576x576 fusion GT)')
     parser.add_argument('--r2-thresh', type=float, default=None,
-                        help='R² threshold for cnmf/sfim source (default 0.5)')
+                        help='R^2 threshold for cnmf/sfim source (default 0.5)')
     args = parser.parse_args()
 
     if not args.dst and not args.patched:

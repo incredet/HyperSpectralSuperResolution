@@ -1,37 +1,5 @@
 #!/usr/bin/env python3
-"""
-metrics_wald.py — Comprehensive evaluation for Wald's protocol.
-
-Compares fused super-resolution outputs against ground truth EMIT tiles
-and generates per-scene CSV files, a combined summary CSV, and a ranked
-comparison table.
-
-Metrics computed (standard in HSI fusion literature):
-  - PSNR    (Peak Signal-to-Noise Ratio, dB)          ↑ higher is better
-  - SSIM    (Structural Similarity Index)              ↑ higher is better
-  - SAM     (Spectral Angle Mapper, degrees)           ↓ lower is better
-  - ERGAS   (Erreur Relative Globale, dimensionless)   ↓ lower is better
-  - RMSE    (Root Mean Square Error)                   ↓ lower is better
-  - UIQI    (Universal Image Quality Index)            ↑ higher is better
-  - SCC     (Spatial Correlation Coefficient)          ↑ higher is better
-
-Usage
------
-    python main/metrics_wald.py --dataset EMIT32_WALD --scale 6
-
-    # Specific methods only:
-    python main/metrics_wald.py --dataset EMIT32_WALD --scale 6 \
-        --methods FUSE CNMF GLP HySure CSTF MAPSMM
-
-Output
-------
-    data/SR/{method}/{dataset}/{scale}/metrics_wald.csv   — per-scene metrics
-    data/eval/{dataset}_{scale}_summary.csv               — all methods, all scenes
-    data/eval/{dataset}_{scale}_ranking.csv                — mean metrics + rank
-"""
-
 import argparse
-import glob
 import os
 import sys
 import warnings
@@ -46,12 +14,9 @@ except ImportError:
 
 warnings.filterwarnings("ignore")
 
-# ---------------------------------------------------------------------------
 # Metric implementations
-# ---------------------------------------------------------------------------
 
-def compute_psnr(gt: np.ndarray, sr: np.ndarray) -> float:
-    """Peak Signal-to-Noise Ratio (dB). Higher is better."""
+def compute_psnr(gt, sr):
     mse = np.mean((gt - sr) ** 2)
     if mse == 0:
         return float("inf")
@@ -59,16 +24,11 @@ def compute_psnr(gt: np.ndarray, sr: np.ndarray) -> float:
     return 10.0 * np.log10(max_val ** 2 / mse)
 
 
-def compute_rmse(gt: np.ndarray, sr: np.ndarray) -> float:
-    """Root Mean Square Error. Lower is better."""
+def compute_rmse(gt, sr):
     return float(np.sqrt(np.mean((gt - sr) ** 2)))
 
 
-def compute_sam(gt: np.ndarray, sr: np.ndarray) -> float:
-    """
-    Spectral Angle Mapper — mean spectral angle in degrees.
-    Lower is better. Computed per-pixel, then averaged.
-    """
+def compute_sam(gt, sr):
     # Reshape to (pixels, bands)
     h, w, b = gt.shape
     gt_flat = gt.reshape(-1, b)
@@ -91,11 +51,7 @@ def compute_sam(gt: np.ndarray, sr: np.ndarray) -> float:
     return float(np.degrees(np.mean(angles)))
 
 
-def compute_ergas(gt: np.ndarray, sr: np.ndarray, scale: int) -> float:
-    """
-    Erreur Relative Globale Adimensionnelle de Synthèse.
-    Lower is better. Scale-normalized RMSE per band.
-    """
+def compute_ergas(gt, sr, scale):
     h, w, b = gt.shape
     ergas_sum = 0.0
     for i in range(b):
@@ -110,11 +66,7 @@ def compute_ergas(gt: np.ndarray, sr: np.ndarray, scale: int) -> float:
     return 100.0 / scale * np.sqrt(ergas_sum / b)
 
 
-def compute_ssim(gt: np.ndarray, sr: np.ndarray) -> float:
-    """
-    Structural Similarity Index — mean across all bands.
-    Higher is better. Uses standard 7×7 window.
-    """
+def compute_ssim(gt, sr):
     from scipy.ndimage import uniform_filter
 
     h, w, b = gt.shape
@@ -152,11 +104,7 @@ def compute_ssim(gt: np.ndarray, sr: np.ndarray) -> float:
     return float(np.mean(ssim_bands))
 
 
-def compute_uiqi(gt: np.ndarray, sr: np.ndarray) -> float:
-    """
-    Universal Image Quality Index — mean across bands.
-    Higher is better. Uses 8×8 sliding window.
-    """
+def compute_uiqi(gt, sr):
     from scipy.ndimage import uniform_filter
 
     h, w, b = gt.shape
@@ -193,11 +141,7 @@ def compute_uiqi(gt: np.ndarray, sr: np.ndarray) -> float:
     return float(np.mean(uiqi_bands))
 
 
-def compute_scc(gt: np.ndarray, sr: np.ndarray) -> float:
-    """
-    Spatial Correlation Coefficient — mean per-band Pearson correlation.
-    Higher is better.
-    """
+def compute_scc(gt, sr):
     h, w, b = gt.shape
     scc_bands = []
     for i in range(b):
@@ -211,9 +155,7 @@ def compute_scc(gt: np.ndarray, sr: np.ndarray) -> float:
     return float(np.mean(scc_bands))
 
 
-# ---------------------------------------------------------------------------
 # Main evaluation
-# ---------------------------------------------------------------------------
 
 METRIC_NAMES = ["PSNR", "SSIM", "SAM", "ERGAS", "RMSE", "UIQI", "SCC"]
 # For ranking: True = higher is better, False = lower is better
@@ -223,11 +165,7 @@ METRIC_HIGHER_BETTER = {
 }
 
 
-def load_times(sr_dir: Path) -> dict:
-    """Load per-scene timing from times.csv written by run_batch.py / produce_sfim.py.
-
-    Returns dict: scene_name -> elapsed_seconds.  Empty dict if no file found.
-    """
+def load_times(sr_dir):
     times_path = sr_dir / "times.csv"
     if not times_path.exists():
         return {}
@@ -246,8 +184,7 @@ def load_times(sr_dir: Path) -> dict:
     return timings
 
 
-def evaluate_scene(gt: np.ndarray, sr: np.ndarray, scale: int) -> dict:
-    """Compute all metrics for one scene. Returns dict of metric_name -> value."""
+def evaluate_scene(gt, sr, scale):
     return {
         "PSNR":  compute_psnr(gt, sr),
         "SSIM":  compute_ssim(gt, sr),
@@ -259,8 +196,7 @@ def evaluate_scene(gt: np.ndarray, sr: np.ndarray, scale: int) -> dict:
     }
 
 
-def load_and_normalise(mat_path: str, key: str) -> np.ndarray:
-    """Load a .mat variable and ensure float64 in [0, 1]."""
+def load_and_normalise(mat_path, key):
     data = scipy.io.loadmat(mat_path)[key]
     if np.issubdtype(data.dtype, np.integer):
         data = data.astype(np.float64) / np.iinfo(data.dtype).max
@@ -392,9 +328,7 @@ def main():
         all_results[method] = method_results
         print()
 
-    # -----------------------------------------------------------------------
     # Combined summary CSV: all methods × all scenes
-    # -----------------------------------------------------------------------
     summary_path = eval_dir / f"{dataset}_{scale}_summary.csv"
     with open(summary_path, "w") as f:
         f.write("method,scene," + ",".join(METRIC_NAMES) + ",time_s\n")
@@ -409,9 +343,7 @@ def main():
 
     print(f"Summary: {summary_path}")
 
-    # -----------------------------------------------------------------------
     # Ranking table: mean metrics per method + rank
-    # -----------------------------------------------------------------------
     ranking_path = eval_dir / f"{dataset}_{scale}_ranking.csv"
 
     method_means = {}
@@ -475,9 +407,7 @@ def main():
 
     print(f"Ranking: {ranking_path}")
 
-    # -----------------------------------------------------------------------
     # Print ranking table to console
-    # -----------------------------------------------------------------------
     print()
     print("=" * 90)
     print(f"  RANKING — {dataset} (scale {scale})")

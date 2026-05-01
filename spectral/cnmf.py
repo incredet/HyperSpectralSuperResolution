@@ -1,5 +1,4 @@
 import time as _time
-import warnings
 from pathlib import Path
 
 import numpy as np
@@ -35,15 +34,6 @@ def _gaussian_downsample(img, factor):
     out = smoothed[offset::factor, offset::factor, :][:h_out, :w_out, :]
 
     return out
-
-
-def _gaussian_downsample_2d(img_2d, factor):
-    sigma = factor / 2.35482
-    h_out = img_2d.shape[0] // factor
-    w_out = img_2d.shape[1] // factor
-    smoothed = gaussian_filter(img_2d, sigma=sigma, mode='reflect')
-    offset = factor // 2
-    return smoothed[offset::factor, offset::factor][:h_out, :w_out]
 
 
 def _virtual_dimensionality(data, alpha=1e-3):
