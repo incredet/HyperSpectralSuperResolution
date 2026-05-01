@@ -2,9 +2,16 @@
 
 ## Data + checkpoints
 
-Sample AOIs, all checkpoints and figures:
-
 [LINK](https://drive.google.com/drive/folders/1svmna-JG6qsLnhVgx9-va3eVjmfqZqcd?usp=sharing)
+
+| | |
+|---|---|
+| `aoi_split.json`, `tiles_clean.csv` | AOI split + clean tile list |
+| `checkpoints/` | best checkpoint for each model per exp |
+| `samples/aoi_lat42.5_lon-106.5/` | one full AOI (raw and fused tiles, metadata) for notebooks 01–05 |
+| `samples/{cnmf, sfim, synthetic_bicubic, synthetic_cnmf}/` | one-AOI training zips for notebook 07 |
+| `samples/*_patched/` | same zips pre-patched |
+| `test_previews/rrdb_{cnmf, sfim, syn_emit, syn_cnmf}/` | ~30 test-tile PNGs per GT source |
 
 (Full dataset on request)
 
@@ -41,8 +48,8 @@ Run in order. All paths point at Drive.
 | Config | GT | Checkpoint |
 |---|---|---|
 | `exp2_rrdb_192x24_sfim` | SFIM | `exp2-rrdb-192x24-sfim.pth` |
-| `exp3_rrdb_192x24_synthetic_bicubic` | bicubic-degraded EMIT  | `exp3-syn-emit.pth` |
-| `exp3_rrdb_192x24_synthetic_cnmf`    | bicubic-downsampled CNMF | `exp3-syn-cnmf.pth` |
+| `exp3_rrdb_192x24_synthetic_bicubic` | bicubic-degraded EMIT  | `exp3-rrdb-192x24-synthetic-bicubic.pth` |
+| `exp3_rrdb_192x24_synthetic_cnmf`    | bicubic-downsampled CNMF | `exp3-rrdb-192x24-synthetic-cnmf.pth` |
 
 ## Layout
 
